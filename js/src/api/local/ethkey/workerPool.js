@@ -28,11 +28,15 @@ class WorkerContainer {
       throw new Error('Cannot issue an action on a busy worker!');
     }
 
+    const start = Date.now();
+
     this.busy = true;
 
     return new Promise((resolve, reject) => {
       this._worker.postMessage({ action, payload });
       this._worker.onmessage = ({ data }) => {
+        console.log('Worker done in ', Date.now() - start);
+
         const [err, result] = data;
 
         this.busy = false;
@@ -48,7 +52,15 @@ class WorkerContainer {
 }
 
 class WorkerPool {
-  pool = [];
+  pool = [
+    new WorkerContainer(),
+    new WorkerContainer(),
+    new WorkerContainer(),
+    new WorkerContainer(),
+    new WorkerContainer(),
+    new WorkerContainer(),
+    new WorkerContainer()
+  ];
 
   getWorker () {
     let container = this.pool.find((container) => !container.busy);

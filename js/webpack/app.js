@@ -75,6 +75,10 @@ module.exports = {
         use: [ 'json-loader' ]
       },
       {
+        test: /\.wasm$/,
+        use: [ 'wasm-loader' ]
+      },
+      {
         test: /\.ejs$/,
         use: [ 'ejs-loader' ]
       },

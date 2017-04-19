@@ -68,6 +68,10 @@ module.exports = {
         use: [ 'json-loader' ]
       },
       {
+        test: /\.wasm$/,
+        use: [ 'wasm-loader' ]
+      },
+      {
         test: /\.html$/,
         use: [ 'file-loader?name=[name].[ext]' ]
       }

@@ -14,9 +14,89 @@
 // You should have received a copy of the GNU General Public License
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
+/* global WebAssembly */
+
 import secp256k1 from 'secp256k1';
 import { keccak_256 as keccak256 } from 'js-sha3';
 import { bytesToHex } from '~/api/util/format';
+import KeccakWasm from './keccak.wasm';
+
+const NOOP = () => {};
+
+function align (mem) {
+  return (Math.ceil(mem / 8) * 8) | 0;
+}
+
+const STATIC_BASE = 1024;
+const STATICTOP = STATIC_BASE + 3776;
+const STACK_BASE = align(STATICTOP + 16);
+const STACKTOP = STACK_BASE;
+const DYNAMICTOP_PTR = 0;
+const WASM_PAGE_SIZE = 65536;
+const TOTAL_STACK = 20 * WASM_PAGE_SIZE; // 5242880;
+const TOTAL_MEMORY = 16777216;
+const STACK_MAX = STACK_BASE + TOTAL_STACK;
+const wasmMemory = new WebAssembly.Memory({
+  initial: TOTAL_MEMORY / WASM_PAGE_SIZE,
+  maximum: TOTAL_MEMORY / WASM_PAGE_SIZE
+});
+const wasmTable = new WebAssembly.Table({
+  initial: 8,
+  maximum: 8,
+  element: 'anyfunc'
+});
+const wasmHeap = new Uint8Array(wasmMemory.buffer);
+
+function abort (what) {
+  throw new Error(what || 'WASM abort');
+}
+
+function abortOnCannotGrowMemory () {
+  abort(`Cannot enlarge memory arrays.`);
+}
+
+function enlargeMemory () {
+  abortOnCannotGrowMemory();
+}
+
+function getTotalMemory () {
+  return TOTAL_MEMORY;
+}
+
+function memcpy (dest, src, len) {
+  wasmHeap.set(wasmHeap.subarray(src, src + len), dest);
+
+  return dest;
+}
+
+const keccakWasm = new KeccakWasm({
+  global: {},
+  env: {
+    DYNAMICTOP_PTR,
+    STACKTOP,
+    STACK_MAX,
+    abort,
+    enlargeMemory,
+    getTotalMemory,
+    abortOnCannotGrowMemory,
+    ___lock: NOOP,
+    ___syscall6: () => 0,
+    ___setErrNo: (no) => no,
+    _abort: abort,
+    ___syscall140: () => 0,
+    _emscripten_memcpy_big: memcpy,
+    ___syscall54: () => 0,
+    ___unlock: NOOP,
+    _llvm_trap: abort.bind(null, 'trap'),
+    ___syscall146: () => 0,
+    'memory': wasmMemory,
+    'table': wasmTable,
+    tableBase: 0,
+    memoryBase: STATIC_BASE
+  }
+});
+
+console.log(keccakWasm.exports);
 
 const isWorker = typeof self !== 'undefined';
 
@@ -44,14 +124,27 @@ function route ({ action, payload }) {
 
 const actions = {
   phraseToWallet (phrase) {
-    let secret = keccak256.array(phrase);
+    const phraseUtf8 = Buffer.from(phrase, 'utf8');
+    const inputPtr = keccakWasm.exports._malloc(Math.max(32, phraseUtf8.length));
+    const outputPtr = keccakWasm.exports._malloc(32);
 
-    for (let i = 0; i < 16384; i++) {
-      secret = keccak256.array(secret);
-    }
+    wasmHeap.set(phraseUtf8, inputPtr);
+
+    const secret = wasmHeap.subarray(outputPtr, outputPtr + 32);
+
+    keccakWasm.exports._brain_base(inputPtr, phraseUtf8.length, outputPtr);
+
+    // for (let i = 0; i < 16384; i += 2) {
+    //   // wasmHeap.copyWithin(inputPtr, outputPtr, outputPtr + 32);
+    //   keccakWasm.exports._keccak256(outputPtr, 32, inputPtr);
+    //   keccakWasm.exports._keccak256(inputPtr, 32, outputPtr);
+    // }
 
     while (true) {
-      secret = keccak256.array(secret);
+      wasmHeap.copyWithin(inputPtr, outputPtr, outputPtr + 32);
+      keccakWasm.exports._keccak256(inputPtr, 32, outputPtr);
+
+      // secret = keccak256.array(secret);
 
       const secretBuf = Buffer.from(secret);
 
@@ -69,6 +162,9 @@ const actions = {
           public: bytesToHex(publicBuf),
           address: bytesToHex(address)
         };
+
+        // keccakWasm.exports._free(inputPtr);
+        // keccakWasm.exports._free(outputPtr);
 
         return wallet;
       }
