@@ -28,8 +28,6 @@ use ethcore_bigint::hash::H256;
 
 const LEDGER_VID: u16 = 0x2c97;
 const LEDGER_PIDS: [u16; 2] = [0x0000, 0x0001]; // Nano S and Blue
-const ETH_DERIVATION_PATH_BE: [u8; 17] =  [ 4,  0x80, 0, 0, 44,  0x80, 0, 0, 60,  0x80, 0, 0, 0,  0, 0, 0, 0 ];  // 44'/60'/0'/0
-const ETC_DERIVATION_PATH_BE: [u8; 21] =  [ 5,  0x80, 0, 0, 44,  0x80, 0, 0, 60,  0x80, 0x02, 0x73, 0xd0,  0x80, 0, 0, 0,  0, 0, 0, 0 ];  // 44'/60'/160720'/0'/0
 
 const APDU_TAG: u8 = 0x05;
 const APDU_CLA: u8 = 0xe0;
@@ -44,13 +42,13 @@ mod commands {
 }
 
 /// Key derivation paths used on ledger wallets.
-#[derive(Debug, Clone, Copy)]
+/*#[derive(Debug, Clone, Copy)]
 pub enum KeyPath {
 	/// Ethereum.
 	Ethereum,
 	/// Ethereum classic.
 	EthereumClassic,
-}
+}*/
 
 /// Hardware waller error.
 #[derive(Debug)]
@@ -86,7 +84,7 @@ impl From<hidapi::HidError> for Error {
 pub struct Manager {
 	usb: hidapi::HidApi,
 	devices: Vec<Device>,
-	key_path: KeyPath,
+	key_path: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -101,7 +99,7 @@ impl Manager {
 		let manager = Manager {
 			usb: hidapi::HidApi::new()?,
 			devices: Vec::new(),
-			key_path: KeyPath::Ethereum,
+			key_path: Vec::new(),
 		};
 		Ok(manager)
 	}
@@ -134,13 +132,13 @@ impl Manager {
 	}
 
 	/// Select key derivation path for a known chain.
-	pub fn set_key_path(&mut self, key_path: KeyPath) {
+	pub fn set_key_path(&mut self, key_path: Vec<u8>) {
 		self.key_path = key_path;
 	}
 
 	fn read_device_info(&self, dev_info: &hidapi::HidDeviceInfo) -> Result<Device, Error> {
 		let mut handle = self.open_path(&dev_info.path)?;
-		let address = Self::read_wallet_address(&mut handle, self.key_path)?;
+		let address = Self::read_wallet_address(&mut handle, self.key_path.clone())?;
 		let manufacturer = dev_info.manufacturer_string.clone().unwrap_or("Unknown".to_owned());
 		let name = dev_info.product_string.clone().unwrap_or("Unknown".to_owned());
 		let serial = dev_info.serial_number.clone().unwrap_or("Unknown".to_owned());
@@ -155,7 +153,7 @@ impl Manager {
 		})
 	}
 
-	fn read_wallet_address(handle: &hidapi::HidDevice, key_path: KeyPath) -> Result<Address, Error> {
+	fn read_wallet_address(handle: &hidapi::HidDevice, key_path: Vec<u8>) -> Result<Address, Error> {
 		let ver = Self::send_apdu(handle, commands::GET_APP_CONFIGURATION, 0, 0, &[])?;
 		if ver.len() != 4 {
 			return Err(Error::Protocol("Version packet size mismatch"));
@@ -166,13 +164,7 @@ impl Manager {
 			return Err(Error::Protocol("App version 1.0.3 is required."));
 		}
 
-		let eth_path = &ETH_DERIVATION_PATH_BE[..];
-		let etc_path = &ETC_DERIVATION_PATH_BE[..];
-		let derivation_path = match key_path {
-			KeyPath::Ethereum => eth_path,
-			KeyPath::EthereumClassic => etc_path,
-		};
-		let key_and_address = Self::send_apdu(handle, commands::GET_ETH_PUBLIC_ADDRESS, 0, 0, derivation_path)?;
+		let key_and_address = Self::send_apdu(handle, commands::GET_ETH_PUBLIC_ADDRESS, 0, 0, &key_path[..])?;
 		if key_and_address.len() != 107 { // 1 + 65 PK + 1 + 40 Addr (ascii-hex)
 			return Err(Error::Protocol("Key packet size mismatch"));
 		}
@@ -202,16 +194,10 @@ impl Manager {
 
 		let handle = self.open_path(&device.path)?;
 
-		let eth_path = &ETH_DERIVATION_PATH_BE[..];
-		let etc_path = &ETC_DERIVATION_PATH_BE[..];
-		let derivation_path = match self.key_path {
-			KeyPath::Ethereum => eth_path,
-			KeyPath::EthereumClassic => etc_path,
-		};
 		const MAX_CHUNK_SIZE: usize = 255;
 		let mut chunk: [u8; MAX_CHUNK_SIZE] = [0; MAX_CHUNK_SIZE];
-		&mut chunk[0..derivation_path.len()].copy_from_slice(derivation_path);
-		let mut dest_offset = derivation_path.len();
+		&mut chunk[0..self.key_path.len()].copy_from_slice(&self.key_path[..]);
+		let mut dest_offset = self.key_path.len();
 		let mut data_pos = 0;
 		let mut result;
 		loop {

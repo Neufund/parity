@@ -31,7 +31,7 @@ use ethstore::{
 use ethstore::dir::MemoryDirectory;
 use ethstore::ethkey::{Address, Message, Public, Secret, Random, Generator};
 use ethjson::misc::AccountMeta;
-use hardware_wallet::{Error as HardwareError, HardwareWalletManager, KeyPath};
+use hardware_wallet::{Error as HardwareError, HardwareWalletManager, ETH_DERIVATION_PATH_BE, ETC_DERIVATION_PATH_BE};
 pub use ethstore::ethkey::Signature;
 pub use ethstore::{Derivation, IndexDerivation, KeyFile};
 
@@ -133,6 +133,8 @@ pub struct AccountProviderSettings {
 	pub enable_hardware_wallets: bool,
 	/// Use the classic chain key on the hardware wallet.
 	pub hardware_wallet_classic_key: bool,
+	/// Override key path on the hardware wallet.
+	pub hardware_wallet_key_path: Vec<u8>,
 }
 
 impl Default for AccountProviderSettings {
@@ -140,6 +142,7 @@ impl Default for AccountProviderSettings {
 		AccountProviderSettings {
 			enable_hardware_wallets: false,
 			hardware_wallet_classic_key: false,
+			hardware_wallet_key_path: Vec::new(),
 		}
 	}
 }
@@ -151,7 +154,11 @@ impl AccountProvider {
 		if settings.enable_hardware_wallets {
 			match HardwareWalletManager::new() {
 				Ok(manager) => {
-					manager.set_key_path(if settings.hardware_wallet_classic_key { KeyPath::EthereumClassic } else { KeyPath::Ethereum });
+					let path_be = if settings.hardware_wallet_key_path.is_empty()
+						{ if settings.hardware_wallet_classic_key { ETC_DERIVATION_PATH_BE.to_vec() } else { ETH_DERIVATION_PATH_BE.to_vec() } }
+						else
+						{ settings.hardware_wallet_key_path };
+					manager.set_key_path(path_be);
 					hardware_store = Some(manager)
 				},
 				Err(e) => debug!("Error initializing hardware wallets: {}", e),

@@ -35,7 +35,10 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use ethkey::{Address, Signature};
 
-pub use ledger::KeyPath;
+// pub static ETH_DERIVATION_PATH: &'static str = "44'/60'/0'/0";
+// pub static ETC_DERIVATION_PATH: &'static str = "44'/60'/160720'/0'/0";
+pub const ETH_DERIVATION_PATH_BE: [u8; 17] =  [ 4,  0x80, 0, 0, 44,  0x80, 0, 0, 60,  0x80, 0, 0, 0,  0, 0, 0, 0 ];  // 44'/60'/0'/0
+pub const ETC_DERIVATION_PATH_BE: [u8; 21] =  [ 5,  0x80, 0, 0, 44,  0x80, 0, 0, 60,  0x80, 0x02, 0x73, 0xd0,  0x80, 0, 0, 0,  0, 0, 0, 0 ];  // 44'/60'/160720'/0'/0
 
 /// Hardware waller error.
 #[derive(Debug)]
@@ -151,7 +154,7 @@ impl HardwareWalletManager {
 	}
 
 	/// Select key derivation path for a chain.
-	pub fn set_key_path(&self, key_path: KeyPath) {
+	pub fn set_key_path(&self, key_path: Vec<u8>) {
 		self.ledger.lock().set_key_path(key_path);
 	}
 

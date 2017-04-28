@@ -180,6 +180,7 @@ pub struct AccountsConfig {
 	pub password_files: Vec<String>,
 	pub unlocked_accounts: Vec<Address>,
 	pub enable_hardware_wallets: bool,
+	pub hardware_wallet_key_path: Vec<u8>,
 }
 
 impl Default for AccountsConfig {
@@ -190,6 +191,7 @@ impl Default for AccountsConfig {
 			password_files: Vec::new(),
 			unlocked_accounts: Vec::new(),
 			enable_hardware_wallets: true,
+			hardware_wallet_key_path: Vec::new(),
 		}
 	}
 }

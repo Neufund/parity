@@ -105,6 +105,8 @@ usage! {
 			or |c: &Config| otry!(c.account).keys_iterations.clone(),
 		flag_no_hardware_wallets: bool = false,
 			or |c: &Config| otry!(c.account).disable_hardware.clone(),
+		flag_hardware_wallet_key_path: Option<String> = None,
+			or |c: &Config| otry!(c.account).hardware_wallet_key_path.clone().map(Some),
 
 
 		flag_force_ui: bool = false,
@@ -414,6 +416,7 @@ struct Account {
 	password: Option<Vec<String>>,
 	keys_iterations: Option<u32>,
 	disable_hardware: Option<bool>,
+	hardware_wallet_key_path: Option<String>,
 }
 
 #[derive(Default, Debug, PartialEq, RustcDecodable)]
@@ -907,6 +910,7 @@ mod tests {
 				password: Some(vec!["passwdfile path".into()]),
 				keys_iterations: None,
 				disable_hardware: None,
+				//hardware_wallet_key_path: Some("44'/60'/103'/0".into()),
 			}),
 			ui: Some(Ui {
 				force: None,

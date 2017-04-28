@@ -42,6 +42,7 @@ extern crate serde;
 extern crate serde_json;
 extern crate time;
 extern crate toml;
+extern crate byteorder;
 
 extern crate ethcore;
 extern crate ethcore_devtools as devtools;

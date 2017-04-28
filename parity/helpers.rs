@@ -13,7 +13,7 @@
 
 // You should have received a copy of the GNU General Public License
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
-
+use std;
 use std::{io, env};
 use std::io::{Write, BufReader, BufRead};
 use std::time::Duration;
@@ -28,6 +28,7 @@ use upgrade::{upgrade, upgrade_data_paths};
 use migration::migrate;
 use ethsync::is_valid_node_url;
 use path;
+use byteorder::{BigEndian, WriteBytesExt};
 
 pub fn to_duration(s: &str) -> Result<Duration, String> {
 	to_seconds(s).map(Duration::from_secs)
@@ -50,6 +51,34 @@ fn to_seconds(s: &str) -> Result<u64, String> {
 		x if x.ends_with("hours") => x[0..x.len() - 5].parse::<u64>().map_err(bad).map(|x| x * 60 * 60),
 		x if x.ends_with("days") => x[0..x.len() - 4].parse::<u64>().map_err(bad).map(|x| x * 24 * 60 * 60),
 		x => x.parse().map_err(bad),
+	}
+}
+
+pub fn to_bip32_path_be(key_path: &Option<String>) -> Result<Vec<u8>, String> {
+	match *key_path {
+		Some(ref p) => {
+			let elems: Vec<_> = p.split('/').collect();
+			if elems.len() < 2 || elems.len() > std::u8::MAX as usize {
+				// Err("bip32 path must have more than 2 components")
+				//println!("bip32 path must have more than 2 components");
+			}
+			if elems[0] != "44'" || elems[1] != "60'" {
+				// Err("only bip32 paths starting with 44'/60' are supported")
+				//println!("only bip32 paths starting with 44'/60' are supported");
+			}
+			let mut path_be: Vec<u8> = Vec::with_capacity(elems.len()+1);
+			path_be.write_u8(elems.len() as u8).unwrap();
+			for e in elems {
+				let ue = if e.ends_with("'")
+					{ e[0..e.len()-1].parse::<u32>().unwrap() | 0x80000000 }
+				    else
+					{e.parse::<u32>().unwrap() };
+				path_be.write_u32::<BigEndian>(ue).unwrap();
+			    //println!("{:X}", ue);
+			}
+			Ok(path_be)
+		},
+		None => Ok(vec![])
 	}
 }
 
