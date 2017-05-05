@@ -388,6 +388,7 @@ impl Configuration {
 				verifier_settings: verifier_settings,
 				serve_light: !self.args.flag_no_serve_light,
 				light: self.args.flag_light,
+				no_persistent_txqueue: self.args.flag_no_persistent_txqueue,
 			};
 			Cmd::Run(run_cmd)
 		};
@@ -1126,7 +1127,7 @@ mod tests {
 			format: Default::default(),
 			pruning: Default::default(),
 			pruning_history: 64,
-			pruning_memory: 75,
+			pruning_memory: 32,
 			compaction: Default::default(),
 			wal: true,
 			tracing: Default::default(),
@@ -1149,7 +1150,7 @@ mod tests {
 			file_path: Some("blockchain.json".into()),
 			pruning: Default::default(),
 			pruning_history: 64,
-			pruning_memory: 75,
+			pruning_memory: 32,
 			format: Default::default(),
 			compaction: Default::default(),
 			wal: true,
@@ -1172,7 +1173,7 @@ mod tests {
 			file_path: Some("state.json".into()),
 			pruning: Default::default(),
 			pruning_history: 64,
-			pruning_memory: 75,
+			pruning_memory: 32,
 			format: Default::default(),
 			compaction: Default::default(),
 			wal: true,
@@ -1197,7 +1198,7 @@ mod tests {
 			file_path: Some("blockchain.json".into()),
 			pruning: Default::default(),
 			pruning_history: 64,
-			pruning_memory: 75,
+			pruning_memory: 32,
 			format: Some(DataFormat::Hex),
 			compaction: Default::default(),
 			wal: true,
@@ -1233,7 +1234,7 @@ mod tests {
 			spec: Default::default(),
 			pruning: Default::default(),
 			pruning_history: 64,
-			pruning_memory: 75,
+			pruning_memory: 32,
 			daemon: None,
 			logger_config: Default::default(),
 			miner_options: Default::default(),
@@ -1272,6 +1273,7 @@ mod tests {
 			verifier_settings: Default::default(),
 			serve_light: true,
 			light: false,
+			no_persistent_txqueue: false,
 		};
 		expected.secretstore_conf.enabled = cfg!(feature = "secretstore");
 		assert_eq!(conf.into_command().unwrap().cmd, Cmd::Run(expected));
@@ -1371,13 +1373,13 @@ mod tests {
 		let conf0 = parse(&["parity"]);
 		let conf1 = parse(&["parity", "--jsonrpc-hosts", "none"]);
 		let conf2 = parse(&["parity", "--jsonrpc-hosts", "all"]);
-		let conf3 = parse(&["parity", "--jsonrpc-hosts", "ethcore.io,something.io"]);
+		let conf3 = parse(&["parity", "--jsonrpc-hosts", "parity.io,something.io"]);
 
 		// then
 		assert_eq!(conf0.rpc_hosts(), Some(Vec::new()));
 		assert_eq!(conf1.rpc_hosts(), Some(Vec::new()));
 		assert_eq!(conf2.rpc_hosts(), None);
-		assert_eq!(conf3.rpc_hosts(), Some(vec!["ethcore.io".into(), "something.io".into()]));
+		assert_eq!(conf3.rpc_hosts(), Some(vec!["parity.io".into(), "something.io".into()]));
 	}
 
 	#[test]
@@ -1388,13 +1390,13 @@ mod tests {
 		let conf0 = parse(&["parity"]);
 		let conf1 = parse(&["parity", "--ipfs-api-hosts", "none"]);
 		let conf2 = parse(&["parity", "--ipfs-api-hosts", "all"]);
-		let conf3 = parse(&["parity", "--ipfs-api-hosts", "ethcore.io,something.io"]);
+		let conf3 = parse(&["parity", "--ipfs-api-hosts", "parity.io,something.io"]);
 
 		// then
 		assert_eq!(conf0.ipfs_hosts(), Some(Vec::new()));
 		assert_eq!(conf1.ipfs_hosts(), Some(Vec::new()));
 		assert_eq!(conf2.ipfs_hosts(), None);
-		assert_eq!(conf3.ipfs_hosts(), Some(vec!["ethcore.io".into(), "something.io".into()]));
+		assert_eq!(conf3.ipfs_hosts(), Some(vec!["parity.io".into(), "something.io".into()]));
 	}
 
 	#[test]
@@ -1404,12 +1406,12 @@ mod tests {
 		// when
 		let conf0 = parse(&["parity"]);
 		let conf1 = parse(&["parity", "--ipfs-api-cors", "*"]);
-		let conf2 = parse(&["parity", "--ipfs-api-cors", "http://ethcore.io,http://something.io"]);
+		let conf2 = parse(&["parity", "--ipfs-api-cors", "http://parity.io,http://something.io"]);
 
 		// then
 		assert_eq!(conf0.ipfs_cors(), None);
 		assert_eq!(conf1.ipfs_cors(), Some(vec!["*".into()]));
-		assert_eq!(conf2.ipfs_cors(), Some(vec!["http://ethcore.io".into(),"http://something.io".into()]));
+		assert_eq!(conf2.ipfs_cors(), Some(vec!["http://parity.io".into(),"http://something.io".into()]));
 	}
 
 	#[test]
