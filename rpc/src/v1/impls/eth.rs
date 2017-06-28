@@ -573,21 +573,20 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 		let logs = limit_logs(logs, filter.limit);
 
 		let logs_details_vector: Result<Vec<LogDetails>, Error> = logs.into_iter().map(|log| {
-				let mut cloned_log = log.clone();
+				let cloned_log = log.clone();
 
 				let block_hash_clone = cloned_log.block_hash.clone();
 				let transaction_hash_clone = cloned_log.transaction_hash.clone();
 
 				let mut timestamp:Option<u64> = None;
-				let mut transaction_value:Option<RpcU256> = None;
+
+				let transaction_unwrapped = TransactionId::Hash(cloned_log.transaction_hash.unwrap().into());
+				let transaction_value = Some(take_weak!(self.client).transaction(transaction_unwrapped).unwrap().value.into());
 
 				if cloned_log.block_hash != None{
-					let mut block_hash = cloned_log.block_hash.unwrap().into();
+					let block_hash = cloned_log.block_hash.unwrap().into();
 					let block_hash_unwrapped = BlockId::Hash(block_hash);
 					timestamp = Some(take_weak!(self.client).block_header(block_hash_unwrapped).unwrap().timestamp());
-
-					let transaction_unwrapped = TransactionId::Hash(cloned_log.transaction_hash.unwrap().into());
-					transaction_value = Some(take_weak!(self.client).transaction(transaction_unwrapped).unwrap().value.into());
 				}
 
 				Ok(LogDetails {
