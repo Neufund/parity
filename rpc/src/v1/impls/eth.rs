@@ -555,7 +555,7 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 
 		Ok(compilers)
 	}
-//	Result<Vec<LogDetails>, Error>
+
 	fn logs_details(&self, filter: Filter) ->  Result<Vec<LogDetails>, Error>{
 		let include_pending = filter.to_block == Some(BlockNumber::Pending);
 		let filter: EthcoreFilter = filter.into();
@@ -573,19 +573,23 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 		let logs = limit_logs(logs, filter.limit);
 
 		let logs_details_vector: Result<Vec<LogDetails>, Error> = logs.into_iter().map(|log| {
-				let cloned_log = log.clone();
+				let mut cloned_log = log.clone();
 
 				let block_hash_clone = cloned_log.block_hash.clone();
-				let block_hash_unwrapped = BlockId::Hash(cloned_log.block_hash.unwrap().into());
-				let timestamp = take_weak!(self.client).block_header(block_hash_unwrapped).unwrap().timestamp();
-
 				let transaction_hash_clone = cloned_log.transaction_hash.clone();
-				let transaction_unwrapped = TransactionId::Hash(cloned_log.transaction_hash.unwrap().into());
 
-				let transaction_value = take_weak!(self.client).transaction(transaction_unwrapped).unwrap().value.into();
-				//                      let transaction_value = self.transaction(transaction_unwrapped).unwrap();
-//				warn!(target: "miner", "{:?}", transaction_value);
-//				Result<(), Error>
+				let mut timestamp:Option<u64> = None;
+				let mut transaction_value:Option<RpcU256> = None;
+
+				if cloned_log.block_hash != None{
+					let mut block_hash = cloned_log.block_hash.unwrap().into();
+					let block_hash_unwrapped = BlockId::Hash(block_hash);
+					timestamp = Some(take_weak!(self.client).block_header(block_hash_unwrapped).unwrap().timestamp());
+
+					let transaction_unwrapped = TransactionId::Hash(cloned_log.transaction_hash.unwrap().into());
+					transaction_value = Some(take_weak!(self.client).transaction(transaction_unwrapped).unwrap().value.into());
+				}
+
 				Ok(LogDetails {
 					address: cloned_log.address.into(),
 					topics: cloned_log.topics.into_iter().map(Into::into).collect(),
@@ -602,9 +606,6 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 				})
 			}
 		).collect();
-//		warn!(target: "miner", "PRINT TEST TEST");
-//
-//		warn!(target: "miner", "Details are {:?}", logs_details_vector);
 
 		logs_details_vector
 	}
