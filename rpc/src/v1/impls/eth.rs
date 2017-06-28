@@ -583,7 +583,7 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 				let transaction_unwrapped = TransactionId::Hash(cloned_log.transaction_hash.unwrap().into());
 				let transaction_value = Some(take_weak!(self.client).transaction(transaction_unwrapped).unwrap().value.into());
 
-				if cloned_log.block_hash != None{
+				if cloned_log.block_hash != None {
 					let block_hash = cloned_log.block_hash.unwrap().into();
 					let block_hash_unwrapped = BlockId::Hash(block_hash);
 					timestamp = Some(take_weak!(self.client).block_header(block_hash_unwrapped).unwrap().timestamp());
