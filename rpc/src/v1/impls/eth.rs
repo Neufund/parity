@@ -46,7 +46,7 @@ use self::ethash::SeedHashCompute;
 use v1::traits::Eth;
 use v1::types::{
 	RichBlock, Block, BlockTransactions, BlockNumber, Bytes, SyncStatus, SyncInfo,
-	Transaction, CallRequest, Index, Filter, Log, Receipt, Work, DappId,
+	Transaction, CallRequest, Index, Filter, Log, LogDetails, Receipt, Work, DappId,
 	H64 as RpcH64, H256 as RpcH256, H160 as RpcH160, U256 as RpcU256,
 };
 use v1::helpers::{CallRequest as CRequest, errors, limit_logs};
@@ -554,6 +554,59 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 		}
 
 		Ok(compilers)
+	}
+
+	fn logs_details(&self, filter: Filter) ->  Result<Vec<LogDetails>, Error>{
+		let include_pending = filter.to_block == Some(BlockNumber::Pending);
+		let filter: EthcoreFilter = filter.into();
+		let mut logs = take_weak!(self.client).logs(filter.clone())
+			.into_iter()
+			.map(From::from)
+			.collect::<Vec<Log>>();
+
+		if include_pending {
+			let best_block = take_weak!(self.client).chain_info().best_block_number;
+			let pending = pending_logs(&*take_weak!(self.miner), best_block, &filter);
+			logs.extend(pending);
+		}
+
+		let logs = limit_logs(logs, filter.limit);
+
+		let logs_details_vector: Result<Vec<LogDetails>, Error> = logs.into_iter().map(|log| {
+				let cloned_log = log.clone();
+
+				let block_hash_clone = cloned_log.block_hash.clone();
+				let transaction_hash_clone = cloned_log.transaction_hash.clone();
+
+				let mut timestamp:Option<u64> = None;
+
+				let transaction_unwrapped = TransactionId::Hash(cloned_log.transaction_hash.unwrap().into());
+				let transaction_value = Some(take_weak!(self.client).transaction(transaction_unwrapped).unwrap().value.into());
+
+				if cloned_log.block_hash != None {
+					let block_hash = cloned_log.block_hash.unwrap().into();
+					let block_hash_unwrapped = BlockId::Hash(block_hash);
+					timestamp = Some(take_weak!(self.client).block_header(block_hash_unwrapped).unwrap().timestamp());
+				}
+
+				Ok(LogDetails {
+					address: cloned_log.address.into(),
+					topics: cloned_log.topics.into_iter().map(Into::into).collect(),
+					data: cloned_log.data.into(),
+					block_hash: block_hash_clone.into(),
+					block_number: cloned_log.block_number.into(),
+					transaction_hash: transaction_hash_clone.into(),
+					transaction_index: cloned_log.transaction_index.into(),
+					log_index: cloned_log.log_index.into(),
+					transaction_log_index: cloned_log.transaction_log_index.into(),
+					log_type: "mined".to_owned(),
+					timestamp: timestamp,
+					value: transaction_value
+				})
+			}
+		).collect();
+
+		logs_details_vector
 	}
 
 	fn logs(&self, filter: Filter) -> Result<Vec<Log>, Error> {
