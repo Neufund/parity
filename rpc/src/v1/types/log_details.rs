@@ -16,9 +16,10 @@
 
 use ethcore::log_entry::{LocalizedLogEntry, LogEntry};
 use v1::types::{Bytes, H160, H256, U256};
-/// Log
+
+/// LogDetails
 #[derive(Debug, Serialize, PartialEq, Eq, Hash, Clone)]
-pub struct LogDetails{
+pub struct LogDetails {
 	/// H160
 	pub address: H160,
 	/// Topics
@@ -46,11 +47,9 @@ pub struct LogDetails{
 	/// Log Type
 	#[serde(rename="type")]
 	pub log_type: String,
-
-	#[serde(rename="timestamp")]
+	/// Timestamp of a block with log entry
 	pub timestamp: Option<u64>,
-
-	#[serde(rename="value")]
+	/// Ether value of transaction that created log entry
 	pub value: Option<U256>
 }
 
