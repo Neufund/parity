@@ -21,7 +21,7 @@ use jsonrpc_macros::Trailing;
 use futures::BoxFuture;
 
 use v1::types::{RichBlock, BlockNumber, Bytes, CallRequest, Filter, FilterChanges, Index};
-use v1::types::{Log, Receipt, SyncStatus, Transaction, Work};
+use v1::types::{Log, LogDetails, Receipt, SyncStatus, Transaction, Work};
 use v1::types::{H64, H160, H256, U256};
 
 build_rpc_trait! {
@@ -164,6 +164,10 @@ build_rpc_trait! {
 		/// Returns logs matching given filter object.
 		#[rpc(name = "eth_getLogs")]
 		fn logs(&self, Filter) -> Result<Vec<Log>, Error>;
+
+		/// Returns logs matching given filter object.
+		#[rpc(name = "eth_getLogsDetails")]
+		fn logs_details(&self, Filter) -> Result<Vec<LogDetails>, Error>;
 
 		/// Returns the hash of the current block, the seedHash, and the boundary condition to be met.
 		#[rpc(name = "eth_getWork")]

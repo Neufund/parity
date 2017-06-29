@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use util::hash::H256;
-use v1::types::{Filter, Log};
+use v1::types::{Filter, Log, LogDetails};
 
 pub type BlockNumber = u64;
 
