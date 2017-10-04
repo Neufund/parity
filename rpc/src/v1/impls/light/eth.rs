@@ -20,6 +20,7 @@
 #![allow(unused_imports, unused_variables)]
 
 use std::sync::Arc;
+use std::any::Any;
 
 use jsonrpc_core::Error;
 use jsonrpc_macros::Trailing;
@@ -52,7 +53,7 @@ use v1::helpers::light_fetch::LightFetch;
 use v1::traits::Eth;
 use v1::types::{
 	RichBlock, Block, BlockTransactions, BlockNumber, Bytes, SyncStatus, SyncInfo,
-	Transaction, CallRequest, Index, Filter, Log, Receipt, Work,
+	Transaction, CallRequest, Index, Filter, Log, LogDetails, Receipt, Work,
 	H64 as RpcH64, H256 as RpcH256, H160 as RpcH160, U256 as RpcU256,
 };
 use v1::metadata::Metadata;
@@ -451,6 +452,12 @@ impl Eth for EthClient {
 			.boxed()
 	}
 
+	fn logs_details(&self, filter: Filter) -> BoxFuture<Vec<LogDetails>, Error> {
+		let limit = filter.limit;
+
+		Filterable::logs_details(self, filter.into()).boxed()
+	}
+
 	fn work(&self, _timeout: Trailing<u64>) -> Result<Work, Error> {
 		Err(errors::light_unimplemented(None))
 	}
@@ -478,6 +485,11 @@ impl Filterable for EthClient {
 
 	fn logs(&self, filter: EthcoreFilter) -> BoxFuture<Vec<Log>, Error> {
 		self.fetcher().logs(filter)
+	}
+
+	fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>, Error> {
+		let logs_details: Vec<LogDetails> = Vec::new();
+		future::ok(logs_details).boxed()
 	}
 
 	fn pending_logs(&self, _block_number: u64, _filter: &EthcoreFilter) -> Vec<Log> {

@@ -43,6 +43,7 @@ mod transaction_request;
 mod transaction_condition;
 mod uint;
 mod work;
+mod log_details;
 
 pub mod pubsub;
 
@@ -78,3 +79,4 @@ pub use self::transaction_request::TransactionRequest;
 pub use self::transaction_condition::TransactionCondition;
 pub use self::uint::{U128, U256};
 pub use self::work::Work;
+pub use self::log_details::LogDetails;

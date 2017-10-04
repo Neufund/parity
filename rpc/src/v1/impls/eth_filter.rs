@@ -28,7 +28,7 @@ use util::{H256, Mutex};
 use futures::{future, Future, BoxFuture};
 
 use v1::traits::EthFilter;
-use v1::types::{BlockNumber, Index, Filter, FilterChanges, Log, H256 as RpcH256, U256 as RpcU256};
+use v1::types::{BlockNumber, Index, Filter, FilterChanges, Log, LogDetails, H256 as RpcH256, U256 as RpcU256};
 use v1::helpers::{PollFilter, PollManager, limit_logs};
 use v1::impls::eth::pending_logs;
 
@@ -45,6 +45,9 @@ pub trait Filterable {
 
 	/// Get logs that match the given filter.
 	fn logs(&self, filter: EthcoreFilter) -> BoxFuture<Vec<Log>, Error>;
+
+	/// Get logs details that match the given filter.
+	fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>, Error>;
 
 	/// Get logs from the pending block.
 	fn pending_logs(&self, block_number: u64, filter: &EthcoreFilter) -> Vec<Log>;
@@ -88,6 +91,10 @@ impl<C, M> Filterable for EthFilterClient<C, M> where C: BlockChainClient, M: Mi
 	}
 
 	fn logs(&self, filter: EthcoreFilter) -> BoxFuture<Vec<Log>, Error> {
+		future::ok(self.client.logs(filter).into_iter().map(Into::into).collect()).boxed()
+	}
+
+	fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>, Error> {
 		future::ok(self.client.logs(filter).into_iter().map(Into::into).collect()).boxed()
 	}
 
