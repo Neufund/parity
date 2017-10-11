@@ -281,6 +281,13 @@ export default class CreateWalletStore {
     const daylimitValidation = validateUint(_wallet.daylimit);
     const nameValidation = validateName(_wallet.name);
 
+    const owners = _wallet.owners.filter((owner) => !/^(0x)?0*$/.test(owner));
+
+    // Real number of owners is owners + creator
+    if (_wallet.required > owners.length + 1) {
+      requiredValidation.valueError = 'the number of required validators should be lower or equal the number of owners';
+    }
+
     const errors = {
       address: addressValidation.addressError,
       account: accountValidation.addressError,
