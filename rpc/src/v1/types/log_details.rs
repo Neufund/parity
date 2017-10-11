@@ -47,12 +47,12 @@ pub struct LogDetails{
 	/// Log Type
 	#[serde(rename="type")]
 	pub log_type: String,
-
+	/// Timestamp of a block with log entry
 	#[serde(rename="timestamp")]
-	pub timestamp: u64,
-
+	pub timestamp: Option<u64>,
+	/// Ether value of transaction that created log entry
 	#[serde(rename="value")]
-	pub value: U256
+	pub value: Option<U256>
 }
 
 
@@ -69,8 +69,8 @@ impl From<LocalizedLogEntry> for LogDetails {
 			log_index: Some(e.log_index.into()),
 			transaction_log_index: Some(e.transaction_log_index.into()),
 			log_type: "mined".to_owned(),
-			timestamp: 123,
-			value: 0.into()
+			timestamp: None,
+			value: None
 		}
 	}
 }
@@ -88,8 +88,8 @@ impl From<LogEntry> for LogDetails {
 			log_index: None,
 			transaction_log_index: None,
 			log_type: "pending".to_owned(),
-			timestamp: 123,
-			value: 0.into()
+			timestamp: None,
+			value: None
 		}
 	}
 }

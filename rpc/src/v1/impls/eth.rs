@@ -565,19 +565,24 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 			let pending = pending_logs(&*self.miner, best_block, &filter);
 			logs.extend(pending);
 		}
+
 		let limited_logs = limit_logs(logs, filter.limit);
 
 		let logs_details: Vec<LogDetails> = limited_logs .iter().map(|log |{
 			let cloned_log = log.clone();
+			let mut timestamp: Option<u64> = None;
 
 			let block_hash_clone = cloned_log.block_hash.clone();
-			let block_hash_unwrapped = BlockId::Hash(cloned_log.block_hash.unwrap().into());
-			let timestamp = self.client.block_header(block_hash_unwrapped).unwrap().timestamp();
 
-			let transaction_hash_clone =cloned_log.transaction_hash.clone();
+			if cloned_log.block_hash != None {
+				let block_hash_unwrapped = BlockId::Hash(cloned_log.block_hash.unwrap().into());
+				timestamp = Some(self.client.block_header(block_hash_unwrapped).unwrap().timestamp());
+			}
+
+			let transaction_hash_clone = cloned_log.transaction_hash.clone();
 			let transaction_unwrapped = TransactionId::Hash(cloned_log.transaction_hash.unwrap().into());
 
-			let transaction_value = self.client.transaction(transaction_unwrapped).unwrap().value.into();
+			let transaction_value = Some(self.client.transaction(transaction_unwrapped).unwrap().value.into());
 
 			LogDetails{
 				address: cloned_log.address.into(),
