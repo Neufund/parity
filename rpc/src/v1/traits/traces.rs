@@ -17,7 +17,6 @@
 //! Traces specific rpc interface.
 
 use jsonrpc_core::Error;
-use jsonrpc_core::futures::BoxFuture;
 use jsonrpc_macros::Trailing;
 use v1::types::{TraceFilter, LocalizedTrace, BlockNumber, Index, CallRequest, Bytes, TraceResults, H256, TraceOptions};
 

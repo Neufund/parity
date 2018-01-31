@@ -28,7 +28,7 @@ export default class StatusStore {
   @observable netPort = new BigNumber(0);
   @observable nodeName = '';
   @observable rpcSettings = {};
-  @observable blockNumber = new BigNumber(0);
+
   @observable coinbase = '';
   @observable extraData = '';
   @observable gasFloorTarget = new BigNumber(0);

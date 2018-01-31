@@ -169,9 +169,9 @@ impl AccountProvider {
 	pub fn new(sstore: Box<SecretStore>, settings: AccountProviderSettings) -> Self {
 		let mut hardware_store = None;
 		if settings.enable_hardware_wallets {
-			let key_path = if settings.hardware_wallet_classic_key { KeyPath::EthereumClassic } else { KeyPath::Ethereum };
-			match HardwareWalletManager::new(key_path) {
+			match HardwareWalletManager::new() {
 				Ok(manager) => {
+					manager.set_key_path(if settings.hardware_wallet_classic_key { KeyPath::EthereumClassic } else { KeyPath::Ethereum });
 					hardware_store = Some(manager)
 				},
 				Err(e) => debug!("Error initializing hardware wallets: {}", e),

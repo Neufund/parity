@@ -84,8 +84,6 @@ pub struct Manager {
 	key_path: RwLock<KeyPath>,
 }
 
-
-
 #[derive(Debug)]
 struct Device {
 	path: String,
@@ -339,7 +337,6 @@ impl Manager {
 
 #[test]
 fn smoke() {
-	use super::KeyPath;
 	use rustc_hex::FromHex;
 	let hidapi = Arc::new(Mutex::new(hidapi::HidApi::new().unwrap()));
 	let manager = Manager::new(hidapi.clone());

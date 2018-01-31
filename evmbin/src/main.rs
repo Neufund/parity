@@ -51,13 +51,11 @@ use info::Informant;
 const USAGE: &'static str = r#"
 EVM implementation for Parity.
   Copyright 2016, 2017 Parity Technologies (UK) Ltd
-
 Usage:
     parity-evm state-test <file> [--json --only NAME --chain CHAIN]
     parity-evm stats [options]
     parity-evm [options]
     parity-evm [-h | --help]
-
 Transaction options:
     --code CODE        Contract code as hex (without 0x).
     --to ADDRESS       Recipient address (without 0x).
@@ -65,15 +63,9 @@ Transaction options:
     --input DATA       Input data as hex (without 0x).
     --gas GAS          Supplied gas as hex (without 0x).
     --gas-price WEI    Supplied gas price as hex (without 0x).
-
 State test options:
     --only NAME        Runs only a single test matching the name.
     --chain CHAIN      Run only tests from specific chain.
-
-State test options:
-    --only NAME        Runs only a single test matching the name.
-    --chain CHAIN      Run only tests from specific chain.
-
 General options:
     --json             Display verbose results in JSON.
     --chain CHAIN      Chain spec file path.

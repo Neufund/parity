@@ -96,7 +96,7 @@ impl<C, M> Filterable for EthFilterClient<C, M> where C: BlockChainClient, M: Mi
 	}
 
 	fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>, Error> {
-		future::ok(self.client.logs(filter).into_iter().map(Into::into).collect()).boxed()
+		Box::new(future::ok(self.client.logs(filter).into_iter().map(Into::into).collect()))
 	}
 
 	fn pending_logs(&self, block_number: u64, filter: &EthcoreFilter) -> Vec<Log> {

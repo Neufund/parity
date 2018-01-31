@@ -550,7 +550,7 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 
 		let limited_logs = limit_logs(logs, filter.limit);
 
-		let logs_details: Vec<LogDetails> = limited_logs .iter().map(|log |{
+		let logs_details: Vec<LogDetails> = limited_logs.iter().map(|log |{
 			let cloned_log = log.clone();
 			let mut timestamp: Option<u64> = None;
 
@@ -577,13 +577,12 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 				log_index: cloned_log.log_index.into(),
 				transaction_log_index: cloned_log.transaction_log_index.into(),
 				log_type: "mined".to_owned(),
-				timestamp:timestamp,
-				value:transaction_value
+				timestamp: timestamp,
+				value: transaction_value
 			}
 		}).collect();
 
-		future::ok(logs_details).boxed()
-
+		Box::new(future::ok(logs_details))
 	}
 
 	fn work(&self, no_new_work_timeout: Trailing<u64>) -> Result<Work, Error> {

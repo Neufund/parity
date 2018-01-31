@@ -70,10 +70,6 @@ export default class Signer {
     return this._updateSubscriptions('signer_requestsToConfirm', null, requests);
   }
 
-  updateSubscriptions (requests) {
-    return this._updateSubscriptions('signer_requestsToConfirm', null, requests);
-  }
-
   _listRequests = (doTimeout) => {
     const nextTimeout = (timeout = 1000, forceTimeout = doTimeout) => {
       if (forceTimeout) {

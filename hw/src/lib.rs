@@ -170,7 +170,7 @@ impl libusb::Hotplug for EventHandler {
 }
 
 impl HardwareWalletManager {
-	pub fn new(key_path: KeyPath) -> Result<HardwareWalletManager, Error> {
+	pub fn new() -> Result<HardwareWalletManager, Error> {
 		let usb_context = Arc::new(libusb::Context::new()?);
 		let hidapi = Arc::new(Mutex::new(hidapi::HidApi::new().map_err(|e| Error::Hid(e.to_string().clone()))?));
 		let ledger = Arc::new(ledger::Manager::new(hidapi.clone()));

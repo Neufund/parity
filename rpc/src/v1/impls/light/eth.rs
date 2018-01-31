@@ -485,9 +485,7 @@ impl<T: LightChainClient + 'static> Eth for EthClient<T> {
 	}
 
 	fn logs_details(&self, filter: Filter) -> BoxFuture<Vec<LogDetails>, Error> {
-		let limit = filter.limit;
-
-		Filterable::logs_details(self, filter.into()).boxed()
+		Box::new(Filterable::logs_details(self, filter.into()))
 	}
 
 	fn work(&self, _timeout: Trailing<u64>) -> Result<Work, Error> {
@@ -520,8 +518,8 @@ impl<T: LightChainClient + 'static> Filterable for EthClient<T> {
 	}
 
 	fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>, Error> {
-		let logs_details: Vec<LogDetails> = Vec::new();
-		future::ok(logs_details).boxed()
+		// let logs_details: Vec<LogDetails> = Vec::new();
+		self.fetcher().logs_details(filter)
 	}
 
 	fn pending_logs(&self, _block_number: u64, _filter: &EthcoreFilter) -> Vec<Log> {

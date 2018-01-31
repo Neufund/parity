@@ -24,7 +24,6 @@ use ethcore::transaction::SignedTransaction;
 use rlp::UntrustedRlp;
 
 use jsonrpc_core::Error;
-use jsonrpc_core::futures::{self, Future, BoxFuture};
 use jsonrpc_macros::Trailing;
 use v1::Metadata;
 use v1::traits::Traces;
@@ -91,9 +90,7 @@ impl<C, M> Traces for TracesClient<C, M> where C: MiningBlockChainClient + 'stat
 
 		self.client.call(&signed, to_call_analytics(flags), block.into())
 			.map(TraceResults::from)
-			.map_err(errors::call);
-
-		futures::done(res).boxed()
+			.map_err(errors::call)
 	}
 
 	fn call_many(&self, meta: Self::Metadata, requests: Vec<(CallRequest, TraceOptions)>, block: Trailing<BlockNumber>) -> Result<Vec<TraceResults>, Error> {
