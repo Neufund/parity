@@ -24,8 +24,10 @@ extern crate test;
 
 use self::test::{Bencher, black_box};
 
+use bigint::prelude::U256;
+use bigint::hash::H256;
 use util::*;
-use evm::action_params::ActionParams;
+use vm::ActionParams;
 use evm::{self, Factory, VMType};
 use evm::tests::FakeExt;
 

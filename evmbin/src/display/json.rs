@@ -18,10 +18,12 @@
 
 use ethcore::trace;
 use std::collections::HashMap;
-use util::{U256, H256, ToPretty};
+use bigint::prelude::U256;
+use bigint::hash::H256;
+use bytes::ToPretty;
 
 use display;
-use vm;
+use info as vm;
 
 /// JSON formatting informant.
 #[derive(Default)]
@@ -122,6 +124,9 @@ impl trace::VMTracer for Informant {
 		self.stack.extend_from_slice(stack_push);
 
 		if let Some((pos, data)) = mem_diff {
+			if self.memory.len() < (pos + data.len()) {
+				self.memory.resize(pos + data.len(), 0);
+			}
 			self.memory[pos..pos + data.len()].copy_from_slice(data);
 		}
 

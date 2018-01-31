@@ -43,7 +43,7 @@ impl<'a, T> Deserialize<'a> for VariadicValue<T> where T: DeserializeOwned {
 
 		from_value(v.clone()).map(VariadicValue::Single)
 			.or_else(|_| from_value(v).map(VariadicValue::Multiple))
-			.map_err(|_| D::Error::custom("Invalid type."))
+			.map_err(|err| D::Error::custom(format!("Invalid variadic value type: {}", err)))
 	}
 }
 
@@ -124,7 +124,7 @@ impl Serialize for FilterChanges {
 mod tests {
 	use serde_json;
 	use std::str::FromStr;
-	use util::hash::H256;
+	use bigint::hash::H256;
 	use super::{VariadicValue, Topic, Filter};
 	use v1::types::BlockNumber;
 	use ethcore::filter::Filter as EthFilter;

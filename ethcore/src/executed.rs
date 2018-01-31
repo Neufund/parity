@@ -16,8 +16,11 @@
 
 //! Transaction execution format module.
 
-use util::{Bytes, U256, Address, U512, trie};
-use evm;
+use bigint::prelude::{U256, U512};
+use util::Address;
+use bytes::Bytes;
+use trie;
+use vm;
 use trace::{VMTrace, FlatTrace};
 use log_entry::LogEntry;
 use state_diff::StateDiff;
@@ -28,7 +31,7 @@ use std::fmt;
 #[derive(Debug, PartialEq, Clone)]
 pub struct Executed {
 	/// True if the outer call/create resulted in an exceptional exit.
-	pub exception: Option<evm::Error>,
+	pub exception: Option<vm::Error>,
 
 	/// Gas paid up front for execution of transaction.
 	pub gas: U256,

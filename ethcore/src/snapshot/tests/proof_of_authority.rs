@@ -30,22 +30,22 @@ use spec::Spec;
 use tests::helpers;
 use transaction::{Transaction, Action, SignedTransaction};
 
-use util::{Address, Hashable};
-use util::kvdb;
+use util::Address;
+use kvdb_memorydb;
 
 const PASS: &'static str = "";
 const TRANSITION_BLOCK_1: usize = 2; // block at which the contract becomes activated.
 const TRANSITION_BLOCK_2: usize = 10; // block at which the second contract activates.
 
 macro_rules! secret {
-	($e: expr) => { Secret::from_slice(&$e.sha3()) }
+	($e: expr) => { Secret::from_slice(&$crate::hash::keccak($e)) }
 }
 
 lazy_static! {
 	// contract addresses.
 	static ref CONTRACT_ADDR_1: Address = Address::from_str("0000000000000000000000000000000000000005").unwrap();
 	static ref CONTRACT_ADDR_2: Address = Address::from_str("0000000000000000000000000000000000000006").unwrap();
-	// secret: `sha3(1)`, and initial validator.
+	// secret: `keccak(1)`, and initial validator.
 	static ref RICH_ADDR: Address = Address::from_str("7d577a597b2742b498cb5cf0c26cdcd726d39e6e").unwrap();
 	// rich address' secret.
 	static ref RICH_SECRET: Secret = secret!("1");
@@ -53,7 +53,7 @@ lazy_static! {
 
 
 /// Contract code used here: https://gist.github.com/anonymous/2a43783647e0f0dfcc359bd6fd81d6d9
-/// Account with secrets "1".sha3() is initially the validator.
+/// Account with secrets keccak("1") is initially the validator.
 /// Transitions to the contract at block 2, initially same validator set.
 /// Create a new Spec with AuthorityRound which uses a contract at address 5 to determine the current validators using `getValidators`.
 /// `native_contracts::test_contracts::ValidatorSet` provides a native wrapper for the ABi.
@@ -93,7 +93,7 @@ fn make_chain(accounts: Arc<AccountProvider>, blocks_beyond: usize, transitions:
 	let mut cur_signers = vec![*RICH_ADDR];
 	{
 		let engine = client.engine();
-		engine.register_client(Arc::downgrade(&client));
+		engine.register_client(Arc::downgrade(&client) as _);
 	}
 
 	{
@@ -130,7 +130,7 @@ fn make_chain(accounts: Arc<AccountProvider>, blocks_beyond: usize, transitions:
 				action: Action::Call(Address::new()),
 				value: 1.into(),
 				data: Vec::new(),
-			}.sign(&*RICH_SECRET, client.signing_network_id());
+			}.sign(&*RICH_SECRET, client.signing_chain_id());
 
 			*nonce = *nonce + 1.into();
 			vec![transaction]
@@ -176,7 +176,7 @@ fn make_chain(accounts: Arc<AccountProvider>, blocks_beyond: usize, transitions:
 							action: Action::Call(addr),
 							value: 0.into(),
 							data: data,
-						}.sign(&*RICH_SECRET, client.signing_network_id());
+						}.sign(&*RICH_SECRET, client.signing_chain_id());
 
 						pending.push(transaction);
 
@@ -238,7 +238,7 @@ fn fixed_to_contract_only() {
 	assert_eq!(client.chain_info().best_block_number, 11);
 	let reader = snapshot_helpers::snap(&*client);
 
-	let new_db = kvdb::in_memory(::db::NUM_COLUMNS.unwrap_or(0));
+	let new_db = kvdb_memorydb::create(::db::NUM_COLUMNS.unwrap_or(0));
 	let spec = spec_fixed_to_contract();
 
 	// ensure fresh engine's step matches.
@@ -270,7 +270,7 @@ fn fixed_to_contract_to_contract() {
 
 	assert_eq!(client.chain_info().best_block_number, 16);
 	let reader = snapshot_helpers::snap(&*client);
-	let new_db = kvdb::in_memory(::db::NUM_COLUMNS.unwrap_or(0));
+	let new_db = kvdb_memorydb::create(::db::NUM_COLUMNS.unwrap_or(0));
 	let spec = spec_fixed_to_contract();
 
 	for _ in 0..16 { spec.engine.step() }

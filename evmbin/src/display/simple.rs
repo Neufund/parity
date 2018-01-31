@@ -17,10 +17,10 @@
 //! Simple VM output.
 
 use ethcore::trace;
-use util::ToPretty;
+use bytes::ToPretty;
 
 use display;
-use vm;
+use info as vm;
 
 /// Simple formatting informant.
 #[derive(Default)]

@@ -15,7 +15,7 @@
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::net::{TcpListener};
 
 use ctrlc::CtrlC;
@@ -27,6 +27,7 @@ use ethcore::miner::{Miner, MinerService, ExternalMiner, MinerOptions};
 use ethcore::miner::{StratumOptions, Stratum};
 use ethcore::service::ClientService;
 use ethcore::snapshot;
+use ethcore::spec::{SpecParams, OptimizeFor};
 use ethcore::verification::queue::VerifierSettings;
 use ethsync::{self, SyncConfig};
 use fdlimit::raise_fd_limit;
@@ -37,7 +38,10 @@ use node_health;
 use parity_reactor::EventLoop;
 use parity_rpc::{NetworkSettings, informant, is_major_importing};
 use updater::{UpdatePolicy, Updater};
-use util::{Colour, version, Mutex, Condvar};
+use ansi_term::Colour;
+use util::version;
+use parking_lot::{Condvar, Mutex};
+use node_filter::NodeFilter;
 use util::journaldb::Algorithm;
 
 use params::{
@@ -83,6 +87,7 @@ pub struct RunCmd {
 	pub daemon: Option<String>,
 	pub logger_config: LogConfig,
 	pub miner_options: MinerOptions,
+	pub gas_price_percentile: usize,
 	pub ntp_servers: Vec<String>,
 	pub ws_conf: rpc::WsConfiguration,
 	pub http_conf: rpc::HttpConfiguration,
@@ -92,7 +97,7 @@ pub struct RunCmd {
 	pub warp_sync: bool,
 	pub public_node: bool,
 	pub acc_conf: AccountsConfig,
-	pub gas_pricer: GasPricerConfig,
+	pub gas_pricer_conf: GasPricerConfig,
 	pub miner_extras: MinerExtras,
 	pub update_policy: UpdatePolicy,
 	pub mode: Option<Mode>,
@@ -119,14 +124,15 @@ pub struct RunCmd {
 	pub serve_light: bool,
 	pub light: bool,
 	pub no_persistent_txqueue: bool,
+	pub whisper: ::whisper::Config
 }
 
-pub fn open_ui(ws_conf: &rpc::WsConfiguration, ui_conf: &rpc::UiConfiguration) -> Result<(), String> {
+pub fn open_ui(ws_conf: &rpc::WsConfiguration, ui_conf: &rpc::UiConfiguration, logger_config: &LogConfig) -> Result<(), String> {
 	if !ui_conf.enabled {
 		return Err("Cannot use UI command with UI turned off.".into())
 	}
 
-	let token = signer::generate_token_and_url(ws_conf, ui_conf)?;
+	let token = signer::generate_token_and_url(ws_conf, ui_conf, logger_config)?;
 	// Open a browser
 	url::open(&token.url);
 	// Print a message
@@ -169,10 +175,10 @@ impl ::local_store::NodeInfo for FullNodeInfo {
 fn execute_light(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> Result<(bool, Option<String>), String> {
 	use light::client as light_client;
 	use ethsync::{LightSyncParams, LightSync, ManageNetwork};
-	use util::RwLock;
+	use parking_lot::{Mutex, RwLock};
 
 	// load spec
-	let spec = cmd.spec.spec(&cmd.dirs.cache)?;
+	let spec = cmd.spec.spec(SpecParams::new(cmd.dirs.cache.as_ref(), OptimizeFor::Memory))?;
 
 	// load genesis hash
 	let genesis_hash = spec.genesis_header().hash();
@@ -204,7 +210,7 @@ fn execute_light(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) ->
 
 	// TODO: configurable cache size.
 	let cache = LightDataCache::new(Default::default(), ::time::Duration::minutes(GAS_CORPUS_EXPIRATION_MINUTES));
-	let cache = Arc::new(::util::Mutex::new(cache));
+	let cache = Arc::new(Mutex::new(cache));
 
 	// start client and create transaction queue.
 	let mut config = light_client::Config {
@@ -220,7 +226,16 @@ fn execute_light(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) ->
 	config.queue.max_mem_use = cmd.cache_config.queue() as usize * 1024 * 1024;
 	config.queue.verifier_settings = cmd.verifier_settings;
 
-	let service = light_client::Service::start(config, &spec, &db_dirs.client_path(algorithm), cache.clone())
+	// start on_demand service.
+	let on_demand = Arc::new(::light::on_demand::OnDemand::new(cache.clone()));
+
+	let sync_handle = Arc::new(RwLock::new(Weak::new()));
+	let fetch = ::light_helpers::EpochFetch {
+		on_demand: on_demand.clone(),
+		sync: sync_handle.clone(),
+	};
+
+	let service = light_client::Service::start(config, &spec, fetch, &db_dirs.client_path(algorithm), cache.clone())
 		.map_err(|e| format!("Error starting light client: {}", e))?;
 	let txq = Arc::new(RwLock::new(::light::transaction_queue::TransactionQueue::default()));
 	let provider = ::light::provider::LightProvider::new(service.client().clone(), txq.clone());
@@ -232,8 +247,14 @@ fn execute_light(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) ->
 		net_conf.boot_nodes = spec.nodes.clone();
 	}
 
-	// start on_demand service.
-	let on_demand = Arc::new(::light::on_demand::OnDemand::new(cache.clone()));
+	let mut attached_protos = Vec::new();
+	let whisper_factory = if cmd.whisper.enabled {
+		let whisper_factory = ::whisper::setup(cmd.whisper.target_message_pool_size, &mut attached_protos)
+			.map_err(|e| format!("Failed to initialize whisper: {}", e))?;
+		whisper_factory
+	} else {
+		None
+	};
 
 	// set network path.
 	net_conf.net_config_path = Some(db_dirs.network_path().to_string_lossy().into_owned());
@@ -243,9 +264,11 @@ fn execute_light(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) ->
 		network_id: cmd.network_id.unwrap_or(spec.network_id()),
 		subprotocol_name: ethsync::LIGHT_PROTOCOL,
 		handlers: vec![on_demand.clone()],
+		attached_protos: attached_protos,
 	};
 	let light_sync = LightSync::new(sync_params).map_err(|e| format!("Error starting network: {}", e))?;
 	let light_sync = Arc::new(light_sync);
+	*sync_handle.write() = Arc::downgrade(&light_sync);
 
 	// spin up event loop
 	let event_loop = EventLoop::spawn();
@@ -273,7 +296,7 @@ fn execute_light(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) ->
 	let rpc_stats = Arc::new(informant::RpcStats::default());
 
 	// the dapps server
-	let signer_service = Arc::new(signer::new_service(&cmd.ws_conf, &cmd.ui_conf));
+	let signer_service = Arc::new(signer::new_service(&cmd.ws_conf, &cmd.ui_conf, &cmd.logger_config));
 	let (node_health, dapps_deps) = {
 		let contract_client = Arc::new(::dapps::LightRegistrar {
 			client: service.client().clone(),
@@ -306,10 +329,9 @@ fn execute_light(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) ->
 			sync_status,
 			node_health,
 			contract_client: contract_client,
-			remote: event_loop.raw_remote(),
 			fetch: fetch.clone(),
 			signer: signer_service.clone(),
-			ui_address: cmd.ui_conf.address(),
+			ui_address: cmd.ui_conf.redirection_address(),
 		})
 	};
 
@@ -336,6 +358,8 @@ fn execute_light(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) ->
 		fetch: fetch,
 		geth_compatibility: cmd.geth_compatibility,
 		remote: event_loop.remote(),
+		whisper_rpc: whisper_factory,
+		gas_price_percentile: cmd.gas_price_percentile,
 	});
 
 	let dependencies = rpc::Dependencies {
@@ -381,7 +405,7 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 		// Check if Parity is already running
 		let addr = format!("{}:{}", cmd.ui_conf.interface, cmd.ui_conf.port);
 		if !TcpListener::bind(&addr as &str).is_ok() {
-			return open_ui(&cmd.ws_conf, &cmd.ui_conf).map(|_| (false, None));
+			return open_ui(&cmd.ws_conf, &cmd.ui_conf, &cmd.logger_config).map(|_| (false, None));
 		}
 	}
 
@@ -498,9 +522,12 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 	// prepare account provider
 	let account_provider = Arc::new(prepare_account_provider(&cmd.spec, &cmd.dirs, &spec.data_dir, cmd.acc_conf, &passwords)?);
 
+	// fetch service
+	let fetch = FetchClient::new().map_err(|e| format!("Error starting fetch client: {:?}", e))?;
+
 	// create miner
-	let initial_min_gas_price = cmd.gas_pricer.initial_min();
-	let miner = Miner::new(cmd.miner_options, cmd.gas_pricer.into(), &spec, Some(account_provider.clone()));
+	let initial_min_gas_price = cmd.gas_pricer_conf.initial_min();
+	let miner = Miner::new(cmd.miner_options, cmd.gas_pricer_conf.to_gas_pricer(fetch.clone()), &spec, Some(account_provider.clone()));
 	miner.set_author(cmd.miner_extras.author);
 	miner.set_gas_floor_target(cmd.miner_extras.gas_floor_target);
 	miner.set_gas_ceil_target(cmd.miner_extras.gas_ceil_target);
@@ -521,7 +548,7 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 		}
 
 		// Attempt to sign in the engine signer.
-		if !passwords.into_iter().any(|p| miner.set_engine_signer(engine_signer, p).is_ok()) {
+		if !passwords.iter().any(|p| miner.set_engine_signer(engine_signer, (*p).clone()).is_ok()) {
 			return Err(format!("No valid password for the consensus signer {}. {}", engine_signer, VERIFY_PASSWORD_HINT));
 		}
 	}
@@ -567,11 +594,13 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 		miner.clone(),
 	).map_err(|e| format!("Client service error: {:?}", e))?;
 
+	let connection_filter_address = spec.params().node_permission_contract;
 	// drop the spec to free up genesis state.
 	drop(spec);
 
 	// take handle to client
 	let client = service.client();
+	let connection_filter = connection_filter_address.map(|a| Arc::new(NodeFilter::new(Arc::downgrade(&client) as Weak<BlockChainClient>, a)));
 	let snapshot_service = service.snapshot_service();
 
 	// initialize the local node information store.
@@ -621,6 +650,17 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 			.map_err(|e| format!("Stratum start error: {:?}", e))?;
 	}
 
+	let mut attached_protos = Vec::new();
+
+	let whisper_factory = if cmd.whisper.enabled {
+		let whisper_factory = ::whisper::setup(cmd.whisper.target_message_pool_size, &mut attached_protos)
+			.map_err(|e| format!("Failed to initialize whisper: {}", e))?;
+
+		whisper_factory
+	} else {
+		None
+	};
+
 	// create sync object
 	let (sync_provider, manage_network, chain_notify) = modules::sync(
 		&mut hypervisor,
@@ -630,9 +670,14 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 		snapshot_service.clone(),
 		client.clone(),
 		&cmd.logger_config,
+		attached_protos,
+		connection_filter.clone().map(|f| f as Arc<::ethsync::ConnectionFilter + 'static>),
 	).map_err(|e| format!("Sync error: {}", e))?;
 
 	service.add_notify(chain_notify.clone());
+	if let Some(filter) = connection_filter {
+		service.add_notify(filter);
+	}
 
 	// start network
 	if network_enabled {
@@ -641,9 +686,6 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 
 	// spin up event loop
 	let event_loop = EventLoop::spawn();
-
-	// fetch service
-	let fetch = FetchClient::new().map_err(|e| format!("Error starting fetch client: {:?}", e))?;
 
 	// the updater service
 	let updater = Updater::new(
@@ -662,7 +704,7 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 		false => Some(account_provider.clone())
 	};
 
-	let signer_service = Arc::new(signer::new_service(&cmd.ws_conf, &cmd.ui_conf));
+	let signer_service = Arc::new(signer::new_service(&cmd.ws_conf, &cmd.ui_conf, &cmd.logger_config));
 
 	// the dapps server
 	let (node_health, dapps_deps) = {
@@ -695,10 +737,9 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 			sync_status,
 			node_health,
 			contract_client: contract_client,
-			remote: event_loop.raw_remote(),
 			fetch: fetch.clone(),
 			signer: signer_service.clone(),
-			ui_address: cmd.ui_conf.address(),
+			ui_address: cmd.ui_conf.redirection_address(),
 		})
 	};
 	let dapps_middleware = dapps::new(cmd.dapps_conf.clone(), dapps_deps.clone())?;
@@ -725,6 +766,8 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 		ws_address: cmd.ws_conf.address(),
 		fetch: fetch.clone(),
 		remote: event_loop.remote(),
+		whisper_rpc: whisper_factory,
+		gas_price_percentile: cmd.gas_price_percentile,
 	});
 
 	let dependencies = rpc::Dependencies {
@@ -749,6 +792,8 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 	// secret store key server
 	let secretstore_deps = secretstore::Dependencies {
 		client: client.clone(),
+		account_provider: account_provider,
+		accounts_passwords: &passwords,
 	};
 	let secretstore_key_server = secretstore::start(cmd.secretstore_conf.clone(), secretstore_deps)?;
 
@@ -770,6 +815,7 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 	service.register_io_handler(informant.clone()).map_err(|_| "Unable to register informant handler".to_owned())?;
 
 	// save user defaults
+	user_defaults.is_first_launch = false;
 	user_defaults.pruning = algorithm;
 	user_defaults.tracing = tracing;
 	user_defaults.fat_db = fat_db;
@@ -805,7 +851,7 @@ pub fn execute(cmd: RunCmd, can_restart: bool, logger: Arc<RotatingLogger>) -> R
 
 	// start ui
 	if cmd.ui {
-		open_ui(&cmd.ws_conf, &cmd.ui_conf)?;
+		open_ui(&cmd.ws_conf, &cmd.ui_conf, &cmd.logger_config)?;
 	}
 
 	if let Some(dapp) = cmd.dapp {

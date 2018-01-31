@@ -19,11 +19,16 @@
 
 use std::thread::{self, JoinHandle};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::{Condvar as SCondvar, Mutex as SMutex};
-use util::*;
+use std::sync::{Condvar as SCondvar, Mutex as SMutex, Arc};
+use std::cmp;
+use std::collections::{VecDeque, HashSet, HashMap};
+use heapsize::HeapSizeOf;
+use bigint::prelude::U256;
+use bigint::hash::H256;
+use parking_lot::{Condvar, Mutex, RwLock};
 use io::*;
 use error::*;
-use engines::Engine;
+use engines::EthEngine;
 use service::*;
 
 use self::kind::{BlockLike, Kind};
@@ -136,7 +141,7 @@ struct Sizes {
 /// A queue of items to be verified. Sits between network or other I/O and the `BlockChain`.
 /// Keeps them in the same order as inserted, minus invalid items.
 pub struct VerificationQueue<K: Kind> {
-	engine: Arc<Engine>,
+	engine: Arc<EthEngine>,
 	more_to_verify: Arc<SCondvar>,
 	verification: Arc<Verification<K>>,
 	deleting: Arc<AtomicBool>,
@@ -208,7 +213,7 @@ struct Verification<K: Kind> {
 
 impl<K: Kind> VerificationQueue<K> {
 	/// Creates a new queue instance.
-	pub fn new(config: Config, engine: Arc<Engine>, message_channel: IoChannel<ClientIoMessage>, check_seal: bool) -> Self {
+	pub fn new(config: Config, engine: Arc<EthEngine>, message_channel: IoChannel<ClientIoMessage>, check_seal: bool) -> Self {
 		let verification = Arc::new(Verification {
 			unverified: Mutex::new(VecDeque::new()),
 			verifying: Mutex::new(VecDeque::new()),
@@ -234,8 +239,8 @@ impl<K: Kind> VerificationQueue<K> {
 		let scale_verifiers = config.verifier_settings.scale_verifiers;
 
 		let num_cpus = ::num_cpus::get();
-		let max_verifiers = min(num_cpus, MAX_VERIFIERS);
-		let default_amount = max(1, min(max_verifiers, config.verifier_settings.num_verifiers));
+		let max_verifiers = cmp::min(num_cpus, MAX_VERIFIERS);
+		let default_amount = cmp::max(1, cmp::min(max_verifiers, config.verifier_settings.num_verifiers));
 		let state = Arc::new((Mutex::new(State::Work(default_amount)), Condvar::new()));
 		let mut verifier_handles = Vec::with_capacity(max_verifiers);
 
@@ -278,8 +283,8 @@ impl<K: Kind> VerificationQueue<K> {
 			processing: RwLock::new(HashMap::new()),
 			empty: empty,
 			ticks_since_adjustment: AtomicUsize::new(0),
-			max_queue_size: max(config.max_queue_size, MIN_QUEUE_LIMIT),
-			max_mem_use: max(config.max_mem_use, MIN_MEM_LIMIT),
+			max_queue_size: cmp::max(config.max_queue_size, MIN_QUEUE_LIMIT),
+			max_mem_use: cmp::max(config.max_mem_use, MIN_MEM_LIMIT),
 			scale_verifiers: scale_verifiers,
 			verifier_handles: verifier_handles,
 			state: state,
@@ -289,7 +294,7 @@ impl<K: Kind> VerificationQueue<K> {
 
 	fn verify(
 		verification: Arc<Verification<K>>,
-		engine: Arc<Engine>,
+		engine: Arc<EthEngine>,
 		wait: Arc<SCondvar>,
 		ready: Arc<QueueSignal>,
 		empty: Arc<SCondvar>,
@@ -500,7 +505,7 @@ impl<K: Kind> VerificationQueue<K> {
 			Err(err) => {
 				match err {
 					// Don't mark future blocks as bad.
-					Error::Block(BlockError::InvalidTimestamp(ref e)) if e.max.is_some() => {},
+					Error::Block(BlockError::TemporarilyInvalid(_)) => {},
 					_ => {
 						self.verification.bad.lock().insert(h.clone());
 					}
@@ -567,7 +572,7 @@ impl<K: Kind> VerificationQueue<K> {
 	/// Removes up to `max` verified items from the queue
 	pub fn drain(&self, max: usize) -> Vec<K::Verified> {
 		let mut verified = self.verification.verified.lock();
-		let count = min(max, verified.len());
+		let count = cmp::min(max, verified.len());
 		let result = verified.drain(..count).collect::<Vec<_>>();
 
 		let drained_size = result.iter().map(HeapSizeOf::heap_size_of_children).fold(0, |a, c| a + c);
@@ -687,8 +692,8 @@ impl<K: Kind> VerificationQueue<K> {
 	// or below 1.
 	fn scale_verifiers(&self, target: usize) {
 		let current = self.num_verifiers();
-		let target = min(self.verifier_handles.len(), target);
-		let target = max(1, target);
+		let target = cmp::min(self.verifier_handles.len(), target);
+		let target = cmp::max(1, target);
 
 		debug!(target: "verification", "Scaling from {} to {} verifiers", current, target);
 
@@ -725,7 +730,6 @@ impl<K: Kind> Drop for VerificationQueue<K> {
 
 #[cfg(test)]
 mod tests {
-	use util::*;
 	use io::*;
 	use spec::*;
 	use super::{BlockQueue, Config, State};

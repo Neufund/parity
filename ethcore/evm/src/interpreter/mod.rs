@@ -23,17 +23,26 @@ mod stack;
 mod memory;
 mod shared_cache;
 
+use std::marker::PhantomData;
+use std::{cmp, mem};
+use std::sync::Arc;
+use hash::keccak;
+use bigint::prelude::{U256, U512};
+use bigint::hash::H256;
+
+use vm::{
+	self, ActionParams, ActionValue, CallType, MessageCallResult,
+	ContractCreateResult, CreateContractAddress, ReturnData, GasLeft
+};
+
+use evm::CostType;
+use instructions::{self, Instruction, InstructionInfo};
+
 use self::gasometer::Gasometer;
 use self::stack::{Stack, VecStack};
 use self::memory::Memory;
 pub use self::shared_cache::SharedCache;
 
-use std::marker::PhantomData;
-use action_params::{ActionParams, ActionValue};
-use call_type::CallType;
-use instructions::{self, Instruction, InstructionInfo};
-use evm::{self, GasLeft, CostType, ReturnData};
-use ext::{self, MessageCallResult, ContractCreateResult, CreateContractAddress};
 use bit_set::BitSet;
 
 use util::*;
@@ -107,8 +116,8 @@ pub struct Interpreter<Cost: CostType> {
 	_type: PhantomData<Cost>,
 }
 
-impl<Cost: CostType> evm::Evm for Interpreter<Cost> {
-	fn exec(&mut self, params: ActionParams, ext: &mut ext::Ext) -> evm::Result<GasLeft> {
+impl<Cost: CostType> vm::Vm for Interpreter<Cost> {
+	fn exec(&mut self, params: ActionParams, ext: &mut vm::Ext) -> vm::Result<GasLeft> {
 		self.mem.clear();
 
 		let mut informant = informant::EvmInformant::new(ext.depth());
@@ -174,7 +183,7 @@ impl<Cost: CostType> evm::Evm for Interpreter<Cost> {
 			match result {
 				InstructionResult::JumpToPosition(position) => {
 					if valid_jump_destinations.is_none() {
-						let code_hash = params.code_hash.clone().unwrap_or_else(|| code.sha3());
+						let code_hash = params.code_hash.clone().unwrap_or_else(|| keccak(code.as_ref()));
 						valid_jump_destinations = Some(self.cache.jump_destinations(&code_hash, code));
 					}
 					let jump_destinations = valid_jump_destinations.as_ref().expect("jump_destinations are initialized on first jump; qed");
@@ -210,7 +219,7 @@ impl<Cost: CostType> Interpreter<Cost> {
 		}
 	}
 
-	fn verify_instruction(&self, ext: &ext::Ext, instruction: Instruction, info: &InstructionInfo, stack: &Stack<U256>) -> evm::Result<()> {
+	fn verify_instruction(&self, ext: &vm::Ext, instruction: Instruction, info: &InstructionInfo, stack: &Stack<U256>) -> vm::Result<()> {
 		let schedule = ext.schedule();
 
 		if (instruction == instructions::DELEGATECALL && !schedule.have_delegate_call) ||
@@ -219,25 +228,25 @@ impl<Cost: CostType> Interpreter<Cost> {
 			((instruction == instructions::RETURNDATACOPY || instruction == instructions::RETURNDATASIZE) && !schedule.have_return_data) ||
 			(instruction == instructions::REVERT && !schedule.have_revert) {
 
-			return Err(evm::Error::BadInstruction {
+			return Err(vm::Error::BadInstruction {
 				instruction: instruction
 			});
 		}
 
 		if info.tier == instructions::GasPriceTier::Invalid {
-			return Err(evm::Error::BadInstruction {
+			return Err(vm::Error::BadInstruction {
 				instruction: instruction
 			});
 		}
 
 		if !stack.has(info.args) {
-			Err(evm::Error::StackUnderflow {
+			Err(vm::Error::StackUnderflow {
 				instruction: info.name,
 				wanted: info.args,
 				on_stack: stack.size()
 			})
 		} else if stack.size() - info.args + info.ret > schedule.stack_limit {
-			Err(evm::Error::OutOfStack {
+			Err(vm::Error::OutOfStack {
 				instruction: info.name,
 				wanted: info.ret - info.args,
 				limit: schedule.stack_limit
@@ -283,12 +292,12 @@ impl<Cost: CostType> Interpreter<Cost> {
 		&mut self,
 		gas: Cost,
 		params: &ActionParams,
-		ext: &mut ext::Ext,
+		ext: &mut vm::Ext,
 		instruction: Instruction,
 		code: &mut CodeReader,
 		stack: &mut Stack<U256>,
 		provided: Option<Cost>
-	) -> evm::Result<InstructionResult<Cost>> {
+	) -> vm::Result<InstructionResult<Cost>> {
 		match instruction {
 			instructions::JUMP => {
 				let jump = stack.pop_back();
@@ -313,19 +322,23 @@ impl<Cost: CostType> Interpreter<Cost> {
 				let init_off = stack.pop_back();
 				let init_size = stack.pop_back();
 
-				let address_scheme = if instruction == instructions::CREATE { CreateContractAddress::FromSenderAndNonce } else { CreateContractAddress::FromSenderAndCodeHash };
 				let create_gas = provided.expect("`provided` comes through Self::exec from `Gasometer::get_gas_cost_mem`; `gas_gas_mem_cost` guarantees `Some` when instruction is `CALL`/`CALLCODE`/`DELEGATECALL`/`CREATE`; this is `CREATE`; qed");
 
-				let contract_code = self.mem.read_slice(init_off, init_size);
-				let can_create = ext.balance(&params.address)? >= endowment && ext.depth() < ext.schedule().max_depth;
+				if ext.is_static() {
+					return Err(vm::Error::MutableCallInStaticContext);
+				}
 
 				// clear return data buffer before creating new call frame.
 				self.return_data = ReturnData::empty();
 
+				let can_create = ext.balance(&params.address)? >= endowment && ext.depth() < ext.schedule().max_depth;
 				if !can_create {
 					stack.push(U256::zero());
 					return Ok(InstructionResult::UnusedGas(create_gas));
 				}
+
+				let contract_code = self.mem.read_slice(init_off, init_size);
+				let address_scheme = if instruction == instructions::CREATE { CreateContractAddress::FromSenderAndNonce } else { CreateContractAddress::FromSenderAndCodeHash };
 
 				let create_result = ext.create(&create_gas.as_u256(), &endowment, contract_code, address_scheme);
 				return match create_result {
@@ -341,9 +354,6 @@ impl<Cost: CostType> Interpreter<Cost> {
 					ContractCreateResult::Failed => {
 						stack.push(U256::zero());
 						Ok(InstructionResult::Ok)
-					},
-					ContractCreateResult::FailedInStaticCall => {
-						Err(evm::Error::MutableCallInStaticContext)
 					},
 				};
 			},
@@ -378,7 +388,7 @@ impl<Cost: CostType> Interpreter<Cost> {
 				let (sender_address, receive_address, has_balance, call_type) = match instruction {
 					instructions::CALL => {
 						if ext.is_static() && value.map_or(false, |v| !v.is_zero()) {
-							return Err(evm::Error::MutableCallInStaticContext);
+							return Err(vm::Error::MutableCallInStaticContext);
 						}
 						let has_balance = ext.balance(&params.address)? >= value.expect("value set for all but delegate call; qed");
 						(&params.address, &code_address, has_balance, CallType::Call)
@@ -482,8 +492,8 @@ impl<Cost: CostType> Interpreter<Cost> {
 			instructions::SHA3 => {
 				let offset = stack.pop_back();
 				let size = stack.pop_back();
-				let sha3 = self.mem.read_slice(offset, size).sha3();
-				stack.push(U256::from(&*sha3));
+				let k = keccak(self.mem.read_slice(offset, size));
+				stack.push(U256::from(&*k));
 			},
 			instructions::SLOAD => {
 				let key = H256::from(&stack.pop_back());
@@ -566,7 +576,7 @@ impl<Cost: CostType> Interpreter<Cost> {
 					let size = stack.peek(2);
 					let return_data_len = U256::from(self.return_data.len());
 					if source_offset.saturating_add(*size) > return_data_len {
-						return Err(evm::Error::OutOfBounds);
+						return Err(vm::Error::OutOfBounds);
 					}
 				}
 				Self::copy_data_to_memory(&mut self.mem, stack, &*self.return_data);
@@ -636,13 +646,13 @@ impl<Cost: CostType> Interpreter<Cost> {
 		}
 	}
 
-	fn verify_jump(&self, jump_u: U256, valid_jump_destinations: &BitSet) -> evm::Result<usize> {
+	fn verify_jump(&self, jump_u: U256, valid_jump_destinations: &BitSet) -> vm::Result<usize> {
 		let jump = jump_u.low_u64() as usize;
 
 		if valid_jump_destinations.contains(jump) && U256::from(jump) == jump_u {
 			Ok(jump)
 		} else {
-			Err(evm::Error::BadJumpDestination {
+			Err(vm::Error::BadJumpDestination {
 				destination: jump
 			})
 		}
@@ -660,7 +670,7 @@ impl<Cost: CostType> Interpreter<Cost> {
 		}
 	}
 
-	fn exec_stack_instruction(&self, instruction: Instruction, stack: &mut Stack<U256>) -> evm::Result<()> {
+	fn exec_stack_instruction(&self, instruction: Instruction, stack: &mut Stack<U256>) -> vm::Result<()> {
 		match instruction {
 			instructions::DUP1...instructions::DUP16 => {
 				let position = instructions::get_dup_position(instruction);
@@ -865,7 +875,7 @@ impl<Cost: CostType> Interpreter<Cost> {
 				}
 			},
 			_ => {
-				return Err(evm::Error::BadInstruction {
+				return Err(vm::Error::BadInstruction {
 					instruction: instruction
 				});
 			}
@@ -906,7 +916,7 @@ mod tests {
 	use rustc_hex::FromHex;
 	use vmtype::VMType;
 	use factory::Factory;
-	use vm::{self, ActionParams, ActionValue};
+	use vm::{ActionParams, ActionValue};
 	use vm::tests::{FakeExt, test_finalize};
 
 	#[test]

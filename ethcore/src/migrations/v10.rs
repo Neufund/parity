@@ -19,13 +19,15 @@
 use std::sync::Arc;
 use db::{COL_EXTRA, COL_HEADERS, COL_STATE};
 use state_db::{ACCOUNT_BLOOM_SPACE, DEFAULT_ACCOUNT_PRESET, StateDB};
-use util::trie::TrieDB;
+use trie::TrieDB;
 use views::HeaderView;
 use bloom_journal::Bloom;
-use util::migration::{Error, Migration, Progress, Batch, Config};
+use migration::{Error, Migration, Progress, Batch, Config};
 use util::journaldb;
-use util::{H256, Trie};
-use util::{Database, DBTransaction};
+use bigint::hash::H256;
+use trie::Trie;
+use kvdb::DBTransaction;
+use kvdb_rocksdb::Database;
 
 /// Account bloom upgrade routine. If bloom already present, does nothing.
 /// If database empty (no best block), does nothing.

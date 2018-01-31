@@ -21,7 +21,7 @@ use std::sync::{Arc, Weak};
 
 use ethcore::client::{BlockId, BlockChainClient, ChainNotify};
 use ethsync::{SyncProvider};
-use futures::{future, Future, BoxFuture};
+use futures::future;
 use hash_fetch::{self as fetch, HashFetch};
 use hash_fetch::fetch::Client as FetchService;
 use ipc_common_types::{VersionInfo, ReleaseTrack};
@@ -31,7 +31,10 @@ use path::restrict_permissions_owner;
 use service::{Service};
 use target_info::Target;
 use types::all::{ReleaseInfo, OperationsInfo, CapState};
-use util::{Address, H160, H256, Mutex, Bytes};
+use bigint::hash::{H160, H256};
+use util::Address;
+use bytes::Bytes;
+use parking_lot::Mutex;
 use util::misc;
 
 /// Filter for releases.
@@ -340,12 +343,12 @@ impl fetch::urlhint::ContractClient for Updater {
 			.ok_or_else(|| "Registrar not available".into())
 	}
 
-	fn call(&self, address: Address, data: Bytes) -> BoxFuture<Bytes, String> {
-		future::done(
+	fn call(&self, address: Address, data: Bytes) -> fetch::urlhint::BoxFuture<Bytes, String> {
+		Box::new(future::done(
 			self.client.upgrade()
 				.ok_or_else(|| "Client not available".into())
 				.and_then(move |c| c.call_contract(BlockId::Latest, address, data))
-		).boxed()
+		))
 	}
 }
 

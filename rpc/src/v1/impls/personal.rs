@@ -20,10 +20,12 @@ use std::sync::Arc;
 use ethcore::account_provider::AccountProvider;
 use ethcore::transaction::PendingTransaction;
 
-use util::{Address, U128, ToPretty};
+use bigint::prelude::U128;
+use util::Address;
+use bytes::ToPretty;
 
-use futures::{future, Future, BoxFuture};
-use jsonrpc_core::Error;
+use jsonrpc_core::{BoxFuture, Error};
+use jsonrpc_core::futures::{future, Future};
 use v1::helpers::errors;
 use v1::helpers::dispatch::{Dispatcher, SignWith};
 use v1::helpers::accounts::unwrap_provider;
@@ -112,10 +114,10 @@ impl<D: Dispatcher + 'static> Personal for PersonalClient<D> {
 
 		let default = match default {
 			Ok(default) => default,
-			Err(e) => return future::err(e).boxed(),
+			Err(e) => return Box::new(future::err(e)),
 		};
 
-		dispatcher.fill_optional_fields(request.into(), default, false)
+		Box::new(dispatcher.fill_optional_fields(request.into(), default, false)
 			.and_then(move |filled| {
 				let condition = filled.condition.clone().map(Into::into);
 				dispatcher.sign(accounts, filled, SignWith::Password(password))
@@ -124,13 +126,12 @@ impl<D: Dispatcher + 'static> Personal for PersonalClient<D> {
 					.map(move |tx| (tx, dispatcher))
 			})
 			.and_then(|(pending_tx, dispatcher)| {
-				let network_id = pending_tx.network_id();
-				trace!(target: "miner", "send_transaction: dispatching tx: {} for network ID {:?}",
-					::rlp::encode(&*pending_tx).into_vec().pretty(), network_id);
+				let chain_id = pending_tx.chain_id();
+				trace!(target: "miner", "send_transaction: dispatching tx: {} for chain ID {:?}",
+					::rlp::encode(&*pending_tx).into_vec().pretty(), chain_id);
 
 				dispatcher.dispatch_transaction(pending_tx).map(Into::into)
-			})
-			.boxed()
+			}))
 	}
 
 	fn sign_and_send_transaction(&self, meta: Metadata, request: TransactionRequest, password: String) -> BoxFuture<RpcH256, Error> {

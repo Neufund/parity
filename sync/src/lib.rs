@@ -28,6 +28,8 @@
 //!
 
 extern crate ethcore_network as network;
+extern crate ethcore_bigint as bigint;
+extern crate ethcore_bytes as bytes;
 extern crate ethcore_io as io;
 extern crate ethcore;
 extern crate env_logger;
@@ -37,16 +39,21 @@ extern crate semver;
 extern crate parking_lot;
 extern crate smallvec;
 extern crate rlp;
+extern crate ipnetwork;
+extern crate hash;
+extern crate triehash;
+extern crate kvdb;
 
 extern crate ethcore_light as light;
 
 #[cfg(test)] extern crate ethcore_devtools as devtools;
 #[cfg(test)] extern crate ethkey;
+#[cfg(test)] extern crate kvdb_memorydb;
 
 #[macro_use]
-extern crate log;
+extern crate macros;
 #[macro_use]
-extern crate ethcore_util as util;
+extern crate log;
 #[macro_use]
 extern crate heapsize;
 #[macro_use]
@@ -75,7 +82,10 @@ mod api;
 
 pub use api::*;
 pub use chain::{SyncStatus, SyncState};
-pub use network::{is_valid_node_url, NonReservedPeerMode, NetworkError};
+pub use network::{is_valid_node_url, NonReservedPeerMode, NetworkError, ConnectionFilter, ConnectionDirection};
+
+#[cfg(test)]
+pub(crate) type Address = bigint::hash::H160;
 
 /// IPC interfaces
 #[cfg(feature="ipc")]

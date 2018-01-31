@@ -16,12 +16,15 @@
 
 use std::sync::Arc;
 use std::str::FromStr;
-use util::{U256, Address, ToPretty};
+use bigint::prelude::U256;
+use util::Address;
+use bytes::ToPretty;
 
 use ethcore::account_provider::AccountProvider;
 use ethcore::client::TestBlockChainClient;
 use ethcore::transaction::{Transaction, Action, SignedTransaction};
 use parity_reactor::EventLoop;
+use parking_lot::Mutex;
 use rlp::encode;
 
 use serde_json;
@@ -30,7 +33,7 @@ use v1::{SignerClient, Signer, Origin};
 use v1::metadata::Metadata;
 use v1::tests::helpers::TestMinerService;
 use v1::types::{Bytes as RpcBytes, H520};
-use v1::helpers::{SigningQueue, SignerService, FilledTransactionRequest, ConfirmationPayload};
+use v1::helpers::{nonce, SigningQueue, SignerService, FilledTransactionRequest, ConfirmationPayload};
 use v1::helpers::dispatch::{FullDispatcher, eth_data_hash};
 
 struct SignerTester {
@@ -59,9 +62,10 @@ fn signer_tester() -> SignerTester {
 	let opt_accounts = Some(accounts.clone());
 	let client = blockchain_client();
 	let miner = miner_service();
+	let reservations = Arc::new(Mutex::new(nonce::Reservations::new()));
 	let event_loop = EventLoop::spawn();
 
-	let dispatcher = FullDispatcher::new(client, miner.clone());
+	let dispatcher = FullDispatcher::new(client, miner.clone(), reservations, 50);
 	let mut io = IoHandler::default();
 	io.extend_with(SignerClient::new(&opt_accounts, dispatcher, &signer, event_loop.remote()).to_delegate());
 
@@ -454,12 +458,13 @@ fn should_confirm_sign_transaction_with_rlp() {
 	let response = r#"{"jsonrpc":"2.0","result":{"#.to_owned() +
 		r#""raw":"0x"# + &rlp.to_hex() + r#"","# +
 		r#""tx":{"# +
-		r#""blockHash":null,"blockNumber":null,"condition":null,"creates":null,"# +
+		r#""blockHash":null,"blockNumber":null,"# +
+		&format!("\"chainId\":{},", t.chain_id().map_or("null".to_owned(), |n| format!("{}", n))) +
+		r#""condition":null,"creates":null,"# +
 		&format!("\"from\":\"0x{:?}\",", &address) +
 		r#""gas":"0x989680","gasPrice":"0x1000","# +
 		&format!("\"hash\":\"0x{:?}\",", t.hash()) +
 		r#""input":"0x","# +
-		&format!("\"networkId\":{},", t.network_id().map_or("null".to_owned(), |n| format!("{}", n))) +
 		r#""nonce":"0x0","# +
 		&format!("\"publicKey\":\"0x{:?}\",", t.public_key().unwrap()) +
 		&format!("\"r\":\"0x{}\",", U256::from(signature.r()).to_hex()) +

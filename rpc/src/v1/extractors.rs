@@ -25,7 +25,7 @@ use ipc;
 use jsonrpc_core as core;
 use jsonrpc_pubsub::Session;
 use ws;
-use util::H256;
+use bigint::hash::H256;
 
 use v1::{Metadata, Origin};
 use v1::informant::RpcStats;
@@ -236,7 +236,7 @@ impl<M: core::Middleware<Metadata>> core::Middleware<Metadata> for WsDispatcher<
 		if use_full {
 			A(self.full_handler.handle_rpc_request(request, meta))
 		} else {
-			B(process(request, meta).boxed())
+			B(Box::new(process(request, meta)))
 		}
 	}
 }

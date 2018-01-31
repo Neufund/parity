@@ -173,8 +173,10 @@ impl<'a> From<&'a EthHeader> for Header {
 			logs_bloom: h.log_bloom().into(),
 			timestamp: h.timestamp().into(),
 			difficulty: h.difficulty().into(),
-			seal_fields: h.seal().into_iter().map(Into::into).collect(),
 			extra_data: h.extra_data().into(),
+			seal_fields: h.view().decode_seal()
+				.expect("Client/Miner returns only valid headers. We only serialize headers from Client/Miner; qed")
+				.into_iter().map(Into::into).collect(),
 		}
 	}
 }
@@ -214,7 +216,7 @@ impl<T: Serialize> Serialize for Rich<T> {
 			// and serialize
 			value.serialize(serializer)
 		} else {
-			Err(S::Error::custom("Unserializable structures."))
+			Err(S::Error::custom("Unserializable structures: expected objects"))
 		}
 	}
 }
@@ -230,7 +232,7 @@ mod tests {
 	fn test_serialize_block_transactions() {
 		let t = BlockTransactions::Full(vec![Transaction::default()]);
 		let serialized = serde_json::to_string(&t).unwrap();
-		assert_eq!(serialized, r#"[{"hash":"0x0000000000000000000000000000000000000000000000000000000000000000","nonce":"0x0","blockHash":null,"blockNumber":null,"transactionIndex":null,"from":"0x0000000000000000000000000000000000000000","to":null,"value":"0x0","gasPrice":"0x0","gas":"0x0","input":"0x","creates":null,"raw":"0x","publicKey":null,"networkId":null,"standardV":"0x0","v":"0x0","r":"0x0","s":"0x0","condition":null}]"#);
+		assert_eq!(serialized, r#"[{"hash":"0x0000000000000000000000000000000000000000000000000000000000000000","nonce":"0x0","blockHash":null,"blockNumber":null,"transactionIndex":null,"from":"0x0000000000000000000000000000000000000000","to":null,"value":"0x0","gasPrice":"0x0","gas":"0x0","input":"0x","creates":null,"raw":"0x","publicKey":null,"chainId":null,"standardV":"0x0","v":"0x0","r":"0x0","s":"0x0","condition":null}]"#);
 
 		let t = BlockTransactions::Hashes(vec![H256::default().into()]);
 		let serialized = serde_json::to_string(&t).unwrap();

@@ -19,6 +19,7 @@ import React, { Component, PropTypes } from 'react';
 import { FormattedMessage } from 'react-intl';
 import { connect } from 'react-redux';
 import ReactMarkdown from 'react-markdown';
+import ReactTooltip from 'react-tooltip';
 
 import { hexToAscii } from '~/api/util/format';
 import HardwareStore from '~/mobx/hardwareStore';
@@ -95,12 +96,35 @@ class SignRequest extends Component {
     }
   };
 
+  state = {
+    hashToSign: null
+  };
+
   hardwareStore = HardwareStore.get(this.context.api);
 
   componentWillMount () {
     const { address, signerStore } = this.props;
 
     signerStore.fetchBalance(address);
+  }
+
+  componentDidMount () {
+    this.computeHashToSign(this.props.data);
+  }
+
+  componentWillReceiveProps (nextProps) {
+    if (this.props.data !== nextProps.data) {
+      this.computeHashToSign(nextProps.data);
+    }
+  }
+
+  computeHashToSign (data) {
+    const { sha3, hexToBytes, asciiToHex } = this.context.api.util;
+    const bytes = hexToBytes(data);
+    const message = hexToBytes(asciiToHex(`\x19Ethereum Signed Message:\n${bytes.length}`));
+    const hashToSign = sha3(message.concat(bytes));
+
+    this.setState({ hashToSign });
   }
 
   render () {
@@ -135,6 +159,7 @@ class SignRequest extends Component {
 
   renderDetails () {
     const { address, data, netVersion, origin, signerStore } = this.props;
+    const { hashToSign } = this.state;
     const { balances, externalLink } = signerStore;
 
     const balance = balances[address];
@@ -143,7 +168,21 @@ class SignRequest extends Component {
       return <div />;
     }
 
-    const hashToSign = this.context.api.util.sha3(data);
+    const tooltip = [
+      <FormattedMessage
+        id='signer.signRequest.tooltip.hash'
+        key='tooltip.hash'
+        defaultMessage='Hash to be signed: {hashToSign}'
+        values={ { hashToSign } }
+      />,
+      <br key='tooltip.br' />,
+      <FormattedMessage
+        id='signer.signRequest.tooltip.data'
+        key='tooltip.data'
+        defaultMessage='Data: {data}'
+        values={ { data } }
+      />
+    ];
 
     return (
       <div className={ styles.signDetails }>
@@ -157,7 +196,16 @@ class SignRequest extends Component {
           />
           <RequestOrigin origin={ origin } />
         </div>
-        <div className={ styles.info } title={ hashToSign }>
+        <ReactTooltip id={ `signRequest-${hashToSign}` }>
+          { tooltip }
+        </ReactTooltip>
+        <div
+          className={ styles.info }
+          data-effect='solid'
+          data-for={ `signRequest-${hashToSign}` }
+          data-place='top'
+          data-tip
+        >
           <p>
             <FormattedMessage
               id='signer.signRequest.request'

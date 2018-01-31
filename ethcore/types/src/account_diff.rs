@@ -19,7 +19,9 @@
 use std::cmp::*;
 use std::fmt;
 use std::collections::BTreeMap;
-use util::{U256, H256, Bytes};
+use bigint::prelude::U256;
+use bigint::hash::H256;
+use bytes::Bytes;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 /// Diff type for specifying a change (or not).
@@ -112,7 +114,7 @@ fn interpreted_hash(u: &H256) -> String {
 
 impl fmt::Display for AccountDiff {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		use util::bytes::ToPretty;
+		use bytes::ToPretty;
 
 		match self.nonce {
 			Diff::Born(ref x) => write!(f, "  non {}", x)?,

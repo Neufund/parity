@@ -17,20 +17,23 @@
 //! Ledger hardware wallet module. Supports Ledger Blue and Nano S.
 /// See https://github.com/LedgerHQ/blue-app-eth/blob/master/doc/ethapp.asc for protocol details.
 
-use hidapi;
-use std::fmt;
-use std::cmp::min;
-use std::str::FromStr;
-use std::time::Duration;
-use super::WalletInfo;
-use ethkey::{Address, Signature};
+use super::{WalletInfo, KeyPath};
+
 use bigint::hash::H256;
+use ethkey::{Address, Signature};
+use hidapi;
 use parking_lot::{Mutex, RwLock};
+
+use std::cmp::min;
+use std::fmt;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
 
 const LEDGER_VID: u16 = 0x2c97;
 const LEDGER_PIDS: [u16; 2] = [0x0000, 0x0001]; // Nano S and Blue
-const ETH_DERIVATION_PATH_BE: [u8; 17] =  [ 4,  0x80, 0, 0, 44,  0x80, 0, 0, 60,  0x80, 0, 0, 0,  0, 0, 0, 0 ];  // 44'/60'/0'/0
-const ETC_DERIVATION_PATH_BE: [u8; 21] =  [ 5,  0x80, 0, 0, 44,  0x80, 0, 0, 60,  0x80, 0x02, 0x73, 0xd0,  0x80, 0, 0, 0,  0, 0, 0, 0 ];  // 44'/60'/160720'/0'/0
+const ETH_DERIVATION_PATH_BE: [u8; 17] = [4, 0x80, 0, 0, 44, 0x80, 0, 0, 60, 0x80, 0, 0, 0, 0, 0, 0, 0]; // 44'/60'/0'/0
+const ETC_DERIVATION_PATH_BE: [u8; 21] = [5, 0x80, 0, 0, 44, 0x80, 0, 0, 60, 0x80, 0x02, 0x73, 0xd0, 0x80, 0, 0, 0, 0, 0, 0, 0]; // 44'/60'/160720'/0'/0
 
 const APDU_TAG: u8 = 0x05;
 const APDU_CLA: u8 = 0xe0;
@@ -44,16 +47,7 @@ mod commands {
 	pub const SIGN_ETH_TRANSACTION: u8 = 0x04;
 }
 
-/// Key derivation paths used on ledger wallets.
-#[derive(Debug, Clone, Copy)]
-pub enum KeyPath {
-	/// Ethereum.
-	Ethereum,
-	/// Ethereum classic.
-	EthereumClassic,
-}
-
-/// Hardware waller error.
+/// Hardware wallet error.
 #[derive(Debug)]
 pub enum Error {
 	/// Ethereum wallet protocol error.
@@ -85,10 +79,9 @@ impl From<hidapi::HidError> for Error {
 
 /// Ledger device manager.
 pub struct Manager {
-	// always lock in that order
-	usb: Mutex<hidapi::HidApi>,
+	usb: Arc<Mutex<hidapi::HidApi>>,
 	devices: RwLock<Vec<Device>>,
-	key_path: KeyPath,
+	key_path: RwLock<KeyPath>,
 }
 
 
@@ -100,14 +93,13 @@ struct Device {
 }
 
 impl Manager {
-	/// Create a new instance with given
-	pub fn new(key_path: KeyPath) -> Result<Manager, Error> {
-		let manager = Manager {
-			usb: Mutex::new(hidapi::HidApi::new()?),
+	/// Create a new instance.
+	pub fn new(hidapi: Arc<Mutex<hidapi::HidApi>>) -> Manager {
+		Manager {
+			usb: hidapi,
 			devices: RwLock::new(Vec::new()),
-			key_path,
-		};
-		Ok(manager)
+			key_path: RwLock::new(KeyPath::Ethereum),
+		}
 	}
 
 	/// Re-populate device list. Only those devices that have Ethereum app open will be added.
@@ -122,7 +114,7 @@ impl Manager {
 			if device.vendor_id != LEDGER_VID || !LEDGER_PIDS.contains(&device.product_id) {
 				continue;
 			}
-			match self.read_device_info(&device, &mut usb) {
+			match self.read_device_info(&usb, &device) {
 				Ok(info) => {
 					debug!("Found device: {:?}", info);
 					if !self.devices.read().iter().any(|d| d.path == info.path) {
@@ -130,7 +122,7 @@ impl Manager {
 					}
 					new_devices.push(info);
 
-				},
+				}
 				Err(e) => debug!("Error reading device info: {}", e),
 			};
 		}
@@ -138,9 +130,14 @@ impl Manager {
 		Ok(num_new_devices)
 	}
 
-	fn read_device_info(&self, dev_info: &hidapi::HidDeviceInfo, usb: &mut hidapi::HidApi) -> Result<Device, Error> {
-		let mut handle = self.open_path(&dev_info.path, usb)?;
-		let address = Self::read_wallet_address(&mut handle, self.key_path)?;
+	/// Select key derivation path for a known chain.
+	pub fn set_key_path(&self, key_path: KeyPath) {
+		*self.key_path.write() = key_path;
+	}
+
+	fn read_device_info(&self, usb: &hidapi::HidApi, dev_info: &hidapi::HidDeviceInfo) -> Result<Device, Error> {
+		let mut handle = self.open_path(|| usb.open_path(&dev_info.path))?;
+		let address = Self::read_wallet_address(&mut handle, *self.key_path.read())?;
 		let manufacturer = dev_info.manufacturer_string.clone().unwrap_or("Unknown".to_owned());
 		let name = dev_info.product_string.clone().unwrap_or("Unknown".to_owned());
 		let serial = dev_info.serial_number.clone().unwrap_or("Unknown".to_owned());
@@ -197,17 +194,14 @@ impl Manager {
 
 	/// Sign transaction data with wallet managing `address`.
 	pub fn sign_transaction(&self, address: &Address, data: &[u8]) -> Result<Signature, Error> {
-		// mind the lock order
-		let mut usb = self.usb.lock();
+		let usb = self.usb.lock();
 		let devices = self.devices.read();
-		let device = devices.iter().find(|d| &d.info.address == address)
-			.ok_or(Error::KeyNotFound)?;
-
-		let handle = self.open_path(&device.path, &mut usb)?;
+		let device = devices.iter().find(|d| &d.info.address == address).ok_or(Error::KeyNotFound)?;
+		let handle = self.open_path(|| usb.open_path(&device.path))?;
 
 		let eth_path = &ETH_DERIVATION_PATH_BE[..];
 		let etc_path = &ETC_DERIVATION_PATH_BE[..];
-		let derivation_path = match self.key_path {
+		let derivation_path = match *self.key_path.read() {
 			KeyPath::Ethereum => eth_path,
 			KeyPath::EthereumClassic => etc_path,
 		};
@@ -221,7 +215,7 @@ impl Manager {
 			let p1 = if data_pos == 0 { 0x00 } else { 0x80 };
 			let dest_left = MAX_CHUNK_SIZE - dest_offset;
 			let chunk_data_size = min(dest_left, data.len() - data_pos);
-			&mut chunk [dest_offset..][0..chunk_data_size].copy_from_slice(&data[data_pos..][0..chunk_data_size]);
+			&mut chunk[dest_offset..][0..chunk_data_size].copy_from_slice(&data[data_pos..][0..chunk_data_size]);
 			result = Self::send_apdu(&handle, commands::SIGN_ETH_TRANSACTION, p1, 0, &chunk[0..(dest_offset + chunk_data_size)])?;
 			dest_offset = 0;
 			data_pos += chunk_data_size;
@@ -239,11 +233,13 @@ impl Manager {
 		Ok(Signature::from_rsv(&r, &s, v))
 	}
 
-	fn open_path<'a>(&self, path: &str, usb: &'a mut hidapi::HidApi) -> Result<hidapi::HidDevice<'a>, Error> {
+	fn open_path<R, F>(&self, f: F) -> Result<R, Error>
+		where F: Fn() -> Result<R, &'static str>
+	{
 		let mut err = Error::KeyNotFound;
-		/// Try to open device a few times.
+		// Try to open device a few times.
 		for _ in 0..10 {
-			match usb.open_path(&path) {
+			match f() {
 				Ok(handle) => return Ok(handle),
 				Err(e) => err = From::from(e),
 			}
@@ -256,33 +252,33 @@ impl Manager {
 		const HID_PACKET_SIZE: usize = 64 + HID_PREFIX_ZERO;
 		let mut offset = 0;
 		let mut chunk_index = 0;
-			loop {
-				let mut hid_chunk: [u8; HID_PACKET_SIZE] = [0; HID_PACKET_SIZE];
-				let mut chunk_size = if chunk_index == 0 { 12 } else { 5 };
-				let size = min(64 - chunk_size, data.len() - offset);
-				{
-					let mut chunk = &mut hid_chunk[HID_PREFIX_ZERO..];
-					&mut chunk[0..5].copy_from_slice(&[0x01, 0x01, APDU_TAG, (chunk_index >> 8) as u8, (chunk_index & 0xff) as u8 ]);
+		loop {
+			let mut hid_chunk: [u8; HID_PACKET_SIZE] = [0; HID_PACKET_SIZE];
+			let mut chunk_size = if chunk_index == 0 { 12 } else { 5 };
+			let size = min(64 - chunk_size, data.len() - offset);
+			{
+				let mut chunk = &mut hid_chunk[HID_PREFIX_ZERO..];
+				&mut chunk[0..5].copy_from_slice(&[0x01, 0x01, APDU_TAG, (chunk_index >> 8) as u8, (chunk_index & 0xff) as u8 ]);
 
-					if chunk_index == 0 {
-						let data_len = data.len() + 5;
-						&mut chunk[5..12].copy_from_slice(&[ (data_len >> 8) as u8, (data_len & 0xff) as u8, APDU_CLA, command, p1, p2, data.len() as u8 ]);
-					}
+				if chunk_index == 0 {
+					let data_len = data.len() + 5;
+					&mut chunk[5..12].copy_from_slice(&[ (data_len >> 8) as u8, (data_len & 0xff) as u8, APDU_CLA, command, p1, p2, data.len() as u8 ]);
+				}
 
-					&mut chunk[chunk_size..chunk_size + size].copy_from_slice(&data[offset..offset + size]);
-					offset += size;
-					chunk_size += size;
-				}
-				trace!("writing {:?}", &hid_chunk[..]);
-				let n = handle.write(&hid_chunk[..])?;
-				if n < chunk_size {
-					return Err(Error::Protocol("Write data size mismatch"));
-				}
-				if offset == data.len() {
-					break;
-				}
-				chunk_index += 1;
+				&mut chunk[chunk_size..chunk_size + size].copy_from_slice(&data[offset..offset + size]);
+				offset += size;
+				chunk_size += size;
 			}
+			trace!("writing {:?}", &hid_chunk[..]);
+			let n = handle.write(&hid_chunk[..])?;
+			if n < chunk_size {
+				return Err(Error::Protocol("Write data size mismatch"));
+			}
+			if offset == data.len() {
+				break;
+			}
+			chunk_index += 1;
+		}
 
 		// read response
 		chunk_index = 0;
@@ -306,7 +302,7 @@ impl Manager {
 				if chunk_size < 7 {
 					return Err(Error::Protocol("Unexpected chunk header"));
 				}
-				message_size = (chunk[5] as usize) << 8  | (chunk[6] as usize);
+				message_size = (chunk[5] as usize) << 8 | (chunk[6] as usize);
 				offset += 2;
 			}
 			message.extend_from_slice(&chunk[offset..chunk_size]);
@@ -314,12 +310,12 @@ impl Manager {
 			if message.len() == message_size {
 				break;
 			}
-			chunk_index +=1;
+			chunk_index += 1;
 		}
 		if message.len() < 2 {
 			return Err(Error::Protocol("No status word"));
 		}
-		let status = (message[message.len() - 2] as usize) << 8  | (message[message.len() - 1] as usize);
+		let status = (message[message.len() - 2] as usize) << 8 | (message[message.len() - 1] as usize);
 		debug!("Read status {:x}", status);
 		match status {
 			0x6700 => Err(Error::Protocol("Incorrect length")),
@@ -345,8 +341,8 @@ impl Manager {
 fn smoke() {
 	use super::KeyPath;
 	use rustc_hex::FromHex;
-
-	let manager = Manager::new(KeyPath::Ethereum).unwrap();
+	let hidapi = Arc::new(Mutex::new(hidapi::HidApi::new().unwrap()));
+	let manager = Manager::new(hidapi.clone());
 	manager.update_devices().unwrap();
 	for d in &*manager.devices.read() {
 		println!("Device: {:?}", d);

@@ -14,57 +14,48 @@
 // You should have received a copy of the GNU General Public License
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeMap;
-use util::{Address, HashMap};
-use builtin::Builtin;
 use engines::{Engine, Seal};
-use spec::CommonParams;
-use block::ExecutedBlock;
+use parity_machine::{Machine, Transactions};
 
 /// An engine which does not provide any consensus mechanism, just seals blocks internally.
-pub struct InstantSeal {
-	params: CommonParams,
-	registrar: Address,
-	builtins: BTreeMap<Address, Builtin>,
+/// Only seals blocks which have transactions.
+pub struct InstantSeal<M> {
+	machine: M,
 }
 
-impl InstantSeal {
-	/// Returns new instance of InstantSeal with default VM Factory
-	pub fn new(params: CommonParams, registrar: Address, builtins: BTreeMap<Address, Builtin>) -> Self {
+impl<M> InstantSeal<M> {
+	/// Returns new instance of InstantSeal over the given state machine.
+	pub fn new(machine: M) -> Self {
 		InstantSeal {
-			params: params,
-			registrar: registrar,
-			builtins: builtins,
+			machine: machine,
 		}
 	}
 }
 
-impl Engine for InstantSeal {
+impl<M: Machine> Engine<M> for InstantSeal<M>
+	where M::LiveBlock: Transactions
+{
 	fn name(&self) -> &str {
 		"InstantSeal"
 	}
 
-	fn params(&self) -> &CommonParams {
-		&self.params
-	}
-
-	fn additional_params(&self) -> HashMap<String, String> {
-		hash_map!["registrar".to_owned() => self.registrar.hex()]
-	}
-
-	fn builtins(&self) -> &BTreeMap<Address, Builtin> {
-		&self.builtins
-	}
+	fn machine(&self) -> &M { &self.machine }
 
 	fn seals_internally(&self) -> Option<bool> { Some(true) }
 
-	fn generate_seal(&self, _block: &ExecutedBlock) -> Seal {
-		Seal::Regular(Vec::new())
+	fn generate_seal(&self, block: &M::LiveBlock, _parent: &M::Header) -> Seal {
+		if block.transactions().is_empty() { Seal::None } else { Seal::Regular(Vec::new()) }
+	}
+
+	fn verify_local_seal(&self, _header: &M::Header) -> Result<(), M::Error> {
+		Ok(())
 	}
 }
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+	use bigint::hash::H520;
 	use util::*;
 	use tests::helpers::*;
 	use spec::Spec;
@@ -81,7 +72,7 @@ mod tests {
 		let last_hashes = Arc::new(vec![genesis_header.hash()]);
 		let b = OpenBlock::new(engine, Default::default(), false, db, &genesis_header, last_hashes, Address::default(), (3141562.into(), 31415620.into()), vec![], false).unwrap();
 		let b = b.close_and_lock();
-		if let Seal::Regular(seal) = engine.generate_seal(b.block()) {
+		if let Seal::Regular(seal) = engine.generate_seal(b.block(), &genesis_header) {
 			assert!(b.try_seal(engine, seal).is_ok());
 		}
 	}
@@ -91,10 +82,10 @@ mod tests {
 		let engine = Spec::new_instant().engine;
 		let mut header: Header = Header::default();
 
-		assert!(engine.verify_block_basic(&header, None).is_ok());
+		assert!(engine.verify_block_basic(&header).is_ok());
 
 		header.set_seal(vec![::rlp::encode(&H520::default()).into_vec()]);
 
-		assert!(engine.verify_block_unordered(&header, None).is_ok());
+		assert!(engine.verify_block_unordered(&header).is_ok());
 	}
 }

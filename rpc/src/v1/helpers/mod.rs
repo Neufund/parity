@@ -22,14 +22,15 @@ pub mod block_import;
 pub mod dapps;
 pub mod dispatch;
 pub mod fake_sign;
-pub mod light_fetch;
-pub mod oneshot;
 pub mod ipfs;
+pub mod light_fetch;
+pub mod nonce;
+pub mod oneshot;
 pub mod secretstore;
 
 mod network_settings;
-mod poll_manager;
 mod poll_filter;
+mod poll_manager;
 mod requests;
 mod signer;
 mod signing_queue;
@@ -51,6 +52,6 @@ pub use self::signer::SignerService;
 pub use self::subscribers::Subscribers;
 pub use self::subscription_manager::GenericPollManager;
 
-pub fn to_url(address: &Option<(String, u16)>) -> Option<String> {
-	address.as_ref().map(|&(ref iface, ref port)| format!("{}:{}", iface, port))
+pub fn to_url(address: &Option<::Host>) -> Option<String> {
+	address.as_ref().map(|host| (**host).to_owned())
 }

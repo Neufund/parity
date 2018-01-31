@@ -20,22 +20,25 @@ use std::time::Duration;
 use rlp;
 
 use jsonrpc_core::{IoHandler, Success};
+use jsonrpc_core::futures::Future;
 use v1::impls::SigningQueueClient;
 use v1::metadata::Metadata;
 use v1::traits::{EthSigning, ParitySigning, Parity};
-use v1::helpers::{SignerService, SigningQueue, FullDispatcher};
-use v1::types::ConfirmationResponse;
+use v1::helpers::{nonce, SignerService, SigningQueue, FullDispatcher};
+use v1::types::{ConfirmationResponse, RichRawTransaction};
 use v1::tests::helpers::TestMinerService;
 use v1::tests::mocked::parity;
 
-use util::{Address, U256, ToPretty};
+use bigint::prelude::U256;
+use util::Address;
+use bytes::ToPretty;
 use ethkey::Secret;
 use ethcore::account_provider::AccountProvider;
 use ethcore::client::TestBlockChainClient;
 use ethcore::transaction::{Transaction, Action, SignedTransaction};
 use ethstore::ethkey::{Generator, Random};
-use futures::Future;
 use serde_json;
+use parking_lot::Mutex;
 
 struct SigningTester {
 	pub signer: Arc<SignerService>,
@@ -52,9 +55,10 @@ impl Default for SigningTester {
 		let miner = Arc::new(TestMinerService::default());
 		let accounts = Arc::new(AccountProvider::transient_provider());
 		let opt_accounts = Some(accounts.clone());
+		let reservations = Arc::new(Mutex::new(nonce::Reservations::new()));
 		let mut io = IoHandler::default();
 
-		let dispatcher = FullDispatcher::new(client.clone(), miner.clone());
+		let dispatcher = FullDispatcher::new(client.clone(), miner.clone(), reservations, 50);
 
 		let rpc = SigningQueueClient::new(&signer, dispatcher.clone(), &opt_accounts);
 		io.extend_with(EthSigning::to_delegate(rpc));
@@ -297,12 +301,13 @@ fn should_add_sign_transaction_to_the_queue() {
 	let response = r#"{"jsonrpc":"2.0","result":{"#.to_owned() +
 		r#""raw":"0x"# + &rlp.to_hex() + r#"","# +
 		r#""tx":{"# +
-		r#""blockHash":null,"blockNumber":null,"condition":null,"creates":null,"# +
+		r#""blockHash":null,"blockNumber":null,"# +
+		&format!("\"chainId\":{},", t.chain_id().map_or("null".to_owned(), |n| format!("{}", n))) +
+		r#""condition":null,"creates":null,"# +
 		&format!("\"from\":\"0x{:?}\",", &address) +
 		r#""gas":"0x76c0","gasPrice":"0x9184e72a000","# +
 		&format!("\"hash\":\"0x{:?}\",", t.hash()) +
 		r#""input":"0x","# +
-		&format!("\"networkId\":{},", t.network_id().map_or("null".to_owned(), |n| format!("{}", n))) +
 		r#""nonce":"0x1","# +
 		&format!("\"publicKey\":\"0x{:?}\",", t.public_key().unwrap()) +
 		&format!("\"r\":\"0x{}\",", U256::from(signature.r()).to_hex()) +
@@ -323,7 +328,9 @@ fn should_add_sign_transaction_to_the_queue() {
 	::std::thread::spawn(move || loop {
 		if signer.requests().len() == 1 {
 			// respond
-			signer.request_confirmed(1.into(), Ok(ConfirmationResponse::SignTransaction(t.into())));
+			signer.request_confirmed(1.into(), Ok(ConfirmationResponse::SignTransaction(
+				RichRawTransaction::from_signed(t.into(), 0x0, u64::max_value())
+			)));
 			break
 		}
 		::std::thread::sleep(Duration::from_millis(100))

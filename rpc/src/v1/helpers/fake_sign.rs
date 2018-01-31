@@ -18,7 +18,7 @@ use std::sync::Arc;
 use ethcore::client::MiningBlockChainClient;
 use ethcore::miner::MinerService;
 use ethcore::transaction::{Transaction, SignedTransaction, Action};
-use util::U256;
+use bigint::prelude::U256;
 
 use jsonrpc_core::Error;
 use v1::helpers::CallRequest;
@@ -46,7 +46,7 @@ pub fn sign_call<C: MiningBlockChainClient, M: MinerService> (
 		nonce: request.nonce.unwrap_or_else(|| client.latest_nonce(&from)),
 		action: request.to.map_or(Action::Create, Action::Call),
 		gas,
-		gas_price: request.gas_price.unwrap_or_else(|| default_gas_price(&**client, &**miner)),
+		gas_price: request.gas_price.unwrap_or_else(|| default_gas_price(&**client, &**miner, 0)),
 		value: request.value.unwrap_or(0.into()),
 		data: request.data.unwrap_or_default(),
 	}.fake_sign(from))

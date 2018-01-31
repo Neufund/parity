@@ -13,9 +13,10 @@ use std::cmp::{min, Ordering};
 use std::ops::{Deref, DerefMut, BitXor, BitAnd, BitOr, IndexMut, Index};
 use std::hash::{Hash, Hasher, BuildHasherDefault};
 use std::collections::{HashMap, HashSet};
-use rand::Rng;
+use rand::{Rand, Rng};
 use rand::os::OsRng;
 use rustc_hex::{FromHex, FromHexError};
+use plain_hasher::PlainHasher;
 use bigint::U256;
 use libc::{c_void, memcmp};
 
@@ -91,7 +92,7 @@ macro_rules! impl_hash {
 			/// Assign self have a cryptographically random value.
 			pub fn randomize(&mut self) {
 				let mut rng = OsRng::new().unwrap();
-				rng.fill_bytes(&mut self.0);
+				*self= $from::rand(&mut rng);
 			}
 
 			/// Get the size of this object in bytes.
@@ -360,6 +361,14 @@ macro_rules! impl_hash {
 				$from::from_slice(s)
 			}
 		}
+
+		impl Rand for $from {
+			fn rand<R: Rng>(r: &mut R) -> Self {
+				let mut hash = $from::new();
+				r.fill_bytes(&mut hash.0);
+				hash
+			}
+		}
 	}
 }
 
@@ -437,41 +446,6 @@ impl_hash!(H2048, 256);
 #[cfg(feature="heapsizeof")]
 known_heap_size!(0, H32, H64, H128, H160, H256, H264, H512, H520, H1024, H2048);
 // Specialized HashMap and HashSet
-
-/// Hasher that just takes 8 bytes of the provided value.
-/// May only be used for keys which are 32 bytes.
-pub struct PlainHasher {
-	prefix: [u8; 8],
-	_marker: [u64; 0], // for alignment
-}
-
-impl Default for PlainHasher {
-	#[inline]
-	fn default() -> PlainHasher {
-		PlainHasher {
-			prefix: [0; 8],
-			_marker: [0; 0],
-		}
-	}
-}
-
-impl Hasher for PlainHasher {
-	#[inline]
-	fn finish(&self) -> u64 {
-		unsafe { ::std::mem::transmute(self.prefix) }
-	}
-
-	#[inline]
-	fn write(&mut self, bytes: &[u8]) {
-		debug_assert!(bytes.len() == 32);
-
-		for quarter in bytes.chunks(8) {
-			for (x, y) in self.prefix.iter_mut().zip(quarter) {
-				*x ^= *y
-			}
-		}
-	}
-}
 
 /// Specialized version of `HashMap` with H256 keys and fast hashing function.
 pub type H256FastMap<T> = HashMap<H256, T, BuildHasherDefault<PlainHasher>>;

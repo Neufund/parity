@@ -53,6 +53,11 @@ export default class Parity {
       );
   }
 
+  chainId () {
+    return this._transport
+      .execute('parity_chainId');
+  }
+
   chainStatus () {
     return this._transport
       .execute('parity_chainStatus')
@@ -102,6 +107,11 @@ export default class Parity {
   dappsList () {
     return this._transport
       .execute('parity_dappsList');
+  }
+
+  dappsRefresh () {
+    return this._transport
+      .execute('parity_dappsRefresh');
   }
 
   dappsUrl () {
@@ -245,6 +255,16 @@ export default class Parity {
     return this._transport
       .execute('parity_hardwareAccountsInfo')
       .then(outHwAccountInfo);
+  }
+
+  lockedHardwareAccountsInfo () {
+    return this._transport
+      .execute('parity_lockedHardwareAccountsInfo');
+  }
+
+  hardwarePinMatrixAck (path, pin) {
+    return this._transport
+      .execute('parity_hardwarePinMatrixAck', path, pin);
   }
 
   hashContent (url) {

@@ -66,6 +66,7 @@ class DeployContract extends Component {
   };
 
   static propTypes = {
+    availability: PropTypes.string.isRequired,
     accounts: PropTypes.object.isRequired,
     abi: PropTypes.string,
     code: PropTypes.string,
@@ -330,6 +331,7 @@ class DeployContract extends Component {
 
     return (
       <Extras
+        availability={ this.props.availability }
         gasStore={ this.gasStore }
         hideData
         isEth
@@ -489,9 +491,11 @@ class DeployContract extends Component {
 }
 
 function mapStateToProps (state) {
-  const { gasLimit } = state.nodeStatus;
+  const { gasLimit, nodeKind = {} } = state.nodeStatus;
+  const { availability = 'unknown' } = nodeKind;
 
   return {
+    availability,
     gasLimit
   };
 }

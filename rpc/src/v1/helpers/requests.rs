@@ -14,7 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
-use util::{Address, U256, Bytes};
+use bigint::prelude::U256;
+use bytes::Bytes;
+use util::Address;
+
 use v1::types::{Origin, TransactionCondition};
 
 /// Transaction request coming from RPC

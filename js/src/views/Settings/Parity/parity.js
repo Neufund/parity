@@ -46,6 +46,8 @@ export default class Parity extends Component {
           <FormattedMessage id='settings.parity.label' />
         }
       >
+        <Features />
+
         <div className={ layout.layout }>
           <div className={ layout.overview }>
             <div>
@@ -58,10 +60,10 @@ export default class Parity extends Component {
           <div className={ layout.details }>
             { this.renderChains() }
             { this.renderModes() }
-            <Features />
             <LanguageSelector />
           </div>
         </div>
+
         { this.renderLogsConfig() }
       </Container>
     );
@@ -258,6 +260,14 @@ export default class Parity extends Component {
             <FormattedMessage
               id='settings.parity.chains.chain_expanse'
               defaultMessage='Parity syncs to the Expanse network'
+            />
+          ))
+        }
+        {
+          this.renderItem('musicoin', (
+            <FormattedMessage
+              id='settings.parity.chains.chain_musicoin'
+              defaultMessage='Parity syncs to the Musicoin network'
             />
           ))
         }

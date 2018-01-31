@@ -19,22 +19,27 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ethcore::client::{BlockChainClient, Client, ClientConfig};
-use ethcore::ids::BlockId;
-use ethcore::spec::{Genesis, Spec};
-use ethcore::block::Block;
-use ethcore::views::BlockView;
-use ethcore::ethereum;
-use ethcore::miner::{MinerOptions, Banning, GasPricer, MinerService, ExternalMiner, Miner, PendingSet, PrioritizationStrategy, GasLimit};
+use bigint::hash::H256;
+use bigint::prelude::U256;
 use ethcore::account_provider::AccountProvider;
+use ethcore::block::Block;
+use ethcore::client::{BlockChainClient, Client, ClientConfig};
+use ethcore::ethereum;
+use ethcore::ids::BlockId;
+use ethcore::miner::{MinerOptions, Banning, GasPricer, MinerService, ExternalMiner, Miner, PendingSet, PrioritizationStrategy, GasLimit};
+use ethcore::spec::{Genesis, Spec};
+use ethcore::views::BlockView;
 use ethjson::blockchain::BlockChain;
 use ethjson::state::test::ForkSpec;
 use io::IoChannel;
-use util::{U256, H256, Address, Hashable};
+use kvdb_memorydb;
+use parking_lot::Mutex;
+use util::Address;
 
 use jsonrpc_core::IoHandler;
-use v1::impls::{EthClient, SigningUnsafeClient};
 use v1::helpers::dispatch::FullDispatcher;
+use v1::helpers::nonce;
+use v1::impls::{EthClient, SigningUnsafeClient};
 use v1::metadata::Metadata;
 use v1::tests::helpers::{TestSnapshotService, TestSyncProvider, Config};
 use v1::traits::eth::Eth;
@@ -128,7 +133,7 @@ impl EthTester {
 		let client = Client::new(
 			ClientConfig::default(),
 			&spec,
-			Arc::new(::util::kvdb::in_memory(::ethcore::db::NUM_COLUMNS.unwrap_or(0))),
+			Arc::new(kvdb_memorydb::create(::ethcore::db::NUM_COLUMNS.unwrap_or(0))),
 			miner_service.clone(),
 			IoChannel::disconnected(),
 		).unwrap();
@@ -145,7 +150,9 @@ impl EthTester {
 			Default::default(),
 		);
 
-		let dispatcher = FullDispatcher::new(client.clone(), miner_service.clone());
+		let reservations = Arc::new(Mutex::new(nonce::Reservations::new()));
+
+		let dispatcher = FullDispatcher::new(client.clone(), miner_service.clone(), reservations, 50);
 		let eth_sign = SigningUnsafeClient::new(
 			&opt_account_provider,
 			dispatcher,
@@ -228,12 +235,9 @@ const TRANSACTION_COUNT_SPEC: &'static [u8] = br#"{
 	"engine": {
 		"Ethash": {
 			"params": {
-				"gasLimitBoundDivisor": "0x0400",
 				"minimumDifficulty": "0x020000",
 				"difficultyBoundDivisor": "0x0800",
 				"durationLimit": "0x0d",
-				"blockReward": "0x4563918244F40000",
-				"registrar" : "0xc6d9d2cd449a754c494264e1809c50e34d64562b",
 				"homesteadTransition": "0xffffffffffffffff",
 				"daoHardforkTransition": "0xffffffffffffffff",
 				"daoHardforkBeneficiary": "0x0000000000000000000000000000000000000000",
@@ -242,6 +246,9 @@ const TRANSACTION_COUNT_SPEC: &'static [u8] = br#"{
 		}
 	},
 	"params": {
+		"gasLimitBoundDivisor": "0x0400",
+		"blockReward": "0x4563918244F40000",
+		"registrar" : "0xc6d9d2cd449a754c494264e1809c50e34d64562b",
 		"accountStartNonce": "0x00",
 		"maximumExtraDataSize": "0x20",
 		"minGasLimit": "0x50000",
@@ -276,12 +283,9 @@ const POSITIVE_NONCE_SPEC: &'static [u8] = br#"{
 	"engine": {
 		"Ethash": {
 			"params": {
-				"gasLimitBoundDivisor": "0x0400",
 				"minimumDifficulty": "0x020000",
 				"difficultyBoundDivisor": "0x0800",
 				"durationLimit": "0x0d",
-				"blockReward": "0x4563918244F40000",
-				"registrar" : "0xc6d9d2cd449a754c494264e1809c50e34d64562b",
 				"homesteadTransition": "0xffffffffffffffff",
 				"daoHardforkTransition": "0xffffffffffffffff",
 				"daoHardforkBeneficiary": "0x0000000000000000000000000000000000000000",
@@ -290,6 +294,9 @@ const POSITIVE_NONCE_SPEC: &'static [u8] = br#"{
 		}
 	},
 	"params": {
+		"gasLimitBoundDivisor": "0x0400",
+		"blockReward": "0x4563918244F40000",
+		"registrar" : "0xc6d9d2cd449a754c494264e1809c50e34d64562b",
 		"accountStartNonce": "0x0100",
 		"maximumExtraDataSize": "0x20",
 		"minGasLimit": "0x50000",
@@ -432,7 +439,7 @@ fn verify_transaction_counts(name: String, chain: BlockChain) {
 	for b in chain.blocks_rlp().iter().filter(|b| Block::is_good(b)).map(|b| BlockView::new(b)) {
 		let count = b.transactions_count();
 
-		let hash = b.sha3();
+		let hash = b.hash();
 		let number = b.header_view().number();
 
 		let (req, res) = by_hash(hash, count, &mut id);

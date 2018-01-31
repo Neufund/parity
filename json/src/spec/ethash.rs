@@ -20,11 +20,8 @@ use uint::Uint;
 use hash::Address;
 
 /// Deserializable doppelganger of EthashParams.
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct EthashParams {
-	/// See main EthashParams docs.
-	#[serde(rename="gasLimitBoundDivisor")]
-	pub gas_limit_bound_divisor: Uint,
 	/// See main EthashParams docs.
 	#[serde(rename="minimumDifficulty")]
 	pub minimum_difficulty: Uint,
@@ -40,15 +37,13 @@ pub struct EthashParams {
 	/// See main EthashParams docs.
 	#[serde(rename="durationLimit")]
 	pub duration_limit: Option<Uint>,
-	/// See main EthashParams docs.
-	#[serde(rename="blockReward")]
-	pub block_reward: Uint,
-	/// See main EthashParams docs.
-	pub registrar: Option<Address>,
 
 	/// See main EthashParams docs.
 	#[serde(rename="homesteadTransition")]
 	pub homestead_transition: Option<Uint>,
+	/// Reward per block in wei.
+	#[serde(rename="blockReward")]
+	pub block_reward: Option<Uint>,
 
 	/// See main EthashParams docs.
 	#[serde(rename="daoHardforkTransition")]
@@ -79,10 +74,6 @@ pub struct EthashParams {
 	pub eip150_transition: Option<Uint>,
 
 	/// See main EthashParams docs.
-	#[serde(rename="eip155Transition")]
-	pub eip155_transition: Option<Uint>,
-
-	/// See main EthashParams docs.
 	#[serde(rename="eip160Transition")]
 	pub eip160_transition: Option<Uint>,
 
@@ -105,24 +96,23 @@ pub struct EthashParams {
 	pub ecip1017_era_rounds: Option<Uint>,
 
 	/// See main EthashParams docs.
-	#[serde(rename="maxCodeSize")]
-	pub max_code_size: Option<Uint>,
-
+	#[serde(rename="mcip3Transition")]
+	pub mcip3_transition: Option<Uint>,
 	/// See main EthashParams docs.
-	#[serde(rename="maxGasLimitTransition")]
-	pub max_gas_limit_transition: Option<Uint>,
-
+	#[serde(rename="mcip3MinerReward")]
+	pub mcip3_miner_reward: Option<Uint>,
 	/// See main EthashParams docs.
-	#[serde(rename="maxGasLimit")]
-	pub max_gas_limit: Option<Uint>,
-
+	#[serde(rename="mcip3UbiReward")]
+	pub mcip3_ubi_reward: Option<Uint>,
 	/// See main EthashParams docs.
-	#[serde(rename="minGasPriceTransition")]
-	pub min_gas_price_transition: Option<Uint>,
-
+	#[serde(rename="mcip3UbiContract")]
+	pub mcip3_ubi_contract: Option<Address>,
 	/// See main EthashParams docs.
-	#[serde(rename="minGasPrice")]
-	pub min_gas_price: Option<Uint>,
+	#[serde(rename="mcip3DevReward")]
+	pub mcip3_dev_reward: Option<Uint>,
+	/// See main EthashParams docs.
+	#[serde(rename="mcip3DevContract")]
+	pub mcip3_dev_contract: Option<Address>,
 
 	/// EIP-649 transition block.
 	#[serde(rename="eip649Transition")]
@@ -135,6 +125,14 @@ pub struct EthashParams {
 	/// EIP-649 base reward.
 	#[serde(rename="eip649Reward")]
 	pub eip649_reward: Option<Uint>,
+
+	/// EXPIP-2 block height
+	#[serde(rename="expip2Transition")]
+	pub expip2_transition: Option<Uint>,
+
+	/// EXPIP-2 duration limit
+	#[serde(rename="expip2DurationLimit")]
+	pub expip2_duration_limit: Option<Uint>,
 }
 
 /// Ethash engine deserialization.
@@ -148,22 +146,19 @@ pub struct Ethash {
 mod tests {
 	use serde_json;
 	use uint::Uint;
-	use util::U256;
+	use bigint::prelude::{H160, U256};
 	use hash::Address;
-	use util::hash::H160;
 	use spec::ethash::{Ethash, EthashParams};
 
 	#[test]
 	fn ethash_deserialization() {
 		let s = r#"{
 			"params": {
-				"gasLimitBoundDivisor": "0x0400",
 				"minimumDifficulty": "0x020000",
 				"difficultyBoundDivisor": "0x0800",
 				"durationLimit": "0x0d",
-				"blockReward": "0x4563918244F40000",
-				"registrar": "0xc6d9d2cd449a754c494264e1809c50e34d64562b",
 				"homesteadTransition": "0x42",
+				"blockReward": "0x100",
 				"daoHardforkTransition": "0x08",
 				"daoHardforkBeneficiary": "0xabcabcabcabcabcabcabcabcabcabcabcabcabca",
 				"daoHardforkAccounts": [
@@ -193,7 +188,6 @@ mod tests {
 				"bombDefuseTransition": "0x41",
 				"eip100bTransition": "0x42",
 				"eip150Transition": "0x43",
-				"eip155Transition": "0x44",
 				"eip160Transition": "0x45",
 				"eip161abcTransition": "0x46",
 				"eip161dTransition": "0x47"
@@ -202,17 +196,15 @@ mod tests {
 
 		let deserialized: Ethash = serde_json::from_str(s).unwrap();
 
-		assert_eq!(deserialized, Ethash{
+		assert_eq!(deserialized, Ethash {
 			params: EthashParams{
-				gas_limit_bound_divisor: Uint(U256::from(0x0400)),
 				minimum_difficulty: Uint(U256::from(0x020000)),
 				difficulty_bound_divisor: Uint(U256::from(0x0800)),
 				difficulty_increment_divisor: None,
 				metropolis_difficulty_increment_divisor: None,
 				duration_limit: Some(Uint(U256::from(0x0d))),
-				block_reward: Uint(U256::from(0x4563918244F40000u64)),
-				registrar: Some(Address(H160::from("0xc6d9d2cd449a754c494264e1809c50e34d64562b"))),
 				homestead_transition: Some(Uint(U256::from(0x42))),
+				block_reward: Some(Uint(U256::from(0x100))),
 				dao_hardfork_transition: Some(Uint(U256::from(0x08))),
 				dao_hardfork_beneficiary: Some(Address(H160::from("0xabcabcabcabcabcabcabcabcabcabcabcabcabca"))),
 				dao_hardfork_accounts: Some(vec![
@@ -242,21 +234,23 @@ mod tests {
 				bomb_defuse_transition: Some(Uint(U256::from(0x41))),
 				eip100b_transition: Some(Uint(U256::from(0x42))),
 				eip150_transition: Some(Uint(U256::from(0x43))),
-				eip155_transition: Some(Uint(U256::from(0x44))),
 				eip160_transition: Some(Uint(U256::from(0x45))),
 				eip161abc_transition: Some(Uint(U256::from(0x46))),
 				eip161d_transition: Some(Uint(U256::from(0x47))),
 				ecip1010_pause_transition: None,
 				ecip1010_continue_transition: None,
 				ecip1017_era_rounds: None,
-				max_code_size: None,
-				max_gas_limit_transition: None,
-				max_gas_limit: None,
-				min_gas_price_transition: None,
-				min_gas_price: None,
+				mcip3_transition: None,
+				mcip3_miner_reward: None,
+				mcip3_ubi_reward: None,
+				mcip3_ubi_contract: None,
+				mcip3_dev_reward: None,
+				mcip3_dev_contract: None,
 				eip649_transition: None,
 				eip649_delay: None,
 				eip649_reward: None,
+				expip2_transition: None,
+				expip2_duration_limit: None,
 			}
 		});
 	}
@@ -265,25 +259,21 @@ mod tests {
 	fn ethash_deserialization_missing_optionals() {
 		let s = r#"{
 			"params": {
-				"gasLimitBoundDivisor": "0x0400",
-				"minimumDifficulty": "0x020000",
 				"difficultyBoundDivisor": "0x0800",
-				"blockReward": "0x4563918244F40000"
+				"minimumDifficulty": "0x020000"
 			}
 		}"#;
 
 		let deserialized: Ethash = serde_json::from_str(s).unwrap();
-		assert_eq!(deserialized, Ethash{
-			params: EthashParams{
-				gas_limit_bound_divisor: Uint(U256::from(0x0400)),
+		assert_eq!(deserialized, Ethash {
+			params: EthashParams {
 				minimum_difficulty: Uint(U256::from(0x020000)),
 				difficulty_bound_divisor: Uint(U256::from(0x0800)),
 				difficulty_increment_divisor: None,
 				metropolis_difficulty_increment_divisor: None,
 				duration_limit: None,
-				block_reward: Uint(U256::from(0x4563918244F40000u64)),
-				registrar: None,
 				homestead_transition: None,
+				block_reward: None,
 				dao_hardfork_transition: None,
 				dao_hardfork_beneficiary: None,
 				dao_hardfork_accounts: None,
@@ -292,21 +282,23 @@ mod tests {
 				bomb_defuse_transition: None,
 				eip100b_transition: None,
 				eip150_transition: None,
-				eip155_transition: None,
 				eip160_transition: None,
 				eip161abc_transition: None,
 				eip161d_transition: None,
 				ecip1010_pause_transition: None,
 				ecip1010_continue_transition: None,
 				ecip1017_era_rounds: None,
-				max_code_size: None,
-				max_gas_limit_transition: None,
-				max_gas_limit: None,
-				min_gas_price_transition: None,
-				min_gas_price: None,
+				mcip3_transition: None,
+				mcip3_miner_reward: None,
+				mcip3_ubi_reward: None,
+				mcip3_ubi_contract: None,
+				mcip3_dev_reward: None,
+				mcip3_dev_contract: None,
 				eip649_transition: None,
 				eip649_delay: None,
 				eip649_reward: None,
+				expip2_transition: None,
+				expip2_duration_limit: None,
 			}
 		});
 	}

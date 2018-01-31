@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
-use util::UtilError;
+use util_error::UtilError;
 use std::fmt::{Display, Formatter, Error as FmtError};
 
-use util::trie::TrieError;
+use trie::TrieError;
 
 /// Client configuration errors.
 #[derive(Debug)]

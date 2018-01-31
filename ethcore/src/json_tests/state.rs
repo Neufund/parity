@@ -20,7 +20,7 @@ use trace;
 use client::{EvmTestClient, EvmTestError, TransactResult};
 use ethjson;
 use transaction::SignedTransaction;
-use evm::env_info::EnvInfo;
+use vm::EnvInfo;
 
 pub fn json_chain_test(json_data: &[u8]) -> Vec<String> {
 	::ethcore_logger::init_log();

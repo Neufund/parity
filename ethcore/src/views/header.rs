@@ -16,8 +16,12 @@
 
 //! View onto block header rlp
 
-use util::{U256, Bytes, Hashable, H256, Address, H2048};
-use rlp::Rlp;
+use hash::keccak;
+use bigint::prelude::U256;
+use bigint::hash::{H256, H2048};
+use util::Address;
+use bytes::Bytes;
+use rlp::{self, Rlp};
 use header::BlockNumber;
 
 /// View onto block header rlp.
@@ -41,7 +45,9 @@ impl<'a> HeaderView<'a> {
 	}
 
 	/// Returns header hash.
-	pub fn hash(&self) -> H256 { self.sha3() }
+	pub fn hash(&self) -> H256 {
+		keccak(self.rlp.as_raw())
+	}
 
 	/// Returns raw rlp.
 	pub fn rlp(&self) -> &Rlp<'a> { &self.rlp }
@@ -93,11 +99,13 @@ impl<'a> HeaderView<'a> {
 		}
 		seal
 	}
-}
 
-impl<'a> Hashable for HeaderView<'a> {
-	fn sha3(&self) -> H256 {
-		self.rlp.as_raw().sha3()
+	/// Returns a vector of seal fields (RLP-decoded).
+	pub fn decode_seal(&self) -> Result<Vec<Bytes>, rlp::DecoderError> {
+		let seal = self.seal();
+		seal.into_iter()
+			.map(|s| rlp::UntrustedRlp::new(&s).data().map(|x| x.to_vec()))
+			.collect()
 	}
 }
 
@@ -105,7 +113,9 @@ impl<'a> Hashable for HeaderView<'a> {
 mod tests {
 	use std::str::FromStr;
 	use rustc_hex::FromHex;
-	use util::{H256, Address, H2048, U256};
+	use bigint::prelude::U256;
+	use bigint::hash::{H256, H2048};
+	use util::Address;
 	use super::HeaderView;
 
 	#[test]

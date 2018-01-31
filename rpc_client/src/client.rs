@@ -1,5 +1,3 @@
-extern crate jsonrpc_core;
-
 use std::fmt::{Debug, Formatter, Error as FmtError};
 use std::io::{BufReader, BufRead};
 use std::sync::Arc;
@@ -9,7 +7,8 @@ use std::thread;
 use std::time;
 
 use std::path::PathBuf;
-use util::{Hashable, Mutex};
+use hash::keccak;
+use parking_lot::Mutex;
 use url::Url;
 use std::fs::File;
 
@@ -32,9 +31,9 @@ use serde_json::{
 	Error as JsonError,
 };
 
-use futures::{BoxFuture, Canceled, Complete, Future, oneshot, done};
+use futures::{Canceled, Complete, Future, oneshot, done};
 
-use jsonrpc_core::{Id, Version, Params, Error as JsonRpcError};
+use jsonrpc_core::{BoxFuture, Id, Version, Params, Error as JsonRpcError};
 use jsonrpc_core::request::MethodCall;
 use jsonrpc_core::response::{Output, Success, Failure};
 
@@ -72,7 +71,7 @@ impl Handler for RpcHandler {
 					WsError::new(WsErrorKind::Internal, format!("{}", err))
 				})?;
 				let secs = timestamp.as_secs();
-				let hashed = format!("{}:{}", self.auth_code, secs).sha3();
+				let hashed = keccak(format!("{}:{}", self.auth_code, secs));
 				let proto = format!("{:?}_{}", hashed, secs);
 				r.add_protocol(&proto);
 				Ok(r)
@@ -211,7 +210,7 @@ impl Rpc {
 	) -> BoxFuture<Result<Self, RpcError>, Canceled> {
 		let (c, p) = oneshot::<Result<Self, RpcError>>();
 		match get_authcode(authpath) {
-			Err(e) => return done(Ok(Err(e))).boxed(),
+			Err(e) => return Box::new(done(Ok(Err(e)))),
 			Ok(code) => {
 				let url = String::from(url);
 				// The ws::connect takes a FnMut closure, which means c cannot
@@ -238,7 +237,7 @@ impl Rpc {
 						_ => ()
 					}
 				});
-				p.boxed()
+				Box::new(p)
 			}
 		}
 	}
@@ -265,7 +264,7 @@ impl Rpc {
 			.expect("request is serializable");
 		let _ = self.out.send(serialized);
 
-		p.map(|result| {
+		Box::new(p.map(|result| {
 			match result {
 				Ok(json) => {
 					let t: T = json::from_value(json)?;
@@ -273,7 +272,7 @@ impl Rpc {
 				},
 				Err(err) => Err(err)
 			}
-		}).boxed()
+		}))
 	}
 }
 

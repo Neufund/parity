@@ -18,20 +18,23 @@
 
 use std::fmt;
 use std::sync::Arc;
-use util::{self, U256, H256, journaldb, trie};
-use util::kvdb::{self, KeyValueDB};
+use bigint::prelude::U256;
+use bigint::hash::H256;
+use util::journaldb;
+use {trie, kvdb_memorydb, bytes};
+use kvdb::{self, KeyValueDB};
 use {state, state_db, client, executive, trace, transaction, db, spec, pod_state};
 use factory::Factories;
 use evm::{self, VMType, FinalizationResult};
-use evm::action_params::ActionParams;
+use vm::{self, ActionParams};
 
 /// EVM test Error.
 #[derive(Debug)]
 pub enum EvmTestError {
 	/// Trie integrity error.
-	Trie(util::TrieError),
+	Trie(trie::TrieError),
 	/// EVM error.
-	Evm(evm::Error),
+	Evm(vm::Error),
 	/// Initialization error.
 	ClientError(::error::Error),
 	/// Low-level database error.
@@ -124,7 +127,7 @@ impl<'a> EvmTestClient<'a> {
 	}
 
 	fn state_from_spec(spec: &'a spec::Spec, factories: &Factories) -> Result<state::State<state_db::StateDB>, EvmTestError> {
-		let db = Arc::new(kvdb::in_memory(db::NUM_COLUMNS.expect("We use column-based DB; qed")));
+		let db = Arc::new(kvdb_memorydb::create(db::NUM_COLUMNS.expect("We use column-based DB; qed")));
 		let journal_db = journaldb::new(db.clone(), journaldb::Algorithm::EarlyMerge, db::COL_STATE);
 		let mut state_db = state_db::StateDB::new(journal_db, 5 * 1024 * 1024);
 		state_db = spec.ensure_db_good(state_db, factories)?;
@@ -146,7 +149,7 @@ impl<'a> EvmTestClient<'a> {
 	}
 
 	fn state_from_pod(spec: &'a spec::Spec, factories: &Factories, pod_state: pod_state::PodState) -> Result<state::State<state_db::StateDB>, EvmTestError> {
-		let db = Arc::new(kvdb::in_memory(db::NUM_COLUMNS.expect("We use column-based DB; qed")));
+		let db = Arc::new(kvdb_memorydb::create(db::NUM_COLUMNS.expect("We use column-based DB; qed")));
 		let journal_db = journaldb::new(db.clone(), journaldb::Algorithm::EarlyMerge, db::COL_STATE);
 		let state_db = state_db::StateDB::new(journal_db, 5 * 1024 * 1024);
 		let mut state = state::State::new(
@@ -170,18 +173,18 @@ impl<'a> EvmTestClient<'a> {
 			author: *genesis.author(),
 			timestamp: genesis.timestamp(),
 			difficulty: *genesis.difficulty(),
-			last_hashes: Arc::new([util::H256::default(); 256].to_vec()),
+			last_hashes: Arc::new([H256::default(); 256].to_vec()),
 			gas_used: 0.into(),
 			gas_limit: *genesis.gas_limit(),
 		};
 		let mut substate = state::Substate::new();
 		let mut tracer = trace::NoopTracer;
 		let mut output = vec![];
-		let mut executive = executive::Executive::new(&mut self.state, &info, &*self.spec.engine);
+		let mut executive = executive::Executive::new(&mut self.state, &info, self.spec.engine.machine());
 		executive.call(
 			params,
 			&mut substate,
-			util::BytesRef::Flexible(&mut output),
+			bytes::BytesRef::Flexible(&mut output),
 			&mut tracer,
 			vm_tracer,
 		).map_err(EvmTestError::Evm)
@@ -207,7 +210,7 @@ impl<'a> EvmTestClient<'a> {
 
 		// Apply transaction
 		let tracer = trace::NoopTracer;
-		let result = self.state.apply_with_tracing(&env_info, &*self.spec.engine, &transaction, tracer, vm_tracer);
+		let result = self.state.apply_with_tracing(&env_info, self.spec.engine.machine(), &transaction, tracer, vm_tracer);
 
 		match result {
 			Ok(result) => {

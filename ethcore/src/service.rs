@@ -16,7 +16,12 @@
 
 //! Creates and registers client and network services.
 
-use util::*;
+use std::sync::Arc;
+use std::path::Path;
+use bigint::hash::H256;
+use kvdb::KeyValueDB;
+use kvdb_rocksdb::{Database, DatabaseConfig};
+use bytes::Bytes;
 use io::*;
 use spec::Spec;
 use error::*;
@@ -26,6 +31,7 @@ use miner::Miner;
 use snapshot::{ManifestData, RestorationStatus};
 use snapshot::service::{Service as SnapshotService, ServiceParams as SnapServiceParams};
 use std::sync::atomic::AtomicBool;
+use ansi_term::Colour;
 
 #[cfg(feature="ipc")]
 use nanoipc;
@@ -77,12 +83,7 @@ impl ClientService {
 
 		let mut db_config = DatabaseConfig::with_columns(::db::NUM_COLUMNS);
 
-		// give all rocksdb cache to state column; everything else has its
-		// own caches.
-		if let Some(size) = config.db_cache_size {
-			db_config.set_cache(::db::COL_STATE, size);
-		}
-
+		db_config.memory_budget = config.db_cache_size;
 		db_config.compaction = config.db_compaction.compaction_profile(client_path);
 		db_config.wal = config.db_wal;
 
@@ -112,7 +113,7 @@ impl ClientService {
 		});
 		io_service.register_handler(client_io)?;
 
-		spec.engine.register_client(Arc::downgrade(&client));
+		spec.engine.register_client(Arc::downgrade(&client) as _);
 
 		let stop_guard = ::devtools::StopGuard::new();
 		run_ipc(ipc_path, client.clone(), snapshot.clone(), stop_guard.share());

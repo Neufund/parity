@@ -1,4 +1,4 @@
-# [Parity](https://parity.io/parity.html) - fast, light, and robust Ethereum client
+# [Parity](https://parity.io/) - fast, light, and robust Ethereum client
 
 [![build status](https://gitlab.parity.io/parity/parity/badges/master/build.svg)](https://gitlab.parity.io/parity/parity/commits/master)
 [![Snap Status](https://build.snapcraft.io/badge/paritytech/parity.svg)](https://build.snapcraft.io/user/paritytech/parity)
@@ -35,13 +35,13 @@ If you run into an issue while using parity, feel free to file one in this repos
 
 **For security-critical issues**, please refer to the security policy outlined in `SECURITY.MD`.
 
-Parity's current beta-release is 1.7. You can download it at https://github.com/paritytech/parity/releases or follow the instructions below to build from source.
+Parity's current release is 1.7. You can download it at https://github.com/paritytech/parity/releases or follow the instructions below to build from source.
 
 ----
 
 ## Build dependencies
 
-**Parity 1.7.x-beta requires Rust version 1.19.0 to build**.
+**Parity requires Rust version 1.19.0 to build**
 
 We recommend installing Rust through [rustup](https://www.rustup.rs/). If you don't already have rustup, you can install it like this:
 

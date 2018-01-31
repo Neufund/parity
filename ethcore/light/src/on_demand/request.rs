@@ -20,19 +20,24 @@ use std::sync::Arc;
 
 use ethcore::basic_account::BasicAccount;
 use ethcore::encoded;
-use ethcore::engines::Engine;
-use ethcore::receipt::{Receipt, TransactionOutcome};
+use ethcore::engines::{EthEngine, StateDependentProof};
+use ethcore::machine::EthereumMachine;
+use ethcore::receipt::Receipt;
 use ethcore::state::{self, ProvedExecution};
 use ethcore::transaction::SignedTransaction;
-use evm::env_info::EnvInfo;
+use vm::EnvInfo;
+use hash::{KECCAK_NULL_RLP, KECCAK_EMPTY, KECCAK_EMPTY_LIST_RLP, keccak};
 
 use request::{self as net_request, IncompleteRequest, CompleteRequest, Output, OutputKind, Field};
 
 use rlp::{RlpStream, UntrustedRlp};
-use util::{Address, Bytes, DBValue, HashDB, Mutex, H256, U256};
-use util::memorydb::MemoryDB;
-use util::sha3::{Hashable, SHA3_NULL_RLP, SHA3_EMPTY, SHA3_EMPTY_LIST_RLP};
-use util::trie::{Trie, TrieDB, TrieError};
+use bigint::prelude::U256;
+use bigint::hash::H256;
+use parking_lot::Mutex;
+use util::{Address, DBValue, HashDB};
+use bytes::Bytes;
+use memorydb::MemoryDB;
+use trie::{Trie, TrieDB, TrieError};
 
 const SUPPLIED_MATCHES: &'static str = "supplied responses always match produced requests; enforced by `check_response`; qed";
 
@@ -43,6 +48,8 @@ pub enum Request {
 	HeaderProof(HeaderProof),
 	/// A request for a header by hash.
 	HeaderByHash(HeaderByHash),
+	/// A request for the index of a transaction.
+	TransactionIndex(TransactionIndex),
 	/// A request for block receipts.
 	Receipts(BlockReceipts),
 	/// A request for a block body.
@@ -53,6 +60,8 @@ pub enum Request {
 	Code(Code),
 	/// A request for proof of execution.
 	Execution(TransactionProof),
+	/// A request for epoch change signal.
+	Signal(Signal),
 }
 
 /// A request argument.
@@ -128,11 +137,13 @@ macro_rules! impl_single {
 // implement traits for each kind of request.
 impl_single!(HeaderProof, HeaderProof, (H256, U256));
 impl_single!(HeaderByHash, HeaderByHash, encoded::Header);
+impl_single!(TransactionIndex, TransactionIndex, net_request::TransactionIndexResponse);
 impl_single!(Receipts, BlockReceipts, Vec<Receipt>);
 impl_single!(Body, Body, encoded::Block);
 impl_single!(Account, Account, Option<BasicAccount>);
 impl_single!(Code, Code, Bytes);
 impl_single!(Execution, TransactionProof, super::ExecutionResult);
+impl_single!(Signal, Signal, Vec<u8>);
 
 macro_rules! impl_args {
 	() => {
@@ -236,11 +247,13 @@ impl From<encoded::Header> for HeaderRef {
 pub enum CheckedRequest {
 	HeaderProof(HeaderProof, net_request::IncompleteHeaderProofRequest),
 	HeaderByHash(HeaderByHash, net_request::IncompleteHeadersRequest),
+	TransactionIndex(TransactionIndex, net_request::IncompleteTransactionIndexRequest),
 	Receipts(BlockReceipts, net_request::IncompleteReceiptsRequest),
 	Body(Body, net_request::IncompleteBodyRequest),
 	Account(Account, net_request::IncompleteAccountRequest),
 	Code(Code, net_request::IncompleteCodeRequest),
 	Execution(TransactionProof, net_request::IncompleteExecutionRequest),
+	Signal(Signal, net_request::IncompleteSignalRequest)
 }
 
 impl From<Request> for CheckedRequest {
@@ -261,6 +274,12 @@ impl From<Request> for CheckedRequest {
 				};
 				CheckedRequest::HeaderProof(req, net_req)
 			}
+			Request::TransactionIndex(req) => {
+				let net_req = net_request::IncompleteTransactionIndexRequest {
+					hash: req.0.clone(),
+				};
+				CheckedRequest::TransactionIndex(req, net_req)
+			}
 			Request::Body(req) =>  {
 				let net_req = net_request::IncompleteBodyRequest {
 					hash: req.0.field(),
@@ -276,7 +295,7 @@ impl From<Request> for CheckedRequest {
 			Request::Account(req) => {
 				let net_req = net_request::IncompleteAccountRequest {
 					block_hash: req.header.field(),
-					address_hash: ::util::Hashable::sha3(&req.address).into(),
+					address_hash: ::hash::keccak(&req.address).into(),
 				};
 				CheckedRequest::Account(req, net_req)
 			}
@@ -299,6 +318,12 @@ impl From<Request> for CheckedRequest {
 				};
 				CheckedRequest::Execution(req, net_req)
 			}
+			Request::Signal(req) => {
+				let net_req = net_request::IncompleteSignalRequest {
+					block_hash: req.hash.into(),
+				};
+				CheckedRequest::Signal(req, net_req)
+			}
 		}
 	}
 }
@@ -311,11 +336,13 @@ impl CheckedRequest {
 		match self {
 			CheckedRequest::HeaderProof(_, req) => NetRequest::HeaderProof(req),
 			CheckedRequest::HeaderByHash(_, req) => NetRequest::Headers(req),
+			CheckedRequest::TransactionIndex(_, req) => NetRequest::TransactionIndex(req),
 			CheckedRequest::Receipts(_, req) => NetRequest::Receipts(req),
 			CheckedRequest::Body(_, req) => NetRequest::Body(req),
 			CheckedRequest::Account(_, req) => NetRequest::Account(req),
 			CheckedRequest::Code(_, req) => NetRequest::Code(req),
 			CheckedRequest::Execution(_, req) => NetRequest::Execution(req),
+			CheckedRequest::Signal(_, req) => NetRequest::Signal(req),
 		}
 	}
 
@@ -366,7 +393,7 @@ impl CheckedRequest {
 			}
 			CheckedRequest::Receipts(ref check, ref req) => {
 				// empty transactions -> no receipts
-				if check.0.as_ref().ok().map_or(false, |hdr| hdr.receipts_root() == SHA3_NULL_RLP) {
+				if check.0.as_ref().ok().map_or(false, |hdr| hdr.receipts_root() == KECCAK_NULL_RLP) {
 					return Some(Response::Receipts(Vec::new()));
 				}
 
@@ -377,7 +404,7 @@ impl CheckedRequest {
 			CheckedRequest::Body(ref check, ref req) => {
 				// check for empty body.
 				if let Some(hdr) = check.0.as_ref().ok() {
-					if hdr.transactions_root() == SHA3_NULL_RLP && hdr.uncles_hash() == SHA3_EMPTY_LIST_RLP {
+					if hdr.transactions_root() == KECCAK_NULL_RLP && hdr.uncles_hash() == KECCAK_EMPTY_LIST_RLP {
 						let mut stream = RlpStream::new_list(3);
 						stream.append_raw(hdr.rlp().as_raw(), 1);
 						stream.begin_list(0);
@@ -422,7 +449,7 @@ impl CheckedRequest {
 					})
 			}
 			CheckedRequest::Code(_, ref req) => {
-				if req.code_hash.as_ref().map_or(false, |&h| h == SHA3_EMPTY) {
+				if req.code_hash.as_ref().map_or(false, |&h| h == KECCAK_EMPTY) {
 					Some(Response::Code(Vec::new()))
 				} else {
 					None
@@ -438,11 +465,13 @@ macro_rules! match_me {
 		match $me {
 			CheckedRequest::HeaderProof($check, $req) => $e,
 			CheckedRequest::HeaderByHash($check, $req) => $e,
+			CheckedRequest::TransactionIndex($check, $req) => $e,
 			CheckedRequest::Receipts($check, $req) => $e,
 			CheckedRequest::Body($check, $req) => $e,
 			CheckedRequest::Account($check, $req) => $e,
 			CheckedRequest::Code($check, $req) => $e,
 			CheckedRequest::Execution($check, $req) => $e,
+			CheckedRequest::Signal($check, $req) => $e,
 		}
 	}
 }
@@ -465,11 +494,13 @@ impl IncompleteRequest for CheckedRequest {
 					_ => Ok(()),
 				}
 			}
+			CheckedRequest::TransactionIndex(_, ref req) => req.check_outputs(f),
 			CheckedRequest::Receipts(_, ref req) => req.check_outputs(f),
 			CheckedRequest::Body(_, ref req) => req.check_outputs(f),
 			CheckedRequest::Account(_, ref req) => req.check_outputs(f),
 			CheckedRequest::Code(_, ref req) => req.check_outputs(f),
 			CheckedRequest::Execution(_, ref req) => req.check_outputs(f),
+			CheckedRequest::Signal(_, ref req) => req.check_outputs(f),
 		}
 	}
 
@@ -485,11 +516,13 @@ impl IncompleteRequest for CheckedRequest {
 		match self {
 			CheckedRequest::HeaderProof(_, req) => req.complete().map(CompleteRequest::HeaderProof),
 			CheckedRequest::HeaderByHash(_, req) => req.complete().map(CompleteRequest::Headers),
+			CheckedRequest::TransactionIndex(_, req) => req.complete().map(CompleteRequest::TransactionIndex),
 			CheckedRequest::Receipts(_, req) => req.complete().map(CompleteRequest::Receipts),
 			CheckedRequest::Body(_, req) => req.complete().map(CompleteRequest::Body),
 			CheckedRequest::Account(_, req) => req.complete().map(CompleteRequest::Account),
 			CheckedRequest::Code(_, req) => req.complete().map(CompleteRequest::Code),
 			CheckedRequest::Execution(_, req) => req.complete().map(CompleteRequest::Execution),
+			CheckedRequest::Signal(_, req) => req.complete().map(CompleteRequest::Signal),
 		}
 	}
 
@@ -526,6 +559,9 @@ impl net_request::CheckedRequest for CheckedRequest {
 			CheckedRequest::HeaderByHash(ref prover, _) =>
 				expect!((&NetResponse::Headers(ref res), &CompleteRequest::Headers(ref req)) =>
 					prover.check_response(cache, &req.start, &res.headers).map(Response::HeaderByHash)),
+			CheckedRequest::TransactionIndex(ref prover, _) =>
+				expect!((&NetResponse::TransactionIndex(ref res), _) =>
+					prover.check_response(cache, res).map(Response::TransactionIndex)),
 			CheckedRequest::Receipts(ref prover, _) =>
 				expect!((&NetResponse::Receipts(ref res), _) =>
 					prover.check_response(cache, &res.receipts).map(Response::Receipts)),
@@ -541,6 +577,9 @@ impl net_request::CheckedRequest for CheckedRequest {
 			CheckedRequest::Execution(ref prover, _) =>
 				expect!((&NetResponse::Execution(ref res), _) =>
 					prover.check_response(cache, &res.items).map(Response::Execution)),
+			CheckedRequest::Signal(ref prover, _) =>
+				expect!((&NetResponse::Signal(ref res), _) =>
+					prover.check_response(cache, &res.signal).map(Response::Signal)),
 		}
 	 }
 }
@@ -553,6 +592,8 @@ pub enum Response {
 	HeaderProof((H256, U256)),
 	/// Response to a header-by-hash request.
 	HeaderByHash(encoded::Header),
+	/// Response to a transaction-index request.
+	TransactionIndex(net_request::TransactionIndexResponse),
 	/// Response to a receipts request.
 	Receipts(Vec<Receipt>),
 	/// Response to a block body request.
@@ -564,6 +605,8 @@ pub enum Response {
 	Code(Vec<u8>),
 	/// Response to a request for proved execution.
 	Execution(super::ExecutionResult),
+	/// Response to a request for epoch change signal.
+	Signal(Vec<u8>),
 }
 
 impl net_request::ResponseLike for Response {
@@ -571,8 +614,8 @@ impl net_request::ResponseLike for Response {
 		match *self {
 			Response::HeaderProof((ref hash, _)) => f(0, Output::Hash(*hash)),
 			Response::Account(None) => {
-				f(0, Output::Hash(SHA3_EMPTY)); // code hash
-				f(1, Output::Hash(SHA3_NULL_RLP)); // storage root.
+				f(0, Output::Hash(KECCAK_EMPTY)); // code hash
+				f(1, Output::Hash(KECCAK_NULL_RLP)); // storage root.
 			}
 			Response::Account(Some(ref acc)) => {
 				f(0, Output::Hash(acc.code_hash));
@@ -688,7 +731,7 @@ impl HeaderByHash {
 		};
 
 		let header = headers.get(0).ok_or(Error::Empty)?;
-		let hash = header.sha3();
+		let hash = header.hash();
 		match hash == expected_hash {
 			true => {
 				cache.lock().insert_block_header(hash, header.clone());
@@ -696,6 +739,33 @@ impl HeaderByHash {
 			}
 			false => Err(Error::WrongHash(expected_hash, hash)),
 		}
+	}
+}
+
+/// Request for a transaction index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionIndex(pub Field<H256>);
+
+impl TransactionIndex {
+	/// Check a response for the transaction index.
+	//
+	// TODO: proper checking involves looking at canonicality of the
+	// hash w.r.t. the current best block header.
+	//
+	// unlike all other forms of request, we don't know the header to check
+	// until we make this request.
+	//
+	// This would require lookups in the database or perhaps CHT requests,
+	// which aren't currently possible.
+	//
+	// Also, returning a result that is not locally canonical doesn't necessarily
+	// indicate misbehavior, so the punishment scheme would need to be revised.
+	pub fn check_response(
+		&self,
+		_cache: &Mutex<::cache::Cache>,
+		res: &net_request::TransactionIndexResponse,
+	) -> Result<net_request::TransactionIndexResponse, Error> {
+		Ok(res.clone())
 	}
 }
 
@@ -708,12 +778,12 @@ impl Body {
 	pub fn check_response(&self, cache: &Mutex<::cache::Cache>, body: &encoded::Body) -> Result<encoded::Block, Error> {
 		// check the integrity of the the body against the header
 		let header = self.0.as_ref()?;
-		let tx_root = ::util::triehash::ordered_trie_root(body.rlp().at(0).iter().map(|r| r.as_raw().to_vec()));
+		let tx_root = ::triehash::ordered_trie_root(body.rlp().at(0).iter().map(|r| r.as_raw().to_vec()));
 		if tx_root != header.transactions_root() {
 			return Err(Error::WrongTrieRoot(header.transactions_root(), tx_root));
 		}
 
-		let uncles_hash = body.rlp().at(1).as_raw().sha3();
+		let uncles_hash = keccak(body.rlp().at(1).as_raw());
 		if uncles_hash != header.uncles_hash() {
 			return Err(Error::WrongHash(header.uncles_hash(), uncles_hash));
 		}
@@ -738,7 +808,7 @@ impl BlockReceipts {
 	/// Check a response with receipts against the stored header.
 	pub fn check_response(&self, cache: &Mutex<::cache::Cache>, receipts: &[Receipt]) -> Result<Vec<Receipt>, Error> {
 		let receipts_root = self.0.as_ref()?.receipts_root();
-		let found_root = ::util::triehash::ordered_trie_root(receipts.iter().map(|r| ::rlp::encode(r).into_vec()));
+		let found_root = ::triehash::ordered_trie_root(receipts.iter().map(|r| ::rlp::encode(r).into_vec()));
 
 		match receipts_root == found_root {
 			true => {
@@ -768,7 +838,7 @@ impl Account {
 		let mut db = MemoryDB::new();
 		for node in proof { db.insert(&node[..]); }
 
-		match TrieDB::new(&db, &state_root).and_then(|t| t.get(&self.address.sha3()))? {
+		match TrieDB::new(&db, &state_root).and_then(|t| t.get(&keccak(&self.address)))? {
 			Some(val) => {
 				let rlp = UntrustedRlp::new(&val);
 				Ok(Some(BasicAccount {
@@ -800,7 +870,7 @@ impl Code {
 		code_hash: &H256,
 		code: &[u8]
 	) -> Result<Vec<u8>, Error> {
-		let found_hash = code.sha3();
+		let found_hash = keccak(code);
 		if &found_hash == code_hash {
 			Ok(code.to_vec())
 		} else {
@@ -820,7 +890,7 @@ pub struct TransactionProof {
 	// TODO: it's not really possible to provide this if the header is unknown.
 	pub env_info: EnvInfo,
 	/// Consensus engine.
-	pub engine: Arc<Engine>,
+	pub engine: Arc<EthEngine>,
 }
 
 impl TransactionProof {
@@ -835,7 +905,7 @@ impl TransactionProof {
 			state_items,
 			root,
 			&self.tx,
-			&*self.engine,
+			self.engine.machine(),
 			&self.env_info,
 		);
 
@@ -847,17 +917,41 @@ impl TransactionProof {
 	}
 }
 
+/// Request for epoch signal.
+/// Provide engine and state-dependent proof checker.
+#[derive(Clone)]
+pub struct Signal {
+	/// Block hash and number to fetch proof for.
+	pub hash: H256,
+	/// Consensus engine, used to check the proof.
+	pub engine: Arc<EthEngine>,
+	/// Special checker for the proof.
+	pub proof_check: Arc<StateDependentProof<EthereumMachine>>,
+}
+
+impl Signal {
+	/// Check the signal, returning the signal or indicate that it's bad.
+	pub fn check_response(&self, _: &Mutex<::cache::Cache>, signal: &[u8]) -> Result<Vec<u8>, Error> {
+		self.proof_check.check_proof(self.engine.machine(), signal)
+			.map(|_| signal.to_owned())
+			.map_err(|_| Error::BadProof)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use util::{MemoryDB, Address, Mutex, H256};
-	use util::trie::{Trie, TrieMut, SecTrieDB, SecTrieDBMut};
-	use util::trie::recorder::Recorder;
+	use bigint::hash::H256;
+	use util::{MemoryDB, Address};
+	use parking_lot::Mutex;
+	use trie::{Trie, TrieMut, SecTrieDB, SecTrieDBMut};
+	use trie::recorder::Recorder;
+	use hash::keccak;
 
 	use ethcore::client::{BlockChainClient, TestBlockChainClient, EachBlockWith};
 	use ethcore::header::Header;
 	use ethcore::encoded;
-	use ethcore::receipt::Receipt;
+	use ethcore::receipt::{Receipt, TransactionOutcome};
 
 	fn make_cache() -> ::cache::Cache {
 		::cache::Cache::new(Default::default(), ::time::Duration::seconds(1))
@@ -933,7 +1027,7 @@ mod tests {
 		}).collect::<Vec<_>>();
 
 		let mut header = Header::new();
-		let receipts_root = ::util::triehash::ordered_trie_root(
+		let receipts_root = ::triehash::ordered_trie_root(
 			receipts.iter().map(|x| ::rlp::encode(x).into_vec())
 		);
 
@@ -998,7 +1092,7 @@ mod tests {
 	#[test]
 	fn check_code() {
 		let code = vec![1u8; 256];
-		let code_hash = ::util::Hashable::sha3(&code);
+		let code_hash = keccak(&code);
 		let header = Header::new();
 		let req = Code {
 			header: encoded::Header::new(::rlp::encode(&header).into_vec()).into(),

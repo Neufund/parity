@@ -16,17 +16,24 @@
 
 /// Validator set maintained in a contract, updated using `getValidators` method.
 
-use std::sync::Weak;
+use std::sync::{Weak, Arc};
 use futures::Future;
 use native_contracts::ValidatorSet as Provider;
+use hash::keccak;
+
+use bigint::prelude::U256;
+use bigint::hash::{H160, H256};
+use parking_lot::{Mutex, RwLock};
 
 use util::*;
+use bytes::Bytes;
 use util::cache::MemoryLruCache;
+use unexpected::Mismatch;
 use rlp::{UntrustedRlp, RlpStream};
 
 use basic_types::LogBloom;
-use client::{Client, BlockChainClient};
-use engines::{Call, Engine};
+use client::EngineClient;
+use machine::{AuxiliaryData, Call, EthereumMachine, AuxiliaryRequest};
 use header::Header;
 use ids::BlockId;
 use log_entry::LogEntry;
@@ -41,7 +48,30 @@ const MEMOIZE_CAPACITY: usize = 500;
 const EVENT_NAME: &'static [u8] = &*b"InitiateChange(bytes32,address[])";
 
 lazy_static! {
-	static ref EVENT_NAME_HASH: H256 = EVENT_NAME.sha3();
+	static ref EVENT_NAME_HASH: H256 = keccak(EVENT_NAME);
+}
+
+// state-dependent proofs for the safe contract:
+// only "first" proofs are such.
+struct StateProof {
+	header: Mutex<Header>,
+	provider: Provider,
+}
+
+impl ::engines::StateDependentProof<EthereumMachine> for StateProof {
+	fn generate_proof(&self, caller: &Call) -> Result<Vec<u8>, String> {
+		prove_initial(&self.provider, &*self.header.lock(), caller)
+	}
+
+	fn check_proof(&self, machine: &EthereumMachine, proof: &[u8]) -> Result<(), String> {
+		let (header, state_items) = decode_first_proof(&UntrustedRlp::new(proof))
+			.map_err(|e| format!("proof incorrectly encoded: {}", e))?;
+		if &header != &*self.header.lock(){
+			return Err("wrong header in proof".into());
+		}
+
+		check_first_proof(machine, &self.provider, header, &state_items).map(|_| ())
+	}
 }
 
 /// The validator contract should have the following interface:
@@ -49,7 +79,7 @@ pub struct ValidatorSafeContract {
 	pub address: Address,
 	validators: RwLock<MemoryLruCache<H256, SimpleList>>,
 	provider: Provider,
-	client: RwLock<Option<Weak<Client>>>, // TODO [keorn]: remove
+	client: RwLock<Option<Weak<EngineClient>>>, // TODO [keorn]: remove
 }
 
 // first proof is just a state proof call of `getValidators` at header's state.
@@ -61,6 +91,59 @@ fn encode_first_proof(header: &Header, state_items: &[Vec<u8>]) -> Bytes {
 	}
 
 	stream.out()
+}
+
+// check a first proof: fetch the validator set at the given block.
+fn check_first_proof(machine: &EthereumMachine, provider: &Provider, old_header: Header, state_items: &[DBValue])
+	-> Result<Vec<Address>, String>
+{
+	use transaction::{Action, Transaction};
+
+	// TODO: match client contract_call_tx more cleanly without duplication.
+	const PROVIDED_GAS: u64 = 50_000_000;
+
+	let env_info = ::vm::EnvInfo {
+		number: old_header.number(),
+		author: *old_header.author(),
+		difficulty: *old_header.difficulty(),
+		gas_limit: PROVIDED_GAS.into(),
+		timestamp: old_header.timestamp(),
+		last_hashes: {
+			// this will break if we don't inclue all 256 last hashes.
+			let mut last_hashes: Vec<_> = (0..256).map(|_| H256::default()).collect();
+			last_hashes[255] = *old_header.parent_hash();
+			Arc::new(last_hashes)
+		},
+		gas_used: 0.into(),
+	};
+
+	// check state proof using given machine.
+	let number = old_header.number();
+	provider.get_validators(move |a, d| {
+		let from = Address::default();
+		let tx = Transaction {
+			nonce: machine.account_start_nonce(number),
+			action: Action::Call(a),
+			gas: PROVIDED_GAS.into(),
+			gas_price: U256::default(),
+			value: U256::default(),
+			data: d,
+		}.fake_sign(from);
+
+		let res = ::state::check_proof(
+			state_items,
+			*old_header.state_root(),
+			&tx,
+			machine,
+			&env_info,
+		);
+
+		match res {
+			::state::ProvedExecution::BadProof => Err("Bad proof".into()),
+			::state::ProvedExecution::Failed(e) => Err(format!("Failed call: {}", e)),
+			::state::ProvedExecution::Complete(e) => Ok(e.output),
+		}
+	}).wait()
 }
 
 fn decode_first_proof(rlp: &UntrustedRlp) -> Result<(Header, Vec<DBValue>), ::error::Error> {
@@ -100,8 +183,7 @@ fn prove_initial(provider: &Provider, header: &Header, caller: &Call) -> Result<
 			Ok(result)
 		};
 
-		provider.get_validators(caller)
-			.wait()
+		provider.get_validators(caller).wait()
 	};
 
 	res.map(|validators| {
@@ -230,7 +312,12 @@ impl ValidatorSet for ValidatorSafeContract {
 		Box::new(move |addr, data| client.as_ref()
 			.and_then(Weak::upgrade)
 			.ok_or("No client!".into())
-			.and_then(|c| c.call_contract(id, addr, data))
+			.and_then(|c| {
+				match c.as_full_client() {
+					Some(c) => c.call_contract(id, addr, data),
+					None => Err("No full client!".into()),
+				}
+			})
 			.map(|out| (out, Vec::new()))) // generate no proofs in general
 	}
 
@@ -249,15 +336,19 @@ impl ValidatorSet for ValidatorSafeContract {
 		None // no immediate transitions to contract.
 	}
 
-	fn signals_epoch_end(&self, first: bool, header: &Header, _block: Option<&[u8]>, receipts: Option<&[Receipt]>)
-		-> ::engines::EpochChange
+	fn signals_epoch_end(&self, first: bool, header: &Header, aux: AuxiliaryData)
+		-> ::engines::EpochChange<EthereumMachine>
 	{
+		let receipts = aux.receipts;
+
 		// transition to the first block of a contract requires finality but has no log event.
 		if first {
 			debug!(target: "engine", "signalling transition to fresh contract.");
-			let (provider, header) = (self.provider.clone(), header.clone());
-			let with_caller: Box<Fn(&Call) -> _> = Box::new(move |caller| prove_initial(&provider, &header, caller));
-			return ::engines::EpochChange::Yes(::engines::Proof::WithState(with_caller))
+			let state_proof = Arc::new(StateProof {
+				header: Mutex::new(header.clone()),
+				provider: self.provider.clone(),
+			});
+			return ::engines::EpochChange::Yes(::engines::Proof::WithState(state_proof as Arc<_>));
 		}
 
 		// otherwise, we're checking for logs.
@@ -269,7 +360,7 @@ impl ValidatorSet for ValidatorSafeContract {
 		trace!(target: "engine", "detected epoch change event bloom");
 
 		match receipts {
-			None => ::engines::EpochChange::Unsure(::engines::Unsure::NeedsReceipts),
+			None => ::engines::EpochChange::Unsure(AuxiliaryRequest::Receipts),
 			Some(receipts) => match self.extract_from_event(bloom, header, receipts) {
 				None => ::engines::EpochChange::No,
 				Some(list) => {
@@ -283,64 +374,19 @@ impl ValidatorSet for ValidatorSafeContract {
 		}
 	}
 
-	fn epoch_set(&self, first: bool, engine: &Engine, _number: ::header::BlockNumber, proof: &[u8])
+	fn epoch_set(&self, first: bool, machine: &EthereumMachine, _number: ::header::BlockNumber, proof: &[u8])
 		-> Result<(SimpleList, Option<H256>), ::error::Error>
 	{
-		use transaction::{Action, Transaction};
-
 		let rlp = UntrustedRlp::new(proof);
 
 		if first {
 			trace!(target: "engine", "Recovering initial epoch set");
 
-			// TODO: match client contract_call_tx more cleanly without duplication.
-			const PROVIDED_GAS: u64 = 50_000_000;
-
 			let (old_header, state_items) = decode_first_proof(&rlp)?;
-			let old_hash = old_header.hash();
-
-			let env_info = ::evm::env_info::EnvInfo {
-				number: old_header.number(),
-				author: *old_header.author(),
-				difficulty: *old_header.difficulty(),
-				gas_limit: PROVIDED_GAS.into(),
-				timestamp: old_header.timestamp(),
-				last_hashes: {
-					// this will break if we don't inclue all 256 last hashes.
-					let mut last_hashes: Vec<_> = (0..256).map(|_| H256::default()).collect();
-					last_hashes[255] = *old_header.parent_hash();
-					Arc::new(last_hashes)
-				},
-				gas_used: 0.into(),
-			};
-
-			// check state proof using given engine.
 			let number = old_header.number();
-			let addresses = self.provider.get_validators(move |a, d| {
-				let from = Address::default();
-				let tx = Transaction {
-					nonce: engine.account_start_nonce(number),
-					action: Action::Call(a),
-					gas: PROVIDED_GAS.into(),
-					gas_price: U256::default(),
-					value: U256::default(),
-					data: d,
-				}.fake_sign(from);
-
-				let res = ::state::check_proof(
-					&state_items,
-					*old_header.state_root(),
-					&tx,
-					engine,
-					&env_info,
-				);
-
-				match res {
-					::state::ProvedExecution::BadProof => Err("Bad proof".into()),
-					::state::ProvedExecution::Failed(e) => Err(format!("Failed call: {}", e)),
-					::state::ProvedExecution::Complete(e) => Ok(e.output),
-				}
-			}).wait().map_err(::engines::EngineError::InsufficientProof)?;
+			let old_hash = old_header.hash();
+			let addresses = check_first_proof(machine, &self.provider, old_header, &state_items)
+				.map_err(::engines::EngineError::InsufficientProof)?;
 
 			trace!(target: "engine", "extracted epoch set at #{}: {} addresses",
 				number, addresses.len());
@@ -351,7 +397,7 @@ impl ValidatorSet for ValidatorSafeContract {
 
 			// ensure receipts match header.
 			// TODO: optimize? these were just decoded.
-			let found_root = ::util::triehash::ordered_trie_root(
+			let found_root = ::triehash::ordered_trie_root(
 				receipts.iter().map(::rlp::encode).map(|x| x.to_vec())
 			);
 			if found_root != *old_header.receipts_root() {
@@ -414,7 +460,7 @@ impl ValidatorSet for ValidatorSafeContract {
 				 }))
 	}
 
-	fn register_contract(&self, client: Weak<Client>) {
+	fn register_client(&self, client: Weak<EngineClient>) {
 		trace!(target: "engine", "Setting up contract caller.");
 		*self.client.write() = Some(client);
 	}
@@ -422,13 +468,15 @@ impl ValidatorSet for ValidatorSafeContract {
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
 	use rustc_hex::FromHex;
+	use hash::keccak;
 	use util::*;
 	use types::ids::BlockId;
 	use spec::Spec;
 	use account_provider::AccountProvider;
 	use transaction::{Transaction, Action};
-	use client::{BlockChainClient, EngineClient};
+	use client::BlockChainClient;
 	use ethkey::Secret;
 	use miner::MinerService;
 	use tests::helpers::{generate_dummy_client_with_spec_and_accounts, generate_dummy_client_with_spec_and_data};
@@ -438,23 +486,23 @@ mod tests {
 	#[test]
 	fn fetches_validators() {
 		let client = generate_dummy_client_with_spec_and_accounts(Spec::new_validator_safe_contract, None);
-		let vc = Arc::new(ValidatorSafeContract::new(Address::from_str("0000000000000000000000000000000000000005").unwrap()));
-		vc.register_contract(Arc::downgrade(&client));
+		let vc = Arc::new(ValidatorSafeContract::new("0000000000000000000000000000000000000005".parse::<Address>().unwrap()));
+		vc.register_client(Arc::downgrade(&client) as _);
 		let last_hash = client.best_block_header().hash();
-		assert!(vc.contains(&last_hash, &Address::from_str("7d577a597b2742b498cb5cf0c26cdcd726d39e6e").unwrap()));
-		assert!(vc.contains(&last_hash, &Address::from_str("82a978b3f5962a5b0957d9ee9eef472ee55b42f1").unwrap()));
+		assert!(vc.contains(&last_hash, &"7d577a597b2742b498cb5cf0c26cdcd726d39e6e".parse::<Address>().unwrap()));
+		assert!(vc.contains(&last_hash, &"82a978b3f5962a5b0957d9ee9eef472ee55b42f1".parse::<Address>().unwrap()));
 	}
 
 	#[test]
 	fn knows_validators() {
 		let tap = Arc::new(AccountProvider::transient_provider());
-		let s0: Secret = "1".sha3().into();
+		let s0: Secret = keccak("1").into();
 		let v0 = tap.insert_account(s0.clone(), "").unwrap();
-		let v1 = tap.insert_account("0".sha3().into(), "").unwrap();
-		let network_id = Spec::new_validator_safe_contract().network_id();
+		let v1 = tap.insert_account(keccak("0").into(), "").unwrap();
+		let chain_id = Spec::new_validator_safe_contract().chain_id();
 		let client = generate_dummy_client_with_spec_and_accounts(Spec::new_validator_safe_contract, Some(tap));
-		client.engine().register_client(Arc::downgrade(&client));
-		let validator_contract = Address::from_str("0000000000000000000000000000000000000005").unwrap();
+		client.engine().register_client(Arc::downgrade(&client) as _);
+		let validator_contract = "0000000000000000000000000000000000000005".parse::<Address>().unwrap();
 
 		client.miner().set_engine_signer(v1, "".into()).unwrap();
 		// Remove "1" validator.
@@ -465,9 +513,9 @@ mod tests {
 			action: Action::Call(validator_contract),
 			value: 0.into(),
 			data: "bfc708a000000000000000000000000082a978b3f5962a5b0957d9ee9eef472ee55b42f1".from_hex().unwrap(),
-		}.sign(&s0, Some(network_id));
+		}.sign(&s0, Some(chain_id));
 		client.miner().import_own_transaction(client.as_ref(), tx.into()).unwrap();
-		client.update_sealing();
+		::client::EngineClient::update_sealing(&*client);
 		assert_eq!(client.chain_info().best_block_number, 1);
 		// Add "1" validator back in.
 		let tx = Transaction {
@@ -477,15 +525,15 @@ mod tests {
 			action: Action::Call(validator_contract),
 			value: 0.into(),
 			data: "4d238c8e00000000000000000000000082a978b3f5962a5b0957d9ee9eef472ee55b42f1".from_hex().unwrap(),
-		}.sign(&s0, Some(network_id));
+		}.sign(&s0, Some(chain_id));
 		client.miner().import_own_transaction(client.as_ref(), tx.into()).unwrap();
-		client.update_sealing();
+		::client::EngineClient::update_sealing(&*client);
 		// The transaction is not yet included so still unable to seal.
 		assert_eq!(client.chain_info().best_block_number, 1);
 
 		// Switch to the validator that is still there.
 		client.miner().set_engine_signer(v0, "".into()).unwrap();
-		client.update_sealing();
+		::client::EngineClient::update_sealing(&*client);
 		assert_eq!(client.chain_info().best_block_number, 2);
 		// Switch back to the added validator, since the state is updated.
 		client.miner().set_engine_signer(v1, "".into()).unwrap();
@@ -496,15 +544,15 @@ mod tests {
 			action: Action::Call(Address::default()),
 			value: 0.into(),
 			data: Vec::new(),
-		}.sign(&s0, Some(network_id));
+		}.sign(&s0, Some(chain_id));
 		client.miner().import_own_transaction(client.as_ref(), tx.into()).unwrap();
-		client.update_sealing();
+		::client::EngineClient::update_sealing(&*client);
 		// Able to seal again.
 		assert_eq!(client.chain_info().best_block_number, 3);
 
 		// Check syncing.
 		let sync_client = generate_dummy_client_with_spec_and_data(Spec::new_validator_safe_contract, 0, 0, &[]);
-		sync_client.engine().register_client(Arc::downgrade(&sync_client));
+		sync_client.engine().register_client(Arc::downgrade(&sync_client) as _);
 		for i in 1..4 {
 			sync_client.import_block(client.block(BlockId::Number(i)).unwrap().into_inner()).unwrap();
 		}
@@ -515,12 +563,13 @@ mod tests {
 	#[test]
 	fn detects_bloom() {
 		use header::Header;
-		use engines::{EpochChange, Unsure};
+		use engines::EpochChange;
+		use machine::AuxiliaryRequest;
 		use log_entry::LogEntry;
 
 		let client = generate_dummy_client_with_spec_and_accounts(Spec::new_validator_safe_contract, None);
 		let engine = client.engine().clone();
-		let validator_contract = Address::from_str("0000000000000000000000000000000000000005").unwrap();
+		let validator_contract = "0000000000000000000000000000000000000005".parse::<Address>().unwrap();
 
 		let last_hash = client.best_block_header().hash();
 		let mut new_header = Header::default();
@@ -535,7 +584,7 @@ mod tests {
 		};
 
 		new_header.set_log_bloom(event.bloom());
-		match engine.signals_epoch_end(&new_header, None, None) {
+		match engine.signals_epoch_end(&new_header, Default::default()) {
 			EpochChange::No => {},
 			_ => panic!("Expected bloom to be unrecognized."),
 		};
@@ -544,8 +593,8 @@ mod tests {
 		event.topics.push(last_hash);
 		new_header.set_log_bloom(event.bloom());
 
-		match engine.signals_epoch_end(&new_header, None, None) {
-			EpochChange::Unsure(Unsure::NeedsReceipts) => {},
+		match engine.signals_epoch_end(&new_header, Default::default()) {
+			EpochChange::Unsure(AuxiliaryRequest::Receipts) => {},
 			_ => panic!("Expected bloom to be recognized."),
 		};
 	}
@@ -561,7 +610,7 @@ mod tests {
 		let mut new_header = Header::default();
 		new_header.set_number(0); // so the validator set doesn't look for a log
 
-		match engine.signals_epoch_end(&new_header, None, None) {
+		match engine.signals_epoch_end(&new_header, Default::default()) {
 			EpochChange::Yes(Proof::WithState(_)) => {},
 			_ => panic!("Expected state to be required to prove initial signal"),
 		};

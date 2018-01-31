@@ -16,8 +16,7 @@
 
 //! Parity-specific rpc interface for operations altering the settings.
 
-use jsonrpc_core::Error;
-use futures::BoxFuture;
+use jsonrpc_core::{BoxFuture, Error};
 
 use v1::types::{Bytes, H160, H256, U256, ReleaseInfo, Transaction, LocalDapp};
 
@@ -88,13 +87,17 @@ build_rpc_trait! {
 		#[rpc(name = "parity_setMode")]
 		fn set_mode(&self, String) -> Result<bool, Error>;
 
-		/// Set the network spec. Argument must be one of: "foundation", "ropsten", "morden", "kovan", "olympic", "classic", "dev", "expanse" or a filename.
+		/// Set the network spec. Argument must be one of: "foundation", "ropsten", "morden", "kovan", "olympic", "classic", "dev", "expanse", "musicoin" or a filename.
 		#[rpc(name = "parity_setChain")]
 		fn set_spec_name(&self, String) -> Result<bool, Error>;
 
 		/// Hash a file content under given URL.
-		#[rpc(async, name = "parity_hashContent")]
+		#[rpc(name = "parity_hashContent")]
 		fn hash_content(&self, String) -> BoxFuture<H256, Error>;
+
+		/// Returns true if refresh successful, error if unsuccessful or server is disabled.
+		#[rpc(name = "parity_dappsRefresh")]
+		fn dapps_refresh(&self) -> Result<bool, Error>;
 
 		/// Returns a list of local dapps
 		#[rpc(name = "parity_dappsList")]

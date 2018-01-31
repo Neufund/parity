@@ -24,8 +24,10 @@ use blockchain::BlockChain;
 use snapshot::{chunk_secondary, Error as SnapshotError, Progress, SnapshotComponents};
 use snapshot::io::{PackedReader, PackedWriter, SnapshotReader, SnapshotWriter};
 
-use util::{Mutex, snappy};
-use util::kvdb::{self, KeyValueDB, DBTransaction};
+use parking_lot::Mutex;
+use snappy;
+use kvdb::{KeyValueDB, DBTransaction};
+use kvdb_memorydb;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -37,12 +39,12 @@ fn chunk_and_restore(amount: u64) {
 	let mut finalizer = BlockFinalizer::default();
 	let genesis = canon_chain.generate(&mut finalizer).unwrap();
 
-	let engine = Arc::new(::engines::NullEngine::default());
+	let engine = ::spec::Spec::new_test().engine;
 	let new_path = RandomTempPath::create_dir();
 	let mut snapshot_path = new_path.as_path().to_owned();
 	snapshot_path.push("SNAP");
 
-	let old_db = Arc::new(kvdb::in_memory(::db::NUM_COLUMNS.unwrap_or(0)));
+	let old_db = Arc::new(kvdb_memorydb::create(::db::NUM_COLUMNS.unwrap_or(0)));
 	let bc = BlockChain::new(Default::default(), &genesis, old_db.clone());
 
 	// build the blockchain.
@@ -71,7 +73,7 @@ fn chunk_and_restore(amount: u64) {
 		version: 2,
 		state_hashes: Vec::new(),
 		block_hashes: block_hashes,
-		state_root: ::util::sha3::SHA3_NULL_RLP,
+		state_root: ::hash::KECCAK_NULL_RLP,
 		block_number: amount,
 		block_hash: best_hash,
 	};
@@ -79,7 +81,7 @@ fn chunk_and_restore(amount: u64) {
 	writer.into_inner().finish(manifest.clone()).unwrap();
 
 	// restore it.
-	let new_db = Arc::new(kvdb::in_memory(::db::NUM_COLUMNS.unwrap_or(0)));
+	let new_db = Arc::new(kvdb_memorydb::create(::db::NUM_COLUMNS.unwrap_or(0)));
 	let new_chain = BlockChain::new(Default::default(), &genesis, new_db.clone());
 	let mut rebuilder = SNAPSHOT_MODE.rebuilder(new_chain, new_db.clone(), &manifest).unwrap();
 
@@ -108,7 +110,7 @@ fn chunk_and_restore_40k() { chunk_and_restore(40000) }
 #[test]
 fn checks_flag() {
 	use rlp::RlpStream;
-	use util::H256;
+	use bigint::hash::H256;
 
 	let mut stream = RlpStream::new_list(5);
 
@@ -126,15 +128,15 @@ fn checks_flag() {
 
 	let chunk = stream.out();
 
-	let db = Arc::new(kvdb::in_memory(::db::NUM_COLUMNS.unwrap_or(0)));
-	let engine = Arc::new(::engines::NullEngine::default());
+	let db = Arc::new(kvdb_memorydb::create(::db::NUM_COLUMNS.unwrap_or(0)));
+	let engine = ::spec::Spec::new_test().engine;
 	let chain = BlockChain::new(Default::default(), &genesis, db.clone());
 
 	let manifest = ::snapshot::ManifestData {
 		version: 2,
 		state_hashes: Vec::new(),
 		block_hashes: Vec::new(),
-		state_root: ::util::sha3::SHA3_NULL_RLP,
+		state_root: ::hash::KECCAK_NULL_RLP,
 		block_number: 102,
 		block_hash: H256::default(),
 	};

@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 use ethcore::account_provider::AccountProvider;
-use ethcore::client::{TestBlockChainClient};
+use ethcore::client::{TestBlockChainClient, Executed};
 use ethcore::miner::LocalTransactionStatus;
 use ethcore_logger::RotatingLogger;
 use ethstore::ethkey::{Generator, Random};
@@ -31,6 +31,7 @@ use v1::metadata::Metadata;
 use v1::helpers::{SignerService, NetworkSettings};
 use v1::tests::helpers::{TestSyncProvider, Config, TestMinerService, TestUpdater};
 use super::manage_network::TestManageNetwork;
+use Host;
 
 pub type TestParityClient = ParityClient<TestBlockChainClient, TestMinerService, TestUpdater>;
 
@@ -44,8 +45,8 @@ pub struct Dependencies {
 	pub settings: Arc<NetworkSettings>,
 	pub network: Arc<ManageNetwork>,
 	pub accounts: Arc<AccountProvider>,
-	pub dapps_address: Option<(String, u16)>,
-	pub ws_address: Option<(String, u16)>,
+	pub dapps_address: Option<Host>,
+	pub ws_address: Option<Host>,
 }
 
 impl Dependencies {
@@ -74,8 +75,8 @@ impl Dependencies {
 			}),
 			network: Arc::new(TestManageNetwork),
 			accounts: Arc::new(AccountProvider::transient_provider()),
-			dapps_address: Some(("127.0.0.1".into(), 18080)),
-			ws_address: Some(("127.0.0.1".into(), 18546)),
+			dapps_address: Some("127.0.0.1:18080".into()),
+			ws_address: Some("127.0.0.1:18546".into()),
 		}
 	}
 
@@ -221,9 +222,20 @@ fn rpc_parity_extra_data() {
 }
 
 #[test]
+fn rpc_parity_chain_id() {
+	let deps = Dependencies::new();
+	let io = deps.default_client();
+
+	let request = r#"{"jsonrpc": "2.0", "method": "parity_chainId", "params": [], "id": 1}"#;
+	let response = r#"{"jsonrpc":"2.0","result":null,"id":1}"#;
+
+	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
+}
+
+#[test]
 fn rpc_parity_default_extra_data() {
 	use util::misc;
-	use util::ToPretty;
+	use bytes::ToPretty;
 
 	let deps = Dependencies::new();
 	let io = deps.default_client();
@@ -485,7 +497,8 @@ fn rpc_parity_local_transactions() {
 
 #[test]
 fn rpc_parity_chain_status() {
-	use util::{H256, U256};
+	use bigint::prelude::U256;
+	use bigint::hash::H256;
 
 	let deps = Dependencies::new();
 	let io = deps.default_client();
@@ -517,6 +530,45 @@ fn rpc_parity_cid() {
 
 	let request = r#"{"jsonrpc": "2.0", "method": "parity_cidV0", "params":["0x414243"], "id": 1}"#;
 	let response = r#"{"jsonrpc":"2.0","result":"QmSF59MAENc8ZhM4aM1thuAE8w5gDmyfzkAvNoyPea7aDz","id":1}"#;
+
+	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
+}
+
+#[test]
+fn rpc_parity_call() {
+	use bigint::prelude::U256;
+
+	let deps = Dependencies::new();
+	deps.client.set_execution_result(Ok(Executed {
+		exception: None,
+		gas: U256::zero(),
+		gas_used: U256::from(0xff30),
+		refunded: U256::from(0x5),
+		cumulative_gas_used: U256::zero(),
+		logs: vec![],
+		contracts_created: vec![],
+		output: vec![0x12, 0x34, 0xff],
+		trace: vec![],
+		vm_trace: None,
+		state_diff: None,
+	}));
+	let io = deps.default_client();
+
+	let request = r#"{
+		"jsonrpc": "2.0",
+		"method": "parity_call",
+		"params": [[{
+			"from": "0xb60e8dd61c5d32be8058bb8eb970870f07233155",
+			"to": "0xd46e8dd67c5d32be8058bb8eb970870f07244567",
+			"gas": "0x76c0",
+			"gasPrice": "0x9184e72a000",
+			"value": "0x9184e72a",
+			"data": "0xd46e8dd67c5d32be8d46e8dd67c5d32be8058bb8eb970870f072445675058bb8eb970870f072445675"
+		}],
+		"latest"],
+		"id": 1
+	}"#;
+	let response = r#"{"jsonrpc":"2.0","result":["0x1234ff"],"id":1}"#;
 
 	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
 }

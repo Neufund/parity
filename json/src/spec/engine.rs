@@ -16,17 +16,17 @@
 
 //! Engine deserialization.
 
-use super::{Ethash, InstantSeal, BasicAuthority, AuthorityRound, Tendermint};
+use super::{Ethash, BasicAuthority, AuthorityRound, Tendermint, NullEngine};
 
 /// Engine deserialization.
 #[derive(Debug, PartialEq, Deserialize)]
 pub enum Engine {
 	/// Null engine.
 	#[serde(rename="null")]
-	Null,
+	Null(NullEngine),
 	/// Instantly sealing engine.
 	#[serde(rename="instantSeal")]
-	InstantSeal(InstantSeal),
+	InstantSeal,
 	/// Ethash engine.
 	Ethash(Ethash),
 	/// BasicAuthority engine.
@@ -48,30 +48,35 @@ mod tests {
 	#[test]
 	fn engine_deserialization() {
 		let s = r#"{
-			"null": null
-		}"#;
-
-		let deserialized: Engine = serde_json::from_str(s).unwrap();
-		assert_eq!(Engine::Null, deserialized);
-
-		let s = r#"{
-			"instantSeal": { "params": {} }
+			"null": {
+				"params": {
+					"blockReward": "0x0d"
+				}
+			}
 		}"#;
 
 		let deserialized: Engine = serde_json::from_str(s).unwrap();
 		match deserialized {
-			Engine::InstantSeal(_) => {},	// instant seal is unit tested in its own file.
-			_ => assert!(false),
+			Engine::Null(_) => {}, // unit test in its own file.
+			_ => panic!(),
+		}
+
+		let s = r#"{
+			"instantSeal": null
+		}"#;
+
+		let deserialized: Engine = serde_json::from_str(s).unwrap();
+		match deserialized {
+			Engine::InstantSeal => {},	// instant seal is unit tested in its own file.
+			_ => panic!(),
 		};
 
 		let s = r#"{
 			"Ethash": {
 				"params": {
-					"gasLimitBoundDivisor": "0x0400",
 					"minimumDifficulty": "0x020000",
 					"difficultyBoundDivisor": "0x0800",
 					"durationLimit": "0x0d",
-					"blockReward": "0x4563918244F40000",
 					"registrar" : "0xc6d9d2cd449a754c494264e1809c50e34d64562b",
 					"homesteadTransition" : "0x",
 					"daoHardforkTransition": "0xffffffffffffffff",
@@ -84,13 +89,12 @@ mod tests {
 		let deserialized: Engine = serde_json::from_str(s).unwrap();
 		match deserialized {
 			Engine::Ethash(_) => {},	// ethash is unit tested in its own file.
-			_ => assert!(false),
+			_ => panic!(),
 		};
 
 		let s = r#"{
 			"basicAuthority": {
 				"params": {
-					"gasLimitBoundDivisor": "0x0400",
 					"durationLimit": "0x0d",
 					"validators" : {
 						"list": ["0xc6d9d2cd449a754c494264e1809c50e34d64562b"]
@@ -101,20 +105,17 @@ mod tests {
 		let deserialized: Engine = serde_json::from_str(s).unwrap();
 		match deserialized {
 			Engine::BasicAuthority(_) => {}, // basicAuthority is unit tested in its own file.
-			_ => assert!(false),
+			_ => panic!(),
 		};
 
 		let s = r#"{
 			"authorityRound": {
 				"params": {
-					"gasLimitBoundDivisor": "0x0400",
 					"stepDuration": "0x02",
 					"validators": {
 						"list" : ["0xc6d9d2cd449a754c494264e1809c50e34d64562b"]
 					},
-					"blockReward": "0x50",
 					"startStep" : 24,
-					"eip155Transition": "0x42",
 					"validateStepTransition": 150
 				}
 			}
@@ -122,24 +123,22 @@ mod tests {
 		let deserialized: Engine = serde_json::from_str(s).unwrap();
 		match deserialized {
 			Engine::AuthorityRound(_) => {}, // AuthorityRound is unit tested in its own file.
-			_ => assert!(false),
+			_ => panic!(),
 		};
 
 		let s = r#"{
 			"tendermint": {
 				"params": {
-					"gasLimitBoundDivisor": "0x0400",
 					"validators": {
 						"list": ["0xc6d9d2cd449a754c494264e1809c50e34d64562b"]
-					},
-					"blockReward": "0x50"
+					}
 				}
 			}
 		}"#;
 		let deserialized: Engine = serde_json::from_str(s).unwrap();
 		match deserialized {
 			Engine::Tendermint(_) => {}, // Tendermint is unit tested in its own file.
-			_ => assert!(false),
+			_ => panic!(),
 		};
 	}
 }

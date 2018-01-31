@@ -1,5 +1,5 @@
 #!/bin/sh
-# Running Parity Full Test Sute
+# Running Parity Full Test Suite
 
 FEATURES="json-tests"
 OPTIONS="--release"
@@ -22,6 +22,12 @@ case $1 in
     ;;
 esac
 
-. ./scripts/targets.sh
-cargo test -j 8 $OPTIONS --features "$FEATURES" $TARGETS $1 \
+set -e
 
+# Validate chainspecs
+./scripts/validate_chainspecs.sh
+
+cargo test -j 8 $OPTIONS --features "$FEATURES" --all --exclude evmjit $1
+
+# Validate --no-default-features build
+cargo check --no-default-features

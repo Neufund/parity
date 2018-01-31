@@ -16,13 +16,18 @@
 
 //! Disk-backed `HashDB` implementation.
 
-use common::*;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::sync::Arc;
 use rlp::*;
 use hashdb::*;
-use memorydb::*;
+use super::super::memorydb::*;
 use super::{DB_PREFIX_LEN, LATEST_ERA_KEY};
 use super::traits::JournalDB;
 use kvdb::{KeyValueDB, DBTransaction};
+use bigint::hash::H256;
+use error::{BaseDataError, UtilError};
+use bytes::Bytes;
 
 /// Implementation of the `HashDB` trait for a disk-backed database with a memory overlay
 /// and latent-removal semantics.
@@ -50,13 +55,6 @@ impl ArchiveDB {
 		}
 	}
 
-	/// Create a new instance with an anonymous temporary database.
-	#[cfg(test)]
-	fn new_temp() -> ArchiveDB {
-		let backing = Arc::new(::kvdb::in_memory(0));
-		Self::new(backing, None)
-	}
-
 	fn payload(&self, key: &H256) -> Option<DBValue> {
 		self.backing.get(self.column, key).expect("Low-level database error. Some issue with your hard disk?")
 	}
@@ -64,23 +62,28 @@ impl ArchiveDB {
 
 impl HashDB for ArchiveDB {
 	fn keys(&self) -> HashMap<H256, i32> {
-		let mut ret: HashMap<H256, i32> = HashMap::new();
-		for (key, _) in self.backing.iter(self.column) {
-			let h = H256::from_slice(&*key);
-			ret.insert(h, 1);
-		}
+		let mut ret: HashMap<H256, i32> = self.backing.iter(self.column)
+			.map(|(key, _)| (H256::from_slice(&*key), 1))
+			.collect();
 
 		for (key, refs) in self.overlay.keys() {
-			let refs = *ret.get(&key).unwrap_or(&0) + refs;
-			ret.insert(key, refs);
+			match ret.entry(key) {
+				Entry::Occupied(mut entry) => {
+					*entry.get_mut() += refs;
+				},
+				Entry::Vacant(entry) => {
+					entry.insert(refs);
+				}
+			}
 		}
 		ret
 	}
 
 	fn get(&self, key: &H256) -> Option<DBValue> {
-		let k = self.overlay.raw(key);
-		if let Some((d, rc)) = k {
-			if rc > 0 { return Some(d); }
+		if let Some((d, rc)) = self.overlay.raw(key) {
+			if rc > 0 {
+				return Some(d);
+			}
 		}
 		self.payload(key)
 	}
@@ -196,30 +199,30 @@ mod tests {
 	#![cfg_attr(feature="dev", allow(blacklisted_name))]
 	#![cfg_attr(feature="dev", allow(similar_names))]
 
-	use common::*;
+	use keccak::keccak;
 	use hashdb::{HashDB, DBValue};
 	use super::*;
 	use journaldb::traits::JournalDB;
-	use kvdb::Database;
+	use kvdb_memorydb;
 
 	#[test]
 	fn insert_same_in_fork() {
 		// history is 1
-		let mut jdb = ArchiveDB::new_temp();
+		let mut jdb = ArchiveDB::new(Arc::new(kvdb_memorydb::create(0)), None);
 
 		let x = jdb.insert(b"X");
-		jdb.commit_batch(1, &b"1".sha3(), None).unwrap();
-		jdb.commit_batch(2, &b"2".sha3(), None).unwrap();
-		jdb.commit_batch(3, &b"1002a".sha3(), Some((1, b"1".sha3()))).unwrap();
-		jdb.commit_batch(4, &b"1003a".sha3(), Some((2, b"2".sha3()))).unwrap();
+		jdb.commit_batch(1, &keccak(b"1"), None).unwrap();
+		jdb.commit_batch(2, &keccak(b"2"), None).unwrap();
+		jdb.commit_batch(3, &keccak(b"1002a"), Some((1, keccak(b"1")))).unwrap();
+		jdb.commit_batch(4, &keccak(b"1003a"), Some((2, keccak(b"2")))).unwrap();
 
 		jdb.remove(&x);
-		jdb.commit_batch(3, &b"1002b".sha3(), Some((1, b"1".sha3()))).unwrap();
+		jdb.commit_batch(3, &keccak(b"1002b"), Some((1, keccak(b"1")))).unwrap();
 		let x = jdb.insert(b"X");
-		jdb.commit_batch(4, &b"1003b".sha3(), Some((2, b"2".sha3()))).unwrap();
+		jdb.commit_batch(4, &keccak(b"1003b"), Some((2, keccak(b"2")))).unwrap();
 
-		jdb.commit_batch(5, &b"1004a".sha3(), Some((3, b"1002a".sha3()))).unwrap();
-		jdb.commit_batch(6, &b"1005a".sha3(), Some((4, b"1003a".sha3()))).unwrap();
+		jdb.commit_batch(5, &keccak(b"1004a"), Some((3, keccak(b"1002a")))).unwrap();
+		jdb.commit_batch(6, &keccak(b"1005a"), Some((4, keccak(b"1003a")))).unwrap();
 
 		assert!(jdb.contains(&x));
 	}
@@ -227,232 +230,224 @@ mod tests {
 	#[test]
 	fn long_history() {
 		// history is 3
-		let mut jdb = ArchiveDB::new_temp();
+		let mut jdb = ArchiveDB::new(Arc::new(kvdb_memorydb::create(0)), None);
 		let h = jdb.insert(b"foo");
-		jdb.commit_batch(0, &b"0".sha3(), None).unwrap();
+		jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
 		assert!(jdb.contains(&h));
 		jdb.remove(&h);
-		jdb.commit_batch(1, &b"1".sha3(), None).unwrap();
+		jdb.commit_batch(1, &keccak(b"1"), None).unwrap();
 		assert!(jdb.contains(&h));
-		jdb.commit_batch(2, &b"2".sha3(), None).unwrap();
+		jdb.commit_batch(2, &keccak(b"2"), None).unwrap();
 		assert!(jdb.contains(&h));
-		jdb.commit_batch(3, &b"3".sha3(), Some((0, b"0".sha3()))).unwrap();
+		jdb.commit_batch(3, &keccak(b"3"), Some((0, keccak(b"0")))).unwrap();
 		assert!(jdb.contains(&h));
-		jdb.commit_batch(4, &b"4".sha3(), Some((1, b"1".sha3()))).unwrap();
+		jdb.commit_batch(4, &keccak(b"4"), Some((1, keccak(b"1")))).unwrap();
 		assert!(jdb.contains(&h));
 	}
 
 	#[test]
 	#[should_panic]
 	fn multiple_owed_removal_not_allowed() {
-		let mut jdb = ArchiveDB::new_temp();
+		let mut jdb = ArchiveDB::new(Arc::new(kvdb_memorydb::create(0)), None);
 		let h = jdb.insert(b"foo");
-		jdb.commit_batch(0, &b"0".sha3(), None).unwrap();
+		jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
 		assert!(jdb.contains(&h));
 		jdb.remove(&h);
 		jdb.remove(&h);
 		// commit_batch would call journal_under(),
 		// and we don't allow multiple owned removals.
-		jdb.commit_batch(1, &b"1".sha3(), None).unwrap();
+		jdb.commit_batch(1, &keccak(b"1"), None).unwrap();
 	}
 
 	#[test]
 	fn complex() {
 		// history is 1
-		let mut jdb = ArchiveDB::new_temp();
+		let mut jdb = ArchiveDB::new(Arc::new(kvdb_memorydb::create(0)), None);
 
 		let foo = jdb.insert(b"foo");
 		let bar = jdb.insert(b"bar");
-		jdb.commit_batch(0, &b"0".sha3(), None).unwrap();
+		jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
 		assert!(jdb.contains(&foo));
 		assert!(jdb.contains(&bar));
 
 		jdb.remove(&foo);
 		jdb.remove(&bar);
 		let baz = jdb.insert(b"baz");
-		jdb.commit_batch(1, &b"1".sha3(), Some((0, b"0".sha3()))).unwrap();
+		jdb.commit_batch(1, &keccak(b"1"), Some((0, keccak(b"0")))).unwrap();
 		assert!(jdb.contains(&foo));
 		assert!(jdb.contains(&bar));
 		assert!(jdb.contains(&baz));
 
 		let foo = jdb.insert(b"foo");
 		jdb.remove(&baz);
-		jdb.commit_batch(2, &b"2".sha3(), Some((1, b"1".sha3()))).unwrap();
+		jdb.commit_batch(2, &keccak(b"2"), Some((1, keccak(b"1")))).unwrap();
 		assert!(jdb.contains(&foo));
 		assert!(jdb.contains(&baz));
 
 		jdb.remove(&foo);
-		jdb.commit_batch(3, &b"3".sha3(), Some((2, b"2".sha3()))).unwrap();
+		jdb.commit_batch(3, &keccak(b"3"), Some((2, keccak(b"2")))).unwrap();
 		assert!(jdb.contains(&foo));
 
-		jdb.commit_batch(4, &b"4".sha3(), Some((3, b"3".sha3()))).unwrap();
+		jdb.commit_batch(4, &keccak(b"4"), Some((3, keccak(b"3")))).unwrap();
 	}
 
 	#[test]
 	fn fork() {
 		// history is 1
-		let mut jdb = ArchiveDB::new_temp();
+		let mut jdb = ArchiveDB::new(Arc::new(kvdb_memorydb::create(0)), None);
 
 		let foo = jdb.insert(b"foo");
 		let bar = jdb.insert(b"bar");
-		jdb.commit_batch(0, &b"0".sha3(), None).unwrap();
+		jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
 		assert!(jdb.contains(&foo));
 		assert!(jdb.contains(&bar));
 
 		jdb.remove(&foo);
 		let baz = jdb.insert(b"baz");
-		jdb.commit_batch(1, &b"1a".sha3(), Some((0, b"0".sha3()))).unwrap();
+		jdb.commit_batch(1, &keccak(b"1a"), Some((0, keccak(b"0")))).unwrap();
 
 		jdb.remove(&bar);
-		jdb.commit_batch(1, &b"1b".sha3(), Some((0, b"0".sha3()))).unwrap();
+		jdb.commit_batch(1, &keccak(b"1b"), Some((0, keccak(b"0")))).unwrap();
 
 		assert!(jdb.contains(&foo));
 		assert!(jdb.contains(&bar));
 		assert!(jdb.contains(&baz));
 
-		jdb.commit_batch(2, &b"2b".sha3(), Some((1, b"1b".sha3()))).unwrap();
+		jdb.commit_batch(2, &keccak(b"2b"), Some((1, keccak(b"1b")))).unwrap();
 		assert!(jdb.contains(&foo));
 	}
 
 	#[test]
 	fn overwrite() {
 		// history is 1
-		let mut jdb = ArchiveDB::new_temp();
+		let mut jdb = ArchiveDB::new(Arc::new(kvdb_memorydb::create(0)), None);
 
 		let foo = jdb.insert(b"foo");
-		jdb.commit_batch(0, &b"0".sha3(), None).unwrap();
+		jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
 		assert!(jdb.contains(&foo));
 
 		jdb.remove(&foo);
-		jdb.commit_batch(1, &b"1".sha3(), Some((0, b"0".sha3()))).unwrap();
+		jdb.commit_batch(1, &keccak(b"1"), Some((0, keccak(b"0")))).unwrap();
 		jdb.insert(b"foo");
 		assert!(jdb.contains(&foo));
-		jdb.commit_batch(2, &b"2".sha3(), Some((1, b"1".sha3()))).unwrap();
+		jdb.commit_batch(2, &keccak(b"2"), Some((1, keccak(b"1")))).unwrap();
 		assert!(jdb.contains(&foo));
-		jdb.commit_batch(3, &b"2".sha3(), Some((0, b"2".sha3()))).unwrap();
+		jdb.commit_batch(3, &keccak(b"2"), Some((0, keccak(b"2")))).unwrap();
 		assert!(jdb.contains(&foo));
 	}
 
 	#[test]
 	fn fork_same_key() {
 		// history is 1
-		let mut jdb = ArchiveDB::new_temp();
-		jdb.commit_batch(0, &b"0".sha3(), None).unwrap();
+		let mut jdb = ArchiveDB::new(Arc::new(kvdb_memorydb::create(0)), None);
+		jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
 
 		let foo = jdb.insert(b"foo");
-		jdb.commit_batch(1, &b"1a".sha3(), Some((0, b"0".sha3()))).unwrap();
+		jdb.commit_batch(1, &keccak(b"1a"), Some((0, keccak(b"0")))).unwrap();
 
 		jdb.insert(b"foo");
-		jdb.commit_batch(1, &b"1b".sha3(), Some((0, b"0".sha3()))).unwrap();
+		jdb.commit_batch(1, &keccak(b"1b"), Some((0, keccak(b"0")))).unwrap();
 		assert!(jdb.contains(&foo));
 
-		jdb.commit_batch(2, &b"2a".sha3(), Some((1, b"1a".sha3()))).unwrap();
+		jdb.commit_batch(2, &keccak(b"2a"), Some((1, keccak(b"1a")))).unwrap();
 		assert!(jdb.contains(&foo));
-	}
-
-	fn new_db(dir: &Path) -> ArchiveDB {
-		let db = Database::open_default(dir.to_str().unwrap()).unwrap();
-		ArchiveDB::new(Arc::new(db), None)
 	}
 
 	#[test]
 	fn reopen() {
-		let mut dir = ::std::env::temp_dir();
-		dir.push(H32::random().hex());
+		let shared_db = Arc::new(kvdb_memorydb::create(0));
 		let bar = H256::random();
 
 		let foo = {
-			let mut jdb = new_db(&dir);
+			let mut jdb = ArchiveDB::new(shared_db.clone(), None);
 			// history is 1
 			let foo = jdb.insert(b"foo");
 			jdb.emplace(bar.clone(), DBValue::from_slice(b"bar"));
-			jdb.commit_batch(0, &b"0".sha3(), None).unwrap();
+			jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
 			foo
 		};
 
 		{
-			let mut jdb = new_db(&dir);
+			let mut jdb = ArchiveDB::new(shared_db.clone(), None);
 			jdb.remove(&foo);
-			jdb.commit_batch(1, &b"1".sha3(), Some((0, b"0".sha3()))).unwrap();
+			jdb.commit_batch(1, &keccak(b"1"), Some((0, keccak(b"0")))).unwrap();
 		}
 
 		{
-			let mut jdb = new_db(&dir);
+			let mut jdb = ArchiveDB::new(shared_db, None);
 			assert!(jdb.contains(&foo));
 			assert!(jdb.contains(&bar));
-			jdb.commit_batch(2, &b"2".sha3(), Some((1, b"1".sha3()))).unwrap();
+			jdb.commit_batch(2, &keccak(b"2"), Some((1, keccak(b"1")))).unwrap();
 		}
 	}
 
 	#[test]
 	fn reopen_remove() {
-		let mut dir = ::std::env::temp_dir();
-		dir.push(H32::random().hex());
+		let shared_db = Arc::new(kvdb_memorydb::create(0));
 
 		let foo = {
-			let mut jdb = new_db(&dir);
+			let mut jdb = ArchiveDB::new(shared_db.clone(), None);
 			// history is 1
 			let foo = jdb.insert(b"foo");
-			jdb.commit_batch(0, &b"0".sha3(), None).unwrap();
-			jdb.commit_batch(1, &b"1".sha3(), Some((0, b"0".sha3()))).unwrap();
+			jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
+			jdb.commit_batch(1, &keccak(b"1"), Some((0, keccak(b"0")))).unwrap();
 
 			// foo is ancient history.
 
 			jdb.insert(b"foo");
-			jdb.commit_batch(2, &b"2".sha3(), Some((1, b"1".sha3()))).unwrap();
+			jdb.commit_batch(2, &keccak(b"2"), Some((1, keccak(b"1")))).unwrap();
 			foo
 		};
 
 		{
-			let mut jdb = new_db(&dir);
+			let mut jdb = ArchiveDB::new(shared_db, None);
 			jdb.remove(&foo);
-			jdb.commit_batch(3, &b"3".sha3(), Some((2, b"2".sha3()))).unwrap();
+			jdb.commit_batch(3, &keccak(b"3"), Some((2, keccak(b"2")))).unwrap();
 			assert!(jdb.contains(&foo));
 			jdb.remove(&foo);
-			jdb.commit_batch(4, &b"4".sha3(), Some((3, b"3".sha3()))).unwrap();
-			jdb.commit_batch(5, &b"5".sha3(), Some((4, b"4".sha3()))).unwrap();
+			jdb.commit_batch(4, &keccak(b"4"), Some((3, keccak(b"3")))).unwrap();
+			jdb.commit_batch(5, &keccak(b"5"), Some((4, keccak(b"4")))).unwrap();
 		}
 	}
 
 	#[test]
 	fn reopen_fork() {
-		let mut dir = ::std::env::temp_dir();
-		dir.push(H32::random().hex());
+		let shared_db = Arc::new(kvdb_memorydb::create(0));
 		let (foo, _, _) = {
-			let mut jdb = new_db(&dir);
+			let mut jdb = ArchiveDB::new(shared_db.clone(), None);
 			// history is 1
 			let foo = jdb.insert(b"foo");
 			let bar = jdb.insert(b"bar");
-			jdb.commit_batch(0, &b"0".sha3(), None).unwrap();
+			jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
 			jdb.remove(&foo);
 			let baz = jdb.insert(b"baz");
-			jdb.commit_batch(1, &b"1a".sha3(), Some((0, b"0".sha3()))).unwrap();
+			jdb.commit_batch(1, &keccak(b"1a"), Some((0, keccak(b"0")))).unwrap();
 
 			jdb.remove(&bar);
-			jdb.commit_batch(1, &b"1b".sha3(), Some((0, b"0".sha3()))).unwrap();
+			jdb.commit_batch(1, &keccak(b"1b"), Some((0, keccak(b"0")))).unwrap();
 			(foo, bar, baz)
 		};
 
 		{
-			let mut jdb = new_db(&dir);
-			jdb.commit_batch(2, &b"2b".sha3(), Some((1, b"1b".sha3()))).unwrap();
+			let mut jdb = ArchiveDB::new(shared_db, None);
+			jdb.commit_batch(2, &keccak(b"2b"), Some((1, keccak(b"1b")))).unwrap();
 			assert!(jdb.contains(&foo));
 		}
 	}
 
 	#[test]
 	fn returns_state() {
-		let temp = ::devtools::RandomTempPath::new();
+		let shared_db = Arc::new(kvdb_memorydb::create(0));
 
 		let key = {
-			let mut jdb = new_db(temp.as_path().as_path());
+			let mut jdb = ArchiveDB::new(shared_db.clone(), None);
 			let key = jdb.insert(b"foo");
-			jdb.commit_batch(0, &b"0".sha3(), None).unwrap();
+			jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
 			key
 		};
 
 		{
-			let jdb = new_db(temp.as_path().as_path());
+			let jdb = ArchiveDB::new(shared_db, None);
 			let state = jdb.state(&key);
 			assert!(state.is_some());
 		}
@@ -460,9 +455,7 @@ mod tests {
 
 	#[test]
 	fn inject() {
-		let temp = ::devtools::RandomTempPath::new();
-
-		let mut jdb = new_db(temp.as_path().as_path());
+		let mut jdb = ArchiveDB::new(Arc::new(kvdb_memorydb::create(0)), None);
 		let key = jdb.insert(b"dog");
 		jdb.inject_batch().unwrap();
 

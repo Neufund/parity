@@ -18,7 +18,10 @@ use std::{io, env};
 use std::io::{Write, BufReader, BufRead};
 use std::time::Duration;
 use std::fs::File;
-use util::{clean_0x, U256, Address, CompactionProfile};
+use bigint::prelude::U256;
+use bigint::hash::clean_0x;
+use util::Address;
+use kvdb_rocksdb::CompactionProfile;
 use util::journaldb::Algorithm;
 use ethcore::client::{Mode, BlockId, VMType, DatabaseCompactionProfile, ClientConfig, VerifierType};
 use ethcore::miner::{PendingSet, GasLimit, PrioritizationStrategy};
@@ -191,7 +194,8 @@ pub fn to_bootnodes(bootnodes: &Option<String>) -> Result<Vec<String>, String> {
 
 #[cfg(test)]
 pub fn default_network_config() -> ::ethsync::NetworkConfiguration {
-	use ethsync::{NetworkConfiguration, AllowIP};
+	use ethsync::{NetworkConfiguration};
+	use super::network::IpFilter;
 	NetworkConfiguration {
 		config_path: Some(replace_home(&::dir::default_data_path(), "$BASE/network")),
 		net_config_path: None,
@@ -206,7 +210,7 @@ pub fn default_network_config() -> ::ethsync::NetworkConfiguration {
 		min_peers: 25,
 		snapshot_peers: 0,
 		max_pending_peers: 64,
-		allow_ips: AllowIP::All,
+		ip_filter: IpFilter::default(),
 		reserved_nodes: Vec::new(),
 		allow_non_reserved: true,
 	}
@@ -235,10 +239,8 @@ pub fn to_client_config(
 	client_config.blockchain.max_cache_size = cache_config.blockchain() as usize * mb;
 	// in bytes
 	client_config.blockchain.pref_cache_size = cache_config.blockchain() as usize * 3 / 4 * mb;
-	// db blockchain cache size, in megabytes
-	client_config.blockchain.db_cache_size = Some(cache_config.db_blockchain_cache_size() as usize);
-	// db state cache size, in megabytes
-	client_config.db_cache_size = Some(cache_config.db_state_cache_size() as usize);
+	// db cache size, in megabytes
+	client_config.db_cache_size = Some(cache_config.db_cache_size() as usize);
 	// db queue cache size, in bytes
 	client_config.queue.max_mem_use = cache_config.queue() as usize * mb;
 	// in bytes
@@ -340,7 +342,7 @@ mod tests {
 	use std::fs::File;
 	use std::io::Write;
 	use devtools::RandomTempPath;
-	use util::{U256};
+	use bigint::prelude::U256;
 	use ethcore::client::{Mode, BlockId};
 	use ethcore::miner::PendingSet;
 	use super::{to_duration, to_mode, to_block_id, to_u256, to_pending_set, to_address, to_addresses, to_price, geth_ipc_path, to_bootnodes, password_from_file};

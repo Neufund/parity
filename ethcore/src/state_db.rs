@@ -15,15 +15,19 @@
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::collections::{VecDeque, HashSet};
+use std::sync::Arc;
 use lru_cache::LruCache;
 use util::cache::MemoryLruCache;
 use util::journaldb::JournalDB;
-use util::kvdb::KeyValueDB;
-use util::hash::{H256};
-use util::hashdb::HashDB;
+use kvdb::{KeyValueDB, DBTransaction};
+use bigint::hash::H256;
+use hashdb::HashDB;
 use state::{self, Account};
 use header::BlockNumber;
-use util::{Arc, Address, DBTransaction, UtilError, Mutex, Hashable};
+use hash::keccak;
+use parking_lot::Mutex;
+use util::Address;
+use util_error::UtilError;
 use bloom_journal::{Bloom, BloomJournal};
 use db::COL_ACCOUNT_BLOOM;
 use byteorder::{LittleEndian, ByteOrder};
@@ -442,20 +446,23 @@ impl state::Backend for StateDB {
 	fn note_non_null_account(&self, address: &Address) {
 		trace!(target: "account_bloom", "Note account bloom: {:?}", address);
 		let mut bloom = self.account_bloom.lock();
-		bloom.set(&*address.sha3());
+		bloom.set(&*keccak(address));
 	}
 
 	fn is_known_null(&self, address: &Address) -> bool {
 		trace!(target: "account_bloom", "Check account bloom: {:?}", address);
 		let bloom = self.account_bloom.lock();
-		let is_null = !bloom.check(&*address.sha3());
+		let is_null = !bloom.check(&*keccak(address));
 		is_null
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use util::{U256, H256, Address, DBTransaction};
+	use bigint::prelude::U256;
+	use bigint::hash::H256;
+	use util::Address;
+	use kvdb::DBTransaction;
 	use tests::helpers::*;
 	use state::{Account, Backend};
 	use ethcore_logger::init_log;

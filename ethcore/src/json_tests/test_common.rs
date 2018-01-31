@@ -14,7 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
+pub use bigint::prelude::U256;
+pub use bigint::hash::H256;
 pub use util::*;
+use std::collections::HashSet;
+use std::io::Read;
 use std::fs::{File, read_dir};
 use std::path::Path;
 use std::ffi::OsString;
@@ -48,7 +52,8 @@ pub fn run_test_file(path: &Path, runner: fn (json_data: &[u8]) -> Vec<String>) 
 	let mut file = File::open(&path).expect("Error opening test file");
 	file.read_to_end(&mut data).expect("Error reading test file");
 	let results = runner(&data);
-	assert!(results.is_empty());
+	let empty: [String; 0] = [];
+	assert_eq!(results, empty);
 }
 
 macro_rules! test {

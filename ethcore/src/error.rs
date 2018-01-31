@@ -16,7 +16,15 @@
 
 //! General error types for use in ethcore.
 
+use std::fmt;
+use kvdb;
+use bigint::prelude::U256;
+use bigint::hash::H256;
 use util::*;
+use util_error::UtilError;
+use snappy::InvalidInput;
+use unexpected::{Mismatch, OutOfBounds};
+use trie::TrieError;
 use io::*;
 use header::BlockNumber;
 use basic_types::LogBloom;
@@ -77,8 +85,10 @@ pub enum TransactionError {
 	RecipientBanned,
 	/// Contract creation code is banned.
 	CodeBanned,
-	/// Invalid network ID given.
-	InvalidNetworkId,
+	/// Invalid chain ID given.
+	InvalidChainId,
+	/// Not enough permissions given by permission contract.
+	NotAllowed,
 }
 
 impl fmt::Display for TransactionError {
@@ -102,7 +112,8 @@ impl fmt::Display for TransactionError {
 			SenderBanned => "Sender is temporarily banned.".into(),
 			RecipientBanned => "Recipient is temporarily banned.".into(),
 			CodeBanned => "Contract code is temporarily banned.".into(),
-			InvalidNetworkId => "Transaction of this network ID is not allowed on this chain.".into(),
+			InvalidChainId => "Transaction of this chain ID is not allowed on this chain.".into(),
+			NotAllowed => "Sender does not have permissions to execute this type of transction".into(),
 		};
 
 		f.write_fmt(format_args!("Transaction error ({})", msg))
@@ -157,6 +168,8 @@ pub enum BlockError {
 	InvalidReceiptsRoot(Mismatch<H256>),
 	/// Timestamp header field is invalid.
 	InvalidTimestamp(OutOfBounds<u64>),
+	/// Timestamp header field is too far in future.
+	TemporarilyInvalid(OutOfBounds<u64>),
 	/// Log bloom header field is invalid.
 	InvalidLogBloom(Mismatch<LogBloom>),
 	/// Parent hash field of header is invalid; this is an invalid error indicating a logic flaw in the codebase.
@@ -202,6 +215,7 @@ impl fmt::Display for BlockError {
 			InvalidGasLimit(ref oob) => format!("Invalid gas limit: {}", oob),
 			InvalidReceiptsRoot(ref mis) => format!("Invalid receipts trie root in header: {}", mis),
 			InvalidTimestamp(ref oob) => format!("Invalid timestamp in header: {}", oob),
+			TemporarilyInvalid(ref oob) => format!("Future timestamp in header: {}", oob),
 			InvalidLogBloom(ref oob) => format!("Invalid log bloom in header: {}", oob),
 			InvalidParentHash(ref mis) => format!("Invalid parent hash: {}", mis),
 			InvalidNumber(ref mis) => format!("Invalid number in header: {}", mis),
@@ -291,6 +305,8 @@ impl From<Error> for TransactionImportError {
 pub enum Error {
 	/// Client configuration error.
 	Client(ClientError),
+	/// Database error.
+	Database(kvdb::Error),
 	/// Error concerning a utility.
 	Util(UtilError),
 	/// Error concerning block processing.
@@ -314,7 +330,7 @@ pub enum Error {
 	/// Standard io error.
 	StdIo(::std::io::Error),
 	/// Snappy error.
-	Snappy(::util::snappy::InvalidInput),
+	Snappy(InvalidInput),
 	/// Snapshot error.
 	Snapshot(SnapshotError),
 	/// Consensus vote error.
@@ -329,6 +345,7 @@ impl fmt::Display for Error {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
 			Error::Client(ref err) => err.fmt(f),
+			Error::Database(ref err) => err.fmt(f),
 			Error::Util(ref err) => err.fmt(f),
 			Error::Io(ref err) => err.fmt(f),
 			Error::Block(ref err) => err.fmt(f),
@@ -362,6 +379,12 @@ impl From<ClientError> for Error {
 	}
 }
 
+impl From<kvdb::Error> for Error {
+	fn from(err: kvdb::Error) -> Error {
+		Error::Database(err)
+	}
+}
+
 impl From<TransactionError> for Error {
 	fn from(err: TransactionError) -> Error {
 		Error::Transaction(err)
@@ -388,7 +411,7 @@ impl From<ExecutionError> for Error {
 
 impl From<::rlp::DecoderError> for Error {
 	fn from(err: ::rlp::DecoderError) -> Error {
-		Error::Util(UtilError::Decoder(err))
+		Error::Util(UtilError::from(err))
 	}
 }
 
@@ -421,13 +444,13 @@ impl From<BlockImportError> for Error {
 		match err {
 			BlockImportError::Block(e) => Error::Block(e),
 			BlockImportError::Import(e) => Error::Import(e),
-			BlockImportError::Other(s) => Error::Util(UtilError::SimpleString(s)),
+			BlockImportError::Other(s) => Error::Util(UtilError::from(s)),
 		}
 	}
 }
 
-impl From<snappy::InvalidInput> for Error {
-	fn from(err: snappy::InvalidInput) -> Error {
+impl From<::snappy::InvalidInput> for Error {
+	fn from(err: ::snappy::InvalidInput) -> Error {
 		Error::Snappy(err)
 	}
 }

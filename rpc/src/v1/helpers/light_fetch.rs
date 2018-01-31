@@ -23,11 +23,11 @@ use ethcore::encoded;
 use ethcore::executed::{Executed, ExecutionError};
 use ethcore::ids::BlockId;
 use ethcore::filter::Filter as EthcoreFilter;
-use ethcore::transaction::{Action, Transaction as EthTransaction};
+use ethcore::receipt::Receipt;
 
-use futures::{future, Future, BoxFuture};
-use futures::future::Either;
-use jsonrpc_core::Error;
+use jsonrpc_core::{BoxFuture, Result};
+use jsonrpc_core::futures::{future, Future};
+use jsonrpc_core::futures::future::Either;
 use jsonrpc_macros::Trailing;
 
 use light::cache::Cache;
@@ -37,13 +37,19 @@ use light::on_demand::{request, OnDemand, HeaderRef, Request as OnDemandRequest,
 use light::request::Field;
 
 use ethsync::LightSync;
-use util::{Address, Mutex, U256};
+use ethereum_types::{U256, Address};
+use hash::H256;
+use parking_lot::Mutex;
+use transaction::{Action, Transaction as EthTransaction, SignedTransaction, LocalizedTransaction};
 
 use v1::helpers::{CallRequest as CallRequestHelper, errors, dispatch};
-use v1::types::{BlockNumber, CallRequest, Log};
+use v1::types::{BlockNumber, CallRequest, Log, Transaction};
+
+const NO_INVALID_BACK_REFS: &'static str = "Fails only on invalid back-references; back-references here known to be valid; qed";
 
 /// Helper for fetching blockchain data either from the light client or the network
 /// as necessary.
+#[derive(Clone)]
 pub struct LightFetch {
 	/// The light client.
 	pub client: Arc<LightChainClient>,
@@ -53,10 +59,36 @@ pub struct LightFetch {
 	pub sync: Arc<LightSync>,
 	/// The light data cache.
 	pub cache: Arc<Mutex<Cache>>,
+	/// Gas Price percentile
+	pub gas_price_percentile: usize,
 }
 
+/// Extract a transaction at given index.
+pub fn extract_transaction_at_index(block: encoded::Block, index: usize, eip86_transition: u64) -> Option<Transaction> {
+	block.transactions().into_iter().nth(index)
+		// Verify if transaction signature is correct.
+		.and_then(|tx| SignedTransaction::new(tx).ok())
+		.map(|signed_tx| {
+			let (signed, sender, _) = signed_tx.deconstruct();
+			let block_hash = block.hash();
+			let block_number = block.number();
+			let transaction_index = index;
+			let cached_sender = Some(sender);
+
+			LocalizedTransaction {
+				signed,
+				block_number,
+				block_hash,
+				transaction_index,
+				cached_sender,
+			}
+		})
+		.map(|tx| Transaction::from_localized(tx, eip86_transition))
+}
+
+
 /// Type alias for convenience.
-pub type ExecutionResult = Result<Executed, ExecutionError>;
+pub type ExecutionResult = ::std::result::Result<Executed, ExecutionError>;
 
 // extract the header indicated by the given `HeaderRef` from the given responses.
 // fails only if they do not correspond.
@@ -73,7 +105,7 @@ fn extract_header(res: &[OnDemandResponse], header: HeaderRef) -> Option<encoded
 impl LightFetch {
 	// push the necessary requests onto the request chain to get the header by the given ID.
 	// yield a header reference which other requests can use.
-	fn make_header_requests(&self, id: BlockId, reqs: &mut Vec<OnDemandRequest>) -> Result<HeaderRef, Error> {
+	fn make_header_requests(&self, id: BlockId, reqs: &mut Vec<OnDemandRequest>) -> Result<HeaderRef> {
 		if let Some(h) = self.client.block_header(id) {
 			return Ok(h.into());
 		}
@@ -107,59 +139,58 @@ impl LightFetch {
 	}
 
 	/// Get a block header from the on demand service or client, or error.
-	pub fn header(&self, id: BlockId) -> BoxFuture<encoded::Header, Error> {
+	pub fn header(&self, id: BlockId) -> BoxFuture<encoded::Header> {
 		let mut reqs = Vec::new();
 		let header_ref = match self.make_header_requests(id, &mut reqs) {
 			Ok(r) => r,
-			Err(e) => return future::err(e).boxed(),
+			Err(e) => return Box::new(future::err(e)),
 		};
 
-		let maybe_future = self.sync.with_context(move |ctx| {
-			self.on_demand.request_raw(ctx, reqs)
-				.expect("all back-references known to be valid; qed")
-				.map(|res| extract_header(&res, header_ref)
-					.expect("these responses correspond to requests that header_ref belongs to. \
-							 therefore it will not fail; qed"))
-				.map_err(errors::on_demand_cancel)
-				.boxed()
-		});
 
-		match maybe_future {
-			Some(recv) => recv,
-			None => future::err(errors::network_disabled()).boxed()
-		}
+		self.send_requests(reqs, |res|
+			extract_header(&res, header_ref)
+				.expect("these responses correspond to requests that header_ref belongs to \
+						therefore it will not fail; qed")
+		)
 	}
 
-	/// helper for getting account info at a given block.
-	/// `None` indicates the account doesn't exist at the given block.
-	pub fn account(&self, address: Address, id: BlockId) -> BoxFuture<Option<BasicAccount>, Error> {
+	/// Helper for getting contract code at a given block.
+	pub fn code(&self, address: Address, id: BlockId) -> BoxFuture<Vec<u8>> {
 		let mut reqs = Vec::new();
 		let header_ref = match self.make_header_requests(id, &mut reqs) {
 			Ok(r) => r,
-			Err(e) => return future::err(e).boxed(),
+			Err(e) => return Box::new(future::err(e)),
+		};
+
+		reqs.push(request::Account { header: header_ref.clone(), address: address }.into());
+		let account_idx = reqs.len() - 1;
+		reqs.push(request::Code { header: header_ref, code_hash: Field::back_ref(account_idx, 0) }.into());
+
+		self.send_requests(reqs, |mut res| match res.pop() {
+			Some(OnDemandResponse::Code(code)) => code,
+			_ => panic!("responses correspond directly with requests in amount and type; qed"),
+		})
+	}
+
+	/// Helper for getting account info at a given block.
+	/// `None` indicates the account doesn't exist at the given block.
+	pub fn account(&self, address: Address, id: BlockId) -> BoxFuture<Option<BasicAccount>> {
+		let mut reqs = Vec::new();
+		let header_ref = match self.make_header_requests(id, &mut reqs) {
+			Ok(r) => r,
+			Err(e) => return Box::new(future::err(e)),
 		};
 
 		reqs.push(request::Account { header: header_ref, address: address }.into());
 
-		let maybe_future = self.sync.with_context(move |ctx| {
-			self.on_demand.request_raw(ctx, reqs)
-				.expect("all back-references known to be valid; qed")
-				.map(|mut res| match res.pop() {
-					Some(OnDemandResponse::Account(acc)) => acc,
-					_ => panic!("responses correspond directly with requests in amount and type; qed"),
-				})
-				.map_err(errors::on_demand_cancel)
-				.boxed()
-		});
-
-		match maybe_future {
-			Some(recv) => recv,
-			None => future::err(errors::network_disabled()).boxed()
-		}
+		self.send_requests(reqs, |mut res|match res.pop() {
+			Some(OnDemandResponse::Account(acc)) => acc,
+			_ => panic!("responses correspond directly with requests in amount and type; qed"),
+		})
 	}
 
-	/// helper for getting proved execution.
-	pub fn proved_execution(&self, req: CallRequest, num: Trailing<BlockNumber>) -> BoxFuture<ExecutionResult, Error> {
+	/// Helper for getting proved execution.
+	pub fn proved_execution(&self, req: CallRequest, num: Trailing<BlockNumber>) -> BoxFuture<ExecutionResult> {
 		const DEFAULT_GAS_PRICE: u64 = 21_000;
 		// starting gas when gas not provided.
 		const START_GAS: u64 = 50_000;
@@ -174,6 +205,7 @@ impl LightFetch {
 			None => Either::B(self.account(from, id).map(|acc| acc.map(|a| a.nonce))),
 		};
 
+		let gas_price_percentile = self.gas_price_percentile;
 		let gas_price_fut = match req.gas_price {
 			Some(price) => Either::A(future::ok(price)),
 			None => Either::B(dispatch::fetch_gas_price_corpus(
@@ -181,8 +213,8 @@ impl LightFetch {
 				self.client.clone(),
 				self.on_demand.clone(),
 				self.cache.clone(),
-			).map(|corp| match corp.median() {
-				Some(median) => *median,
+			).map(move |corp| match corp.percentile(gas_price_percentile) {
+				Some(percentile) => *percentile,
 				None => DEFAULT_GAS_PRICE.into(),
 			}))
 		};
@@ -191,7 +223,7 @@ impl LightFetch {
 		let header_fut = self.header(id);
 
 		// fetch missing transaction fields from the network.
-		nonce_fut.join(gas_price_fut).and_then(move |(nonce, gas_price)| {
+		Box::new(nonce_fut.join(gas_price_fut).and_then(move |(nonce, gas_price)| {
 			let action = req.to.map_or(Action::Create, Action::Call);
 			let value = req.value.unwrap_or_else(U256::zero);
 			let data = req.data.unwrap_or_default();
@@ -220,10 +252,10 @@ impl LightFetch {
 			// TODO: get last-hashes from network.
 			let env_info = match client.env_info(id) {
 				Some(env_info) => env_info,
-				_ => return future::err(errors::unknown_block()).boxed(),
+				_ => return Either::A(future::err(errors::unknown_block())),
 			};
 
-			execute_tx(gas_known, ExecuteParams {
+			Either::B(execute_tx(gas_known, ExecuteParams {
 				from: from,
 				tx: tx,
 				hdr: hdr,
@@ -231,44 +263,46 @@ impl LightFetch {
 				engine: client.engine().clone(),
 				on_demand: on_demand,
 				sync: sync,
-			})
-		}).boxed()
+			}))
+		}))
 	}
 
-	/// get a block itself. fails on unknown block ID.
-	pub fn block(&self, id: BlockId) -> BoxFuture<encoded::Block, Error> {
+	/// Get a block itself. Fails on unknown block ID.
+	pub fn block(&self, id: BlockId) -> BoxFuture<encoded::Block> {
 		let mut reqs = Vec::new();
 		let header_ref = match self.make_header_requests(id, &mut reqs) {
 			Ok(r) => r,
-			Err(e) => return future::err(e).boxed(),
+			Err(e) => return Box::new(future::err(e)),
 		};
 
 		reqs.push(request::Body(header_ref).into());
 
-		let maybe_future = self.sync.with_context(move |ctx| {
-			self.on_demand.request_raw(ctx, reqs)
-				.expect("all back-references known to be valid; qed")
-				.map(|mut res| match res.pop() {
-					Some(OnDemandResponse::Body(b)) => b,
-					_ => panic!("responses correspond directly with requests in amount and type; qed"),
-				})
-				.map_err(errors::on_demand_cancel)
-				.boxed()
-		});
-
-		match maybe_future {
-			Some(recv) => recv,
-			None => future::err(errors::network_disabled()).boxed()
-		}
+		self.send_requests(reqs, |mut res| match res.pop() {
+			Some(OnDemandResponse::Body(b)) => b,
+			_ => panic!("responses correspond directly with requests in amount and type; qed"),
+		})
 	}
 
-	/// get transaction logs
-	pub fn logs(&self, filter: EthcoreFilter) -> BoxFuture<Vec<Log>, Error> {
+	/// Get the block receipts. Fails on unknown block ID.
+	pub fn receipts(&self, id: BlockId) -> BoxFuture<Vec<Receipt>> {
+		let mut reqs = Vec::new();
+		let header_ref = match self.make_header_requests(id, &mut reqs) {
+			Ok(r) => r,
+			Err(e) => return Box::new(future::err(e)),
+		};
+
+		reqs.push(request::BlockReceipts(header_ref).into());
+
+		self.send_requests(reqs, |mut res| match res.pop() {
+			Some(OnDemandResponse::Receipts(b)) => b,
+			_ => panic!("responses correspond directly with requests in amount and type; qed"),
+		})
+	}
+
+	/// Get transaction logs
+	pub fn logs(&self, filter: EthcoreFilter) -> BoxFuture<Vec<Log>> {
 		use std::collections::BTreeMap;
-
-		use futures::stream::{self, Stream};
-
-		const NO_INVALID_BACK_REFS: &'static str = "Fails only on invalid back-references; back-references here known to be valid; qed";
+		use jsonrpc_core::futures::stream::{self, Stream};
 
 		// early exit for "to" block before "from" block.
 		let best_number = self.client.chain_info().best_block_number;
@@ -280,9 +314,9 @@ impl LightFetch {
 		};
 
 		match (block_number(filter.to_block), block_number(filter.from_block)) {
-			(Some(to), Some(from)) if to < from => return future::ok(Vec::new()).boxed(),
+			(Some(to), Some(from)) if to < from => return Box::new(future::ok(Vec::new())),
 			(Some(_), Some(_)) => {},
-			_ => return future::err(errors::unknown_block()).boxed(),
+			_ => return Box::new(future::err(errors::unknown_block())),
 		}
 
 		let maybe_future = self.sync.with_context(move |ctx| {
@@ -316,8 +350,84 @@ impl LightFetch {
 		});
 
 		match maybe_future {
-			Some(fut) => fut.boxed(),
-			None => future::err(errors::network_disabled()).boxed(),
+			Some(fut) => Box::new(fut),
+			None => Box::new(future::err(errors::network_disabled())),
+		}
+	}
+
+	// Get a transaction by hash. also returns the index in the block.
+	// Only returns transactions in the canonical chain.
+	pub fn transaction_by_hash(&self, tx_hash: H256, eip86_transition: u64)
+		-> BoxFuture<Option<(Transaction, usize)>>
+	{
+		let params = (self.sync.clone(), self.on_demand.clone());
+		let fetcher: Self = self.clone();
+
+		Box::new(future::loop_fn(params, move |(sync, on_demand)| {
+			let maybe_future = sync.with_context(|ctx| {
+				let req = request::TransactionIndex(tx_hash.clone().into());
+				on_demand.request(ctx, req)
+			});
+
+			let eventual_index = match maybe_future {
+				Some(e) => e.expect(NO_INVALID_BACK_REFS).map_err(errors::on_demand_cancel),
+				None => return Either::A(future::err(errors::network_disabled())),
+			};
+
+			let fetcher = fetcher.clone();
+			let extract_transaction = eventual_index.and_then(move |index| {
+				// check that the block is known by number.
+				// that ensures that it is within the chain that we are aware of.
+				fetcher.block(BlockId::Number(index.num)).then(move |blk| match blk {
+					Ok(blk) => {
+						// if the block is known by number, make sure the
+						// index from earlier isn't garbage.
+
+						if blk.hash() != index.hash {
+							// index is on a different chain from us.
+							return Ok(future::Loop::Continue((sync, on_demand)))
+						}
+
+						let index = index.index as usize;
+						let transaction = extract_transaction_at_index(blk, index, eip86_transition);
+
+						if transaction.as_ref().map_or(true, |tx| tx.hash != tx_hash.into()) {
+							// index is actively wrong: indicated block has
+							// fewer transactions than necessary or the transaction
+							// at that index had a different hash.
+							// TODO: punish peer/move into OnDemand somehow?
+							Ok(future::Loop::Continue((sync, on_demand)))
+						} else {
+							let transaction = transaction.map(move |tx| (tx, index));
+							Ok(future::Loop::Break(transaction))
+						}
+					}
+					Err(ref e) if e == &errors::unknown_block() => {
+						// block by number not in the canonical chain.
+						Ok(future::Loop::Break(None))
+					}
+					Err(e) => Err(e),
+				})
+			});
+
+			Either::B(extract_transaction)
+		}))
+	}
+
+	fn send_requests<T, F>(&self, reqs: Vec<OnDemandRequest>, parse_response: F) -> BoxFuture<T> where
+		F: FnOnce(Vec<OnDemandResponse>) -> T + Send + 'static,
+		T: Send + 'static,
+	{
+		let maybe_future = self.sync.with_context(move |ctx| {
+			Box::new(self.on_demand.request_raw(ctx, reqs)
+					 .expect(NO_INVALID_BACK_REFS)
+					 .map(parse_response)
+					 .map_err(errors::on_demand_cancel))
+		});
+
+		match maybe_future {
+			Some(recv) => recv,
+			None => Box::new(future::err(errors::network_disabled()))
 		}
 	}
 }
@@ -327,17 +437,17 @@ struct ExecuteParams {
 	from: Address,
 	tx: EthTransaction,
 	hdr: encoded::Header,
-	env_info: ::evm::env_info::EnvInfo,
-	engine: Arc<::ethcore::engines::Engine>,
+	env_info: ::vm::EnvInfo,
+	engine: Arc<::ethcore::engines::EthEngine>,
 	on_demand: Arc<OnDemand>,
 	sync: Arc<LightSync>,
 }
 
 // has a peer execute the transaction with given params. If `gas_known` is false,
 // this will double the gas on each `OutOfGas` error.
-fn execute_tx(gas_known: bool, params: ExecuteParams) -> BoxFuture<ExecutionResult, Error> {
+fn execute_tx(gas_known: bool, params: ExecuteParams) -> BoxFuture<ExecutionResult> {
 	if !gas_known {
-		future::loop_fn(params, |mut params| {
+		Box::new(future::loop_fn(params, |mut params| {
 			execute_tx(true, params.clone()).and_then(move |res| {
 				match res {
 					Ok(executed) => {
@@ -358,7 +468,7 @@ fn execute_tx(gas_known: bool, params: ExecuteParams) -> BoxFuture<ExecutionResu
 					failed => Ok(future::Loop::Break(failed)),
 				}
 			})
-		}).boxed()
+		}))
 	} else {
 		trace!(target: "light_fetch", "Placing execution request for {} gas in on_demand",
 			params.tx.gas);
@@ -379,8 +489,8 @@ fn execute_tx(gas_known: bool, params: ExecuteParams) -> BoxFuture<ExecutionResu
 		});
 
 		match proved_future {
-			Some(fut) => fut.boxed(),
-			None => future::err(errors::network_disabled()).boxed(),
+			Some(fut) => Box::new(fut),
+			None => Box::new(future::err(errors::network_disabled())),
 		}
 	}
 }

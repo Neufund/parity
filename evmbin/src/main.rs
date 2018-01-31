@@ -26,37 +26,49 @@ extern crate serde;
 extern crate serde_derive;
 extern crate docopt;
 extern crate ethcore_util as util;
+extern crate ethcore_bigint as bigint;
+extern crate ethcore_bytes as bytes;
+extern crate vm;
 extern crate evm;
+extern crate panic_hook;
 
 use std::sync::Arc;
 use std::{fmt, fs};
 use std::path::PathBuf;
 use docopt::Docopt;
 use rustc_hex::FromHex;
-use util::{U256, Bytes, Address};
+use bigint::prelude::U256;
+use util::Address;
+use bytes::Bytes;
 use ethcore::spec;
-use evm::action_params::ActionParams;
+use vm::{ActionParams, CallType};
 
-mod vm;
+mod info;
 mod display;
 
-use vm::Informant;
+use info::Informant;
 
 const USAGE: &'static str = r#"
 EVM implementation for Parity.
   Copyright 2016, 2017 Parity Technologies (UK) Ltd
 
 Usage:
-    evmbin stats [options]
-    evmbin [options]
-    evmbin [-h | --help]
-    evmbin state-test <file> [--json --only NAME --chain CHAIN]
+    parity-evm state-test <file> [--json --only NAME --chain CHAIN]
+    parity-evm stats [options]
+    parity-evm [options]
+    parity-evm [-h | --help]
 
 Transaction options:
     --code CODE        Contract code as hex (without 0x).
+    --to ADDRESS       Recipient address (without 0x).
     --from ADDRESS     Sender address (without 0x).
     --input DATA       Input data as hex (without 0x).
     --gas GAS          Supplied gas as hex (without 0x).
+    --gas-price WEI    Supplied gas price as hex (without 0x).
+
+State test options:
+    --only NAME        Runs only a single test matching the name.
+    --chain CHAIN      Run only tests from specific chain.
 
 State test options:
     --only NAME        Runs only a single test matching the name.
@@ -70,6 +82,8 @@ General options:
 
 
 fn main() {
+	panic_hook::set();
+
 	let args: Args = Docopt::new(USAGE).and_then(|d| d.deserialize()).unwrap_or_else(|e| e.exit());
 
 	if args.cmd_state_test {
@@ -116,10 +130,10 @@ fn run_state_test(args: Args) {
 
 				if args.flag_json {
 					let i = display::json::Informant::default();
-					vm::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, i)
+					info::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, i)
 				} else {
 					let i = display::simple::Informant::default();
-					vm::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, i)
+					info::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, i)
 				}
 			}
 		}
@@ -128,20 +142,30 @@ fn run_state_test(args: Args) {
 
 fn run_call<T: Informant>(args: Args, mut informant: T) {
 	let from = arg(args.from(), "--from");
+	let to = arg(args.to(), "--to");
 	let code = arg(args.code(), "--code");
 	let spec = arg(args.spec(), "--chain");
 	let gas = arg(args.gas(), "--gas");
+	let gas_price = arg(args.gas_price(), "--gas-price");
 	let data = arg(args.data(), "--input");
 
+	if code.is_none() && to == Address::default() {
+		die("Either --code or --to is required.");
+	}
+
 	let mut params = ActionParams::default();
+	params.call_type = if code.is_none() { CallType::Call } else { CallType::None };
+	params.code_address = to;
+	params.address = to;
 	params.sender = from;
 	params.origin = from;
 	params.gas = gas;
-	params.code = Some(Arc::new(code));
+	params.gas_price = gas_price;
+	params.code = code.map(Arc::new);
 	params.data = data;
 
 	informant.set_gas(gas);
-	let result = vm::run(&spec, gas, None, |mut client| {
+	let result = info::run(&spec, gas, None, |mut client| {
 		client.call(params, &mut informant).map(|r| (r.gas_left, r.return_data.to_vec()))
 	});
 	T::finish(result);
@@ -154,10 +178,11 @@ struct Args {
 	arg_file: Option<PathBuf>,
 	flag_only: Option<String>,
 	flag_from: Option<String>,
+	flag_to: Option<String>,
 	flag_code: Option<String>,
 	flag_gas: Option<String>,
+	flag_gas_price: Option<String>,
 	flag_input: Option<String>,
-	flag_spec: Option<String>,
 	flag_chain: Option<String>,
 	flag_json: bool,
 }
@@ -170,6 +195,13 @@ impl Args {
 		}
 	}
 
+	pub fn gas_price(&self) -> Result<U256, String> {
+		match self.flag_gas_price {
+			Some(ref gas_price) => gas_price.parse().map_err(to_string),
+			None => Ok(U256::zero()),
+		}
+	}
+
 	pub fn from(&self) -> Result<Address, String> {
 		match self.flag_from {
 			Some(ref from) => from.parse().map_err(to_string),
@@ -177,10 +209,17 @@ impl Args {
 		}
 	}
 
-	pub fn code(&self) -> Result<Bytes, String> {
+	pub fn to(&self) -> Result<Address, String> {
+		match self.flag_to {
+			Some(ref to) => to.parse().map_err(to_string),
+			None => Ok(Address::default()),
+		}
+	}
+
+	pub fn code(&self) -> Result<Option<Bytes>, String> {
 		match self.flag_code {
-			Some(ref code) => code.from_hex().map_err(to_string),
-			None => Err("Code is required!".into()),
+			Some(ref code) => code.from_hex().map(Some).map_err(to_string),
+			None => Ok(None),
 		}
 	}
 
@@ -192,10 +231,10 @@ impl Args {
 	}
 
 	pub fn spec(&self) -> Result<spec::Spec, String> {
-		Ok(match self.flag_spec {
+		Ok(match self.flag_chain {
 			Some(ref filename) =>  {
 				let file = fs::File::open(filename).map_err(|e| format!("{}", e))?;
-				spec::Spec::load(::std::env::temp_dir(), file)?
+				spec::Spec::load(&::std::env::temp_dir(), file)?
 			},
 			None => {
 				ethcore::ethereum::new_foundation(&::std::env::temp_dir())

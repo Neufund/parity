@@ -19,7 +19,8 @@ use error::{Error, Result};
 use cid::{ToCid, Codec};
 
 use multihash::Hash;
-use util::{Bytes, H256};
+use bigint::hash::H256;
+use bytes::Bytes;
 use ethcore::client::{BlockId, TransactionId};
 
 type Reason = &'static str;
@@ -119,7 +120,7 @@ mod tests {
 	use ethcore::client::TestBlockChainClient;
 
 	fn get_mocked_handler() -> IpfsHandler {
-		IpfsHandler::new(None, None, Arc::new(TestBlockChainClient::new()))
+		IpfsHandler::new(None.into(), None.into(), Arc::new(TestBlockChainClient::new()))
 	}
 
 	#[test]

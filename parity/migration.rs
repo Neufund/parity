@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 use std::fmt::{Display, Formatter, Error as FmtError};
 use std::sync::Arc;
 use util::journaldb::Algorithm;
-use util::migration::{Manager as MigrationManager, Config as MigrationConfig, Error as MigrationError, Migration};
-use util::kvdb::{CompactionProfile, Database, DatabaseConfig};
+use migr::{Manager as MigrationManager, Config as MigrationConfig, Error as MigrationError, Migration};
+use kvdb_rocksdb::{CompactionProfile, Database, DatabaseConfig};
 use ethcore::migrations;
 use ethcore::db;
 use ethcore::migrations::Extract;
@@ -167,7 +167,7 @@ fn consolidate_database(
 	let config = default_migration_settings(compaction_profile);
 	let mut db_config = DatabaseConfig {
 		max_open_files: 64,
-		cache_sizes: Default::default(),
+		memory_budget: None,
 		compaction: config.compaction_profile,
 		columns: None,
 		wal: true,
@@ -282,8 +282,8 @@ mod legacy {
 	use super::*;
 	use std::path::{Path, PathBuf};
 	use util::journaldb::Algorithm;
-	use util::migration::{Manager as MigrationManager};
-	use util::kvdb::CompactionProfile;
+	use migr::{Manager as MigrationManager};
+	use kvdb_rocksdb::CompactionProfile;
 	use ethcore::migrations;
 
 	/// Blocks database path.

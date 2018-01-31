@@ -21,7 +21,11 @@ use std::time::{Instant, Duration};
 use std::thread::sleep;
 use std::sync::Arc;
 use rustc_hex::FromHex;
-use util::{ToPretty, U256, H256, Address, Hashable};
+use hash::{keccak, KECCAK_NULL_RLP};
+use bigint::prelude::U256;
+use bigint::hash::H256;
+use util::Address;
+use bytes::ToPretty;
 use rlp::PayloadInfo;
 use ethcore::service::ClientService;
 use ethcore::client::{Mode, DatabaseCompactionProfile, VMType, BlockImportError, BlockChainClient, BlockId};
@@ -154,6 +158,7 @@ pub fn execute(cmd: BlockchainCmd) -> Result<(), String> {
 fn execute_import_light(cmd: ImportBlockchain) -> Result<(), String> {
 	use light::client::{Service as LightClientService, Config as LightClientConfig};
 	use light::cache::Cache as LightDataCache;
+	use parking_lot::Mutex;
 
 	let timer = Instant::now();
 
@@ -187,7 +192,7 @@ fn execute_import_light(cmd: ImportBlockchain) -> Result<(), String> {
 	// create dirs used by parity
 	cmd.dirs.create_dirs(false, false, false)?;
 
-	let cache = Arc::new(::util::Mutex::new(
+	let cache = Arc::new(Mutex::new(
 		LightDataCache::new(Default::default(), ::time::Duration::seconds(0))
 	));
 
@@ -204,7 +209,9 @@ fn execute_import_light(cmd: ImportBlockchain) -> Result<(), String> {
 	config.queue.max_mem_use = cmd.cache_config.queue() as usize * 1024 * 1024;
 	config.queue.verifier_settings = cmd.verifier_settings;
 
-	let service = LightClientService::start(config, &spec, &client_path, cache)
+	// TODO: could epoch signals be avilable at the end of the file?
+	let fetch = ::light::client::fetch::unavailable();
+	let service = LightClientService::start(config, &spec, fetch, &client_path, cache)
 		.map_err(|e| format!("Failed to start client: {}", e))?;
 
 	// free up the spec in memory.
@@ -584,8 +591,12 @@ fn execute_export(cmd: ExportBlockchain) -> Result<(), String> {
 		}
 		let b = client.block(BlockId::Number(i)).ok_or("Error exporting incomplete chain")?.into_inner();
 		match format {
-			DataFormat::Binary => { out.write(&b).expect("Couldn't write to stream."); }
-			DataFormat::Hex => { out.write_fmt(format_args!("{}", b.pretty())).expect("Couldn't write to stream."); }
+			DataFormat::Binary => {
+				out.write(&b).map_err(|e| format!("Couldn't write to stream. Cause: {}", e))?;
+			}
+			DataFormat::Hex => {
+				out.write_fmt(format_args!("{}", b.pretty())).map_err(|e| format!("Couldn't write to stream. Cause: {}", e))?;
+			}
 		}
 	}
 
@@ -639,13 +650,13 @@ fn execute_export_state(cmd: ExportState) -> Result<(), String> {
 			out.write_fmt(format_args!("\n\"0x{}\": {{\"balance\": \"{:x}\", \"nonce\": \"{:x}\"", account.hex(), balance, client.nonce(&account, at).unwrap_or_else(U256::zero))).expect("Write error");
 			let code = client.code(&account, at).unwrap_or(None).unwrap_or_else(Vec::new);
 			if !code.is_empty() {
-				out.write_fmt(format_args!(", \"code_hash\": \"0x{}\"", code.sha3().hex())).expect("Write error");
+				out.write_fmt(format_args!(", \"code_hash\": \"0x{}\"", keccak(&code).hex())).expect("Write error");
 				if cmd.code {
 					out.write_fmt(format_args!(", \"code\": \"{}\"", code.to_hex())).expect("Write error");
 				}
 			}
-			let storage_root = client.storage_root(&account, at).unwrap_or(::util::SHA3_NULL_RLP);
-			if storage_root != ::util::SHA3_NULL_RLP {
+			let storage_root = client.storage_root(&account, at).unwrap_or(KECCAK_NULL_RLP);
+			if storage_root != KECCAK_NULL_RLP {
 				out.write_fmt(format_args!(", \"storage_root\": \"0x{}\"", storage_root.hex())).expect("Write error");
 				if cmd.storage {
 					out.write_fmt(format_args!(", \"storage\": {{")).expect("Write error");
@@ -685,10 +696,12 @@ pub fn kill_db(cmd: KillBlockchain) -> Result<(), String> {
 	let genesis_hash = spec.genesis_header().hash();
 	let db_dirs = cmd.dirs.database(genesis_hash, None, spec.data_dir);
 	let user_defaults_path = db_dirs.user_defaults_path();
-	let user_defaults = UserDefaults::load(&user_defaults_path)?;
+	let mut user_defaults = UserDefaults::load(&user_defaults_path)?;
 	let algorithm = cmd.pruning.to_algorithm(&user_defaults);
 	let dir = db_dirs.db_path(algorithm);
 	fs::remove_dir_all(&dir).map_err(|e| format!("Error removing database: {:?}", e))?;
+	user_defaults.is_first_launch = true;
+	user_defaults.save(&user_defaults_path)?;
 	info!("Database deleted.");
 	Ok(())
 }

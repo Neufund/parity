@@ -19,8 +19,8 @@
 use std::sync::Arc;
 use std::collections::BTreeMap;
 
-use futures::{self, future, BoxFuture, Future};
-use jsonrpc_core::Error;
+use jsonrpc_core::{BoxFuture, Error};
+use jsonrpc_core::futures::{self, Future, IntoFuture};
 use jsonrpc_macros::Trailing;
 use jsonrpc_macros::pubsub::{Sink, Subscriber};
 use jsonrpc_pubsub::SubscriptionId;
@@ -39,7 +39,9 @@ use light::cache::Cache;
 use light::on_demand::OnDemand;
 use light::client::{LightChainClient, LightChainNotify};
 use parity_reactor::Remote;
-use util::{RwLock, Mutex, H256, Bytes};
+use bigint::hash::H256;
+use bytes::Bytes;
+use parking_lot::{RwLock, Mutex};
 
 type Client = Sink<pubsub::Result>;
 
@@ -90,12 +92,14 @@ impl EthPubSubClient<LightFetch> {
 		sync: Arc<LightSync>,
 		cache: Arc<Mutex<Cache>>,
 		remote: Remote,
+		gas_price_percentile: usize,
 	) -> Self {
 		let fetch = LightFetch {
 			client,
 			on_demand,
 			sync,
-			cache
+			cache,
+			gas_price_percentile,
 		};
 		EthPubSubClient::new(Arc::new(fetch), remote)
 	}
@@ -129,8 +133,10 @@ impl<C> ChainNotificationHandler<C> {
 		}
 	}
 
-	fn notify_logs<F>(&self, enacted: &[H256], logs: F) where
-		F: Fn(EthFilter) -> BoxFuture<Vec<Log>, Error>,
+	fn notify_logs<F, T>(&self, enacted: &[H256], logs: F) where
+		F: Fn(EthFilter) -> T,
+		T: IntoFuture<Item = Vec<Log>, Error = Error>,
+		T::Future: Send + 'static,
 	{
 		for &(ref subscriber, ref filter) in self.logs_subscribers.read().values() {
 			let logs = futures::future::join_all(enacted
@@ -139,7 +145,7 @@ impl<C> ChainNotificationHandler<C> {
 					let mut filter = filter.clone();
 					filter.from_block = BlockId::Hash(*hash);
 					filter.to_block = filter.from_block.clone();
-					logs(filter)
+					logs(filter).into_future()
 				})
 				.collect::<Vec<_>>()
 			);
@@ -222,15 +228,15 @@ impl<C: BlockChainClient> ChainNotify for ChainNotificationHandler<C> {
 
 		// Enacted logs
 		self.notify_logs(&enacted, |filter| {
-			future::ok(self.client.logs(filter).into_iter().map(Into::into).collect()).boxed()
+			Ok(self.client.logs(filter).into_iter().map(Into::into).collect())
 		});
 
 		// Retracted logs
 		self.notify_logs(&retracted, |filter| {
-			future::ok(self.client.logs(filter).into_iter().map(Into::into).map(|mut log: Log| {
+			Ok(self.client.logs(filter).into_iter().map(Into::into).map(|mut log: Log| {
 				log.log_type = "removed".into();
 				log
-			}).collect()).boxed()
+			}).collect())
 		});
 	}
 }
@@ -245,23 +251,33 @@ impl<C: Send + Sync + 'static> EthPubSub for EthPubSubClient<C> {
 		kind: pubsub::Kind,
 		params: Trailing<pubsub::Params>,
 	) {
-		match (kind, params.into()) {
+		let error = match (kind, params.into()) {
 			(pubsub::Kind::NewHeads, None) => {
-				self.heads_subscribers.write().push(subscriber)
+				self.heads_subscribers.write().push(subscriber);
+				return;
 			},
 			(pubsub::Kind::Logs, Some(pubsub::Params::Logs(filter))) => {
 				self.logs_subscribers.write().push(subscriber, filter.into());
+				return;
+			},
+			(pubsub::Kind::NewHeads, _) => {
+				errors::invalid_params("newHeads", "Expected no parameters.")
+			},
+			(pubsub::Kind::Logs, _) => {
+				errors::invalid_params("logs", "Expected a filter object.")
 			},
 			_ => {
-				let _ = subscriber.reject(errors::unimplemented(None));
+				errors::unimplemented(None)
 			},
-		}
+		};
+
+		let _ = subscriber.reject(error);
 	}
 
-	fn unsubscribe(&self, id: SubscriptionId) -> BoxFuture<bool, Error> {
+	fn unsubscribe(&self, id: SubscriptionId) -> Result<bool, Error> {
 		let res = self.heads_subscribers.write().remove(&id).is_some();
 		let res2 = self.logs_subscribers.write().remove(&id).is_some();
 
-		future::ok(res || res2).boxed()
+		Ok(res || res2)
 	}
 }

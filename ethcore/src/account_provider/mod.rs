@@ -23,7 +23,7 @@ use self::stores::{AddressBook, DappsSettingsStore, NewDappsPolicy};
 use std::fmt;
 use std::collections::{HashMap, HashSet};
 use std::time::{Instant, Duration};
-use util::{RwLock};
+use parking_lot::RwLock;
 use ethstore::{
 	SimpleSecretStore, SecretStore, Error as SSError, EthStore, EthMultiStore,
 	random_string, SecretVaultRef, StoreAccountRef, OpaqueSecret,
@@ -31,7 +31,8 @@ use ethstore::{
 use ethstore::dir::MemoryDirectory;
 use ethstore::ethkey::{Address, Message, Public, Secret, Random, Generator};
 use ethjson::misc::AccountMeta;
-use hardware_wallet::{Error as HardwareError, HardwareWalletManager, KeyPath};
+use hardware_wallet::{Error as HardwareError, HardwareWalletManager, KeyPath, TransactionInfo};
+use super::transaction::{Action, Transaction};
 pub use ethstore::ethkey::Signature;
 pub use ethstore::{Derivation, IndexDerivation, KeyFile};
 
@@ -268,7 +269,7 @@ impl AccountProvider {
 
 	/// Checks whether an account with a given address is present.
 	pub fn has_account(&self, address: Address) -> Result<bool, Error> {
-		Ok(self.accounts()?.iter().any(|&a| a == address))
+		Ok(self.sstore.account_ref(&address).is_ok() && !self.blacklisted_accounts.contains(&address))
 	}
 
 	/// Returns addresses of all accounts.
@@ -286,6 +287,24 @@ impl AccountProvider {
 	pub fn hardware_accounts(&self) -> Result<Vec<Address>, Error> {
 		let accounts = self.hardware_store.as_ref().map_or(Vec::new(), |h| h.list_wallets());
 		Ok(accounts.into_iter().map(|a| a.address).collect())
+	}
+
+	/// Get a list of paths to locked hardware wallets
+	pub fn locked_hardware_accounts(&self) -> Result<Vec<String>, SignError> {
+		match self.hardware_store.as_ref().map(|h| h.list_locked_wallets()) {
+			None => Err(SignError::NotFound),
+			Some(Err(e)) => Err(SignError::Hardware(e)),
+			Some(Ok(s)) => Ok(s),
+		}
+	}
+
+	/// Provide a pin to a locked hardware wallet on USB path to unlock it
+	pub fn hardware_pin_matrix_ack(&self, path: &str, pin: &str) -> Result<bool, SignError> {
+		match self.hardware_store.as_ref().map(|h| h.pin_matrix_ack(path, pin)) {
+			None => Err(SignError::NotFound),
+			Some(Err(e)) => Err(SignError::Hardware(e)),
+			Some(Ok(s)) => Ok(s),
+		}
 	}
 
 	/// Sets addresses of accounts exposed for unknown dapps.
@@ -497,8 +516,8 @@ impl AccountProvider {
 	}
 
 	/// Returns each hardware account along with name and meta.
-	pub fn is_hardware_address(&self, address: Address) -> bool {
-		self.hardware_store.as_ref().and_then(|s| s.wallet_info(&address)).is_some()
+	pub fn is_hardware_address(&self, address: &Address) -> bool {
+		self.hardware_store.as_ref().and_then(|s| s.wallet_info(address)).is_some()
 	}
 
 	/// Returns each account along with name and meta.
@@ -517,6 +536,11 @@ impl AccountProvider {
 				uuid: self.sstore.uuid(&account).ok().map(Into::into),	// allowed to not have a Uuid
 			})
 		}
+	}
+
+	/// Returns account public key.
+	pub fn account_public(&self, address: Address, password: &str) -> Result<Public, Error> {
+		self.sstore.public(&self.sstore.account_ref(&address)?, password)
 	}
 
 	/// Returns each account along with name and meta.
@@ -565,7 +589,7 @@ impl AccountProvider {
 			}
 		}
 
-		if self.unlock_keep_secret && unlock != Unlock::OneTime {
+		if self.unlock_keep_secret && unlock == Unlock::Perm {
 			// verify password and get the secret
 			let secret = self.sstore.raw_secret(&account, &password)?;
 			self.unlocked_secrets.write().insert(account.clone(), secret);
@@ -615,11 +639,19 @@ impl AccountProvider {
 	}
 
 	/// Checks if given account is unlocked
-	pub fn is_unlocked(&self, address: Address) -> bool {
+	pub fn is_unlocked(&self, address: &Address) -> bool {
 		let unlocked = self.unlocked.read();
 		let unlocked_secrets = self.unlocked_secrets.read();
-		self.sstore.account_ref(&address)
+		self.sstore.account_ref(address)
 			.map(|r| unlocked.get(&r).is_some() || unlocked_secrets.get(&r).is_some())
+			.unwrap_or(false)
+	}
+
+	/// Checks if given account is unlocked permanently
+	pub fn is_unlocked_permanently(&self, address: &Address) -> bool {
+		let unlocked = self.unlocked.read();
+		self.sstore.account_ref(address)
+			.map(|r| unlocked.get(&r).map_or(false, |account| account.unlock == Unlock::Perm))
 			.unwrap_or(false)
 	}
 
@@ -697,6 +729,13 @@ impl AccountProvider {
 		Ok(self.sstore.decrypt(&account, &password, shared_mac, message)?)
 	}
 
+	/// Agree on shared key.
+	pub fn agree(&self, address: Address, password: Option<String>, other_public: &Public) -> Result<Secret, SignError> {
+		let account = self.sstore.account_ref(&address)?;
+		let password = password.map(Ok).unwrap_or_else(|| self.password(&account))?;
+		Ok(self.sstore.agree(&account, &password, other_public)?)
+	}
+
 	/// Returns the underlying `SecretStore` reference if one exists.
 	pub fn list_geth_accounts(&self, testnet: bool) -> Vec<Address> {
 		self.sstore.list_geth_accounts(testnet).into_iter().map(|a| Address::from(a).into()).collect()
@@ -767,8 +806,20 @@ impl AccountProvider {
 	}
 
 	/// Sign transaction with hardware wallet.
-	pub fn sign_with_hardware(&self, address: Address, transaction: &[u8]) -> Result<Signature, SignError> {
-		match self.hardware_store.as_ref().map(|s| s.sign_transaction(&address, transaction)) {
+	pub fn sign_with_hardware(&self, address: Address, transaction: &Transaction, chain_id: Option<u64>, rlp_encoded_transaction: &[u8]) -> Result<Signature, SignError> {
+		let t_info = TransactionInfo {
+			nonce: transaction.nonce,
+			gas_price: transaction.gas_price,
+			gas_limit: transaction.gas,
+			to: match transaction.action {
+				Action::Create => None,
+				Action::Call(ref to) => Some(to.clone()),
+			},
+			value: transaction.value,
+			data: transaction.data.to_vec(),
+			chain_id: chain_id,
+		};
+		match self.hardware_store.as_ref().map(|s| s.sign_transaction(&address, &t_info, rlp_encoded_transaction)) {
 			None | Some(Err(HardwareError::KeyNotFound)) => Err(SignError::NotFound),
 			Some(Err(e)) => Err(From::from(e)),
 			Some(Ok(s)) => Ok(s),
@@ -782,7 +833,7 @@ mod tests {
 	use std::time::Instant;
 	use ethstore::ethkey::{Generator, Random, Address};
 	use ethstore::{StoreAccountRef, Derivation};
-	use util::H256;
+	use bigint::hash::H256;
 
 	#[test]
 	fn unlock_account_temp() {
