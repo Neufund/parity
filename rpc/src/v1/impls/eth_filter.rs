@@ -29,7 +29,7 @@ use jsonrpc_core::{BoxFuture, Result};
 use jsonrpc_core::futures::{future, Future};
 use jsonrpc_core::futures::future::Either;
 use v1::traits::EthFilter;
-use v1::types::{BlockNumber, Index, Filter, FilterChanges, Log, H256 as RpcH256, U256 as RpcU256};
+use v1::types::{BlockNumber, Index, Filter, FilterChanges, Log, LogDetails, H256 as RpcH256, U256 as RpcU256};
 use v1::helpers::{PollFilter, PollManager, limit_logs};
 use v1::impls::eth::pending_logs;
 
@@ -46,6 +46,9 @@ pub trait Filterable {
 
 	/// Get logs that match the given filter.
 	fn logs(&self, filter: EthcoreFilter) -> BoxFuture<Vec<Log>>;
+
+	/// Get logs details that match the given filter.
+	fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>>;
 
 	/// Get logs from the pending block.
 	fn pending_logs(&self, block_number: u64, filter: &EthcoreFilter) -> Vec<Log>;
@@ -91,6 +94,11 @@ impl<C, M> Filterable for EthFilterClient<C, M> where C: BlockChainClient, M: Mi
 	fn logs(&self, filter: EthcoreFilter) -> BoxFuture<Vec<Log>> {
 		Box::new(future::ok(self.client.logs(filter).into_iter().map(Into::into).collect()))
 	}
+
+	fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>> {
+		Box::new(future::ok(self.client.logs(filter).into_iter().map(Into::into).collect()))
+	}
+
 
 	fn pending_logs(&self, block_number: u64, filter: &EthcoreFilter) -> Vec<Log> {
 		pending_logs(&*self.miner, block_number, filter)

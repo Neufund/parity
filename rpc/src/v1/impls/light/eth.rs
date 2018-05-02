@@ -46,7 +46,7 @@ use v1::helpers::light_fetch::{self, LightFetch};
 use v1::traits::Eth;
 use v1::types::{
 	RichBlock, Block, BlockTransactions, BlockNumber, Bytes, SyncStatus, SyncInfo,
-	Transaction, CallRequest, Index, Filter, Log, Receipt, Work,
+	Transaction, CallRequest, Index, Filter, Log, LogDetails, Receipt, Work,
 	H64 as RpcH64, H256 as RpcH256, H160 as RpcH160, U256 as RpcU256,
 };
 use v1::metadata::Metadata;
@@ -496,6 +496,10 @@ impl<T: LightChainClient + 'static> Eth for EthClient<T> {
 			.map(move|logs| limit_logs(logs, limit)))
 	}
 
+	fn logs_details(&self, filter: Filter) -> BoxFuture<Vec<LogDetails>> {
+		Box::new(Filterable::logs_details(self, filter.into()))
+	}
+
 	fn work(&self, _timeout: Trailing<u64>) -> Result<Work> {
 		Err(errors::light_unimplemented(None))
 	}
@@ -523,6 +527,10 @@ impl<T: LightChainClient + 'static> Filterable for EthClient<T> {
 
 	fn logs(&self, filter: EthcoreFilter) -> BoxFuture<Vec<Log>> {
 		self.fetcher().logs(filter)
+	}
+
+	fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>> {
+		self.fetcher().logs_details(filter)
 	}
 
 	fn pending_logs(&self, _block_number: u64, _filter: &EthcoreFilter) -> Vec<Log> {

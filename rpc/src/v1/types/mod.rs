@@ -43,6 +43,7 @@ mod transaction_request;
 mod transaction_condition;
 mod uint;
 mod work;
+mod log_details;
 
 pub mod pubsub;
 
@@ -63,6 +64,7 @@ pub use self::hash::{H64, H160, H256, H512, H520, H2048};
 pub use self::histogram::Histogram;
 pub use self::index::Index;
 pub use self::log::Log;
+pub use self::log_details::LogDetails;
 pub use self::node_kind::{NodeKind, Availability, Capability};
 pub use self::provenance::{Origin, DappId};
 pub use self::receipt::Receipt;

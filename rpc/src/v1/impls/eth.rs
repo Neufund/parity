@@ -51,7 +51,7 @@ use v1::helpers::accounts::unwrap_provider;
 use v1::traits::Eth;
 use v1::types::{
 	RichBlock, Block, BlockTransactions, BlockNumber, Bytes, SyncStatus, SyncInfo,
-	Transaction, CallRequest, Index, Filter, Log, Receipt, Work,
+	Transaction, CallRequest, Index, Filter, Log, LogDetails, Receipt, Work,
 	H64 as RpcH64, H256 as RpcH256, H160 as RpcH160, U256 as RpcU256,
 };
 use v1::metadata::Metadata;
@@ -533,6 +533,58 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 
 		Box::new(future::ok(logs))
 	}
+
+	fn logs_details(&self, filter: Filter) -> BoxFuture<Vec<LogDetails>> {
+		let include_pending = filter.to_block == Some(BlockNumber::Pending);
+		let filter: EthcoreFilter = filter.into();
+		let mut logs = self.client.logs(filter.clone())
+			.into_iter()
+			.map(From::from)
+			.collect::<Vec<Log>>();
+
+		if include_pending {
+			let best_block = self.client.chain_info().best_block_number;
+			let pending = pending_logs(&*self.miner, best_block, &filter);
+			logs.extend(pending);
+		}
+
+		let limited_logs = limit_logs(logs, filter.limit);
+
+		let logs_details: Vec<LogDetails> = limited_logs.iter().map(|log |{
+			let cloned_log = log.clone();
+			let mut timestamp: Option<u64> = None;
+
+			let block_hash_clone = cloned_log.block_hash.clone();
+
+			if cloned_log.block_hash != None {
+				let block_hash_unwrapped = BlockId::Hash(cloned_log.block_hash.unwrap().into());
+				timestamp = Some(self.client.block_header(block_hash_unwrapped).unwrap().timestamp());
+			}
+
+			let transaction_hash_clone = cloned_log.transaction_hash.clone();
+			let transaction_unwrapped = TransactionId::Hash(cloned_log.transaction_hash.unwrap().into());
+
+			let transaction_value = Some(self.client.transaction(transaction_unwrapped).unwrap().value.into());
+
+			LogDetails{
+				address: cloned_log.address.into(),
+				topics: cloned_log.topics.into_iter().map(Into::into).collect(),
+				data: cloned_log.data.into(),
+				block_hash: block_hash_clone.into(),
+				block_number: cloned_log.block_number.into(),
+				transaction_hash: transaction_hash_clone.into(),
+				transaction_index: cloned_log.transaction_index.into(),
+				log_index: cloned_log.log_index.into(),
+				transaction_log_index: cloned_log.transaction_log_index.into(),
+				log_type: "mined".to_owned(),
+				timestamp: timestamp,
+				value: transaction_value
+			}
+		}).collect();
+
+		Box::new(future::ok(logs_details))
+	}
+
 
 	fn work(&self, no_new_work_timeout: Trailing<u64>) -> Result<Work> {
 		if !self.miner.can_produce_work_package() {

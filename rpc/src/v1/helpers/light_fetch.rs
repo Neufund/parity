@@ -44,7 +44,7 @@ use util::Address;
 use parking_lot::Mutex;
 
 use v1::helpers::{CallRequest as CallRequestHelper, errors, dispatch};
-use v1::types::{BlockNumber, CallRequest, Log, Transaction};
+use v1::types::{BlockNumber, CallRequest, Log, LogDetails, Transaction};
 
 const NO_INVALID_BACK_REFS: &'static str = "Fails only on invalid back-references; back-references here known to be valid; qed";
 
@@ -302,6 +302,63 @@ impl LightFetch {
 
 	/// Get transaction logs
 	pub fn logs(&self, filter: EthcoreFilter) -> BoxFuture<Vec<Log>> {
+		use std::collections::BTreeMap;
+		use jsonrpc_core::futures::stream::{self, Stream};
+
+		// early exit for "to" block before "from" block.
+		let best_number = self.client.chain_info().best_block_number;
+		let block_number = |id| match id {
+			BlockId::Earliest => Some(0),
+			BlockId::Latest | BlockId::Pending => Some(best_number),
+			BlockId::Hash(h) => self.client.block_header(BlockId::Hash(h)).map(|hdr| hdr.number()),
+			BlockId::Number(x) => Some(x),
+		};
+
+		match (block_number(filter.to_block), block_number(filter.from_block)) {
+			(Some(to), Some(from)) if to < from => return Box::new(future::ok(Vec::new())),
+			(Some(_), Some(_)) => {},
+			_ => return Box::new(future::err(errors::unknown_block())),
+		}
+
+		let maybe_future = self.sync.with_context(move |ctx| {
+			// find all headers which match the filter, and fetch the receipts for each one.
+			// match them with their numbers for easy sorting later.
+			let bit_combos = filter.bloom_possibilities();
+			let receipts_futures: Vec<_> = self.client.ancestry_iter(filter.to_block)
+				.take_while(|ref hdr| BlockId::Number(hdr.number()) != filter.from_block)
+				.take_while(|ref hdr| BlockId::Hash(hdr.hash()) != filter.from_block)
+				.filter(|ref hdr| {
+					let hdr_bloom = hdr.log_bloom();
+					bit_combos.iter().find(|&bloom| hdr_bloom & *bloom == *bloom).is_some()
+				})
+				.map(|hdr| (hdr.number(), request::BlockReceipts(hdr.into())))
+				.map(|(num, req)| self.on_demand.request(ctx, req).expect(NO_INVALID_BACK_REFS).map(move |x| (num, x)))
+				.collect();
+
+			// as the receipts come in, find logs within them which match the filter.
+			// insert them into a BTreeMap to maintain order by number and block index.
+			stream::futures_unordered(receipts_futures)
+				.fold(BTreeMap::new(), move |mut matches, (num, receipts)| {
+					for (block_index, log) in receipts.into_iter().flat_map(|r| r.logs).enumerate() {
+						if filter.matches(&log) {
+							matches.insert((num, block_index), log.into());
+						}
+					}
+					future::ok(matches)
+				}) // and then collect them into a vector.
+				.map(|matches| matches.into_iter().map(|(_, v)| v).collect())
+				.map_err(errors::on_demand_cancel)
+		});
+
+		match maybe_future {
+			Some(fut) => Box::new(fut),
+			None => Box::new(future::err(errors::network_disabled())),
+		}
+	}
+
+
+	/// Get transaction logs_details
+	pub fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>> {
 		use std::collections::BTreeMap;
 		use jsonrpc_core::futures::stream::{self, Stream};
 
