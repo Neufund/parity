@@ -17,20 +17,20 @@
 //! Ledger hardware wallet module. Supports Ledger Blue and Nano S.
 /// See https://github.com/LedgerHQ/blue-app-eth/blob/master/doc/ethapp.asc for protocol details.
 
-use super::{WalletInfo, KeyPath};
-
-use bigint::hash::H256;
-use ethkey::{Address, Signature};
-use hidapi;
-use libusb;
-use parking_lot::{Mutex, RwLock};
-
 use std::cmp::min;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use std::thread;
+
+use ethereum_types::{H256, Address};
+use ethkey::Signature;
+use hidapi;
+use libusb;
+use parking_lot::{Mutex, RwLock};
+
+use super::{WalletInfo, KeyPath};
 
 /// Ledger vendor ID
 pub const LEDGER_VID: u16 = 0x2c97;
@@ -363,7 +363,7 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-	/// Ledger event handler constructor
+	/// Ledger event handler constructor 
 	pub fn new(ledger: Weak<Manager>) -> Self {
 		Self { ledger: ledger }
 	}

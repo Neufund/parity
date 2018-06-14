@@ -16,7 +16,9 @@
 
 //! PoW block chunker and rebuilder tests.
 
-use devtools::RandomTempPath;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use tempdir::TempDir;
 use error::Error;
 
 use blockchain::generator::{BlockGenerator, BlockBuilder};
@@ -29,9 +31,6 @@ use snappy;
 use kvdb::{KeyValueDB, DBTransaction};
 use kvdb_memorydb;
 
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
 const SNAPSHOT_MODE: ::snapshot::PowSnapshot = ::snapshot::PowSnapshot { blocks: 30000, max_restore_blocks: 30000 };
 
 fn chunk_and_restore(amount: u64) {
@@ -41,9 +40,8 @@ fn chunk_and_restore(amount: u64) {
 	let genesis = genesis.last();
 
 	let engine = ::spec::Spec::new_test().engine;
-	let new_path = RandomTempPath::create_dir();
-	let mut snapshot_path = new_path.as_path().to_owned();
-	snapshot_path.push("SNAP");
+	let tempdir = TempDir::new("").unwrap();
+	let snapshot_path = tempdir.path().join("SNAP");
 
 	let old_db = Arc::new(kvdb_memorydb::create(::db::NUM_COLUMNS.unwrap_or(0)));
 	let bc = BlockChain::new(Default::default(), &genesis.encoded(), old_db.clone());
@@ -114,7 +112,7 @@ fn chunk_and_restore_4k() {
 #[test]
 fn checks_flag() {
 	use rlp::RlpStream;
-	use bigint::hash::H256;
+	use ethereum_types::H256;
 
 	let mut stream = RlpStream::new_list(5);
 

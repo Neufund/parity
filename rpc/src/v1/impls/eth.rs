@@ -22,9 +22,7 @@ use std::sync::Arc;
 
 use rlp::{self, UntrustedRlp};
 use time::get_time;
-use bigint::prelude::U256;
-use bigint::hash::{H64, H160, H256};
-use util::Address;
+use ethereum_types::{U256, H64, H160, H256, Address};
 use parking_lot::Mutex;
 
 use ethash::SeedHashCompute;
@@ -35,10 +33,11 @@ use ethcore::ethereum::Ethash;
 use ethcore::filter::Filter as EthcoreFilter;
 use ethcore::header::{Header as BlockHeader, BlockNumber as EthBlockNumber};
 use ethcore::log_entry::LogEntry;
-use ethcore::miner::{MinerService, ExternalMinerService};
-use ethcore::transaction::SignedTransaction;
+use ethcore::miner::MinerService;
 use ethcore::snapshot::SnapshotService;
 use ethsync::{SyncProvider};
+use miner::external::ExternalMinerService;
+use transaction::SignedTransaction;
 
 use jsonrpc_core::{BoxFuture, Result};
 use jsonrpc_core::futures::future;
@@ -92,13 +91,12 @@ impl Default for EthClientOptions {
 }
 
 /// Eth rpc implementation.
-pub struct EthClient<C, SN: ?Sized, S: ?Sized, M, EM> where
+pub struct EthClient<C, SN: ? Sized, S: ? Sized, M, EM> where
 	C: MiningBlockChainClient,
 	SN: SnapshotService,
 	S: SyncProvider,
 	M: MinerService,
 	EM: ExternalMinerService {
-
 	client: Arc<C>,
 	snapshot: Arc<SN>,
 	sync: Arc<S>,
@@ -110,13 +108,12 @@ pub struct EthClient<C, SN: ?Sized, S: ?Sized, M, EM> where
 	eip86_transition: u64,
 }
 
-impl<C, SN: ?Sized, S: ?Sized, M, EM> EthClient<C, SN, S, M, EM> where
+impl<C, SN: ? Sized, S: ? Sized, M, EM> EthClient<C, SN, S, M, EM> where
 	C: MiningBlockChainClient,
 	SN: SnapshotService,
 	S: SyncProvider,
 	M: MinerService,
 	EM: ExternalMinerService {
-
 	/// Creates new EthClient.
 	pub fn new(
 		client: &Arc<C>,
@@ -179,7 +176,7 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> EthClient<C, SN, S, M, EM> where
 					},
 					extra_info: client.block_extra_info(id.clone()).expect(EXTRA_INFO_PROOF),
 				}))
-			},
+			}
 			_ => Ok(None)
 		}
 	}
@@ -273,9 +270,9 @@ fn check_known<C>(client: &C, number: BlockNumber) -> Result<()> where C: Mining
 	}
 }
 
-const MAX_QUEUE_SIZE_TO_MINE_ON: usize = 4;	// because uncles go back 6.
+const MAX_QUEUE_SIZE_TO_MINE_ON: usize = 4;    // because uncles go back 6.
 
-impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
+impl<C, SN: ? Sized, S: ? Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 	C: MiningBlockChainClient + 'static,
 	SN: SnapshotService + 'static,
 	S: SyncProvider + 'static,
@@ -434,8 +431,8 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 		Box::new(future::ok(match num {
 			BlockNumber::Pending => Some(0.into()),
 			_ => self.client.block(num.into())
-					.map(|block| block.uncles_count().into()
-			),
+				.map(|block| block.uncles_count().into()
+				),
 		}))
 	}
 
@@ -550,7 +547,7 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 
 		let limited_logs = limit_logs(logs, filter.limit);
 
-		let logs_details: Vec<LogDetails> = limited_logs.iter().map(|log |{
+		let logs_details: Vec<LogDetails> = limited_logs.iter().map(|log| {
 			let cloned_log = log.clone();
 			let mut timestamp: Option<u64> = None;
 
@@ -566,7 +563,7 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM> Eth for EthClient<C, SN, S, M, EM> where
 
 			let transaction_value = Some(self.client.transaction(transaction_unwrapped).unwrap().value.into());
 
-			LogDetails{
+			LogDetails {
 				address: cloned_log.address.into(),
 				topics: cloned_log.topics.into_iter().map(Into::into).collect(),
 				data: cloned_log.data.into(),

@@ -1,4 +1,4 @@
-use Bloom;
+use bloom::Bloom;
 
 /// Group of blooms that are in the same index.
 #[derive(Debug, Clone)]

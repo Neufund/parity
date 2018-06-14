@@ -20,9 +20,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use hash::{KECCAK_EMPTY_LIST_RLP};
 use ethash::{quick_get_difficulty, slow_hash_block_number, EthashManager, OptimizeFor};
-use bigint::prelude::U256;
-use bigint::hash::{H256, H64};
-use util::Address;
+use ethereum_types::{H256, H64, U256, Address};
 use unexpected::{OutOfBounds, Mismatch};
 use block::*;
 use error::{BlockError, Error};
@@ -31,7 +29,6 @@ use engines::{self, Engine};
 use ethjson;
 use rlp::UntrustedRlp;
 use machine::EthereumMachine;
-use semantic_version::SemanticVersion;
 
 /// Number of blocks in an ethash snapshot.
 // make dependent on difficulty incrment divisor?
@@ -201,18 +198,17 @@ impl engines::EpochVerifier<EthereumMachine> for Arc<Ethash> {
 
 impl Engine<EthereumMachine> for Arc<Ethash> {
 	fn name(&self) -> &str { "Ethash" }
-	fn version(&self) -> SemanticVersion { SemanticVersion::new(1, 0, 0) }
 	fn machine(&self) -> &EthereumMachine { &self.machine }
 
 	// Two fields - nonce and mix.
-	fn seal_fields(&self) -> usize { 2 }
+	fn seal_fields(&self, _header: &Header) -> usize { 2 }
 
 	/// Additional engine-specific information for the user/developer concerning `header`.
 	fn extra_info(&self, header: &Header) -> BTreeMap<String, String> {
 		match Seal::parse_seal(header.seal()) {
 			Ok(seal) => map![
-				"nonce".to_owned() => format!("0x{}", seal.nonce.hex()),
-				"mixHash".to_owned() => format!("0x{}", seal.mix_hash.hex())
+				"nonce".to_owned() => format!("0x{:x}", seal.nonce),
+				"mixHash".to_owned() => format!("0x{:x}", seal.mix_hash)
 			],
 			_ => BTreeMap::default()
 		}
@@ -417,9 +413,9 @@ impl Ethash {
 
 			let diff_inc = (header.timestamp() - parent.timestamp()) / increment_divisor;
 			if diff_inc <= threshold {
-				*parent.difficulty() + *parent.difficulty() / difficulty_bound_divisor * (threshold - diff_inc).into()
+				*parent.difficulty() + *parent.difficulty() / difficulty_bound_divisor * U256::from(threshold - diff_inc)
 			} else {
-				let multiplier = cmp::min(diff_inc - threshold, 99).into();
+				let multiplier: U256 = cmp::min(diff_inc - threshold, 99).into();
 				parent.difficulty().saturating_sub(
 					*parent.difficulty() / difficulty_bound_divisor * multiplier
 				)
@@ -489,14 +485,13 @@ fn ecip1017_eras_block_reward(era_rounds: u64, mut reward: U256, block_number:u6
 mod tests {
 	use std::str::FromStr;
 	use std::sync::Arc;
-	use bigint::prelude::U256;
-	use bigint::hash::{H64, H256};
-	use util::*;
+	use ethereum_types::{H64, H256, U256, Address};
 	use block::*;
 	use tests::helpers::*;
 	use error::{BlockError, Error};
 	use header::Header;
 	use spec::Spec;
+	use engines::Engine;
 	use super::super::{new_morden, new_mcip3_test, new_homestead_test_machine};
 	use super::{Ethash, EthashParams, ecip1017_eras_block_reward};
 	use rlp;
@@ -593,7 +588,6 @@ mod tests {
 	fn has_valid_metadata() {
 		let engine = test_spec().engine;
 		assert!(!engine.name().is_empty());
-		assert!(engine.version().major >= 1);
 	}
 
 	#[test]
@@ -883,5 +877,17 @@ mod tests {
 
 		let difficulty = ethash.calculate_difficulty(&header, &parent_header);
 		assert_eq!(U256::from(12543204905719u64), difficulty);
+	}
+
+	#[test]
+	fn test_extra_info() {
+		let machine = new_homestead_test_machine();
+		let ethparams = get_default_ethash_params();
+		let ethash = Ethash::new(&::std::env::temp_dir(), ethparams, machine, None);
+		let mut header = Header::default();
+		header.set_seal(vec![rlp::encode(&H256::from("b251bd2e0283d0658f2cadfdc8ca619b5de94eca5742725e2e757dd13ed7503d")).into_vec(), rlp::encode(&H64::zero()).into_vec()]);
+		let info = ethash.extra_info(&header);
+		assert_eq!(info["nonce"], "0x0000000000000000");
+		assert_eq!(info["mixHash"], "0xb251bd2e0283d0658f2cadfdc8ca619b5de94eca5742725e2e757dd13ed7503d");
 	}
 }

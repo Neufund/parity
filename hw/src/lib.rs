@@ -16,7 +16,7 @@
 
 //! Hardware wallet management.
 
-extern crate ethcore_bigint as bigint;
+extern crate ethereum_types;
 extern crate ethkey;
 extern crate hidapi;
 extern crate libusb;
@@ -38,7 +38,7 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
-use bigint::prelude::uint::U256;
+use ethereum_types::U256;
 
 const USB_DEVICE_CLASS_DEVICE: u8 = 0;
 
@@ -172,11 +172,10 @@ impl HardwareWalletManager {
 			.spawn(move || {
 				if let Err(e) = l.update_devices() {
 					debug!(target: "hw", "Ledger couldn't connect at startup, error: {}", e);
-					//debug!("Ledger could not connect at startup, error: {}", e);
 				}
 				loop {
 					usb_context_ledger.handle_events(Some(Duration::from_millis(500)))
-					           .unwrap_or_else(|e| debug!(target: "hw", "Ledger event handler error: {}", e));
+						.unwrap_or_else(|e| debug!(target: "hw", "Ledger event handler error: {}", e));
 					if thread_exiting_ledger.load(atomic::Ordering::Acquire) {
 						break;
 					}
@@ -193,7 +192,7 @@ impl HardwareWalletManager {
 				}
 				loop {
 					usb_context_trezor.handle_events(Some(Duration::from_millis(500)))
-					           .unwrap_or_else(|e| debug!(target: "hw", "Trezor event handler error: {}", e));
+						.unwrap_or_else(|e| debug!(target: "hw", "Trezor event handler error: {}", e));
 					if thread_exiting_trezor.load(atomic::Ordering::Acquire) {
 						break;
 					}

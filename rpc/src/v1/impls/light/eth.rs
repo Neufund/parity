@@ -30,14 +30,14 @@ use light::on_demand::{request, OnDemand};
 
 use ethcore::account_provider::{AccountProvider, DappId};
 use ethcore::encoded;
-use ethcore::ids::BlockId;
 use ethcore::filter::Filter as EthcoreFilter;
-use ethcore::transaction::SignedTransaction;
+use ethcore::ids::BlockId;
 use ethsync::LightSync;
-use rlp::UntrustedRlp;
 use hash::{KECCAK_NULL_RLP, KECCAK_EMPTY_LIST_RLP};
-use bigint::prelude::U256;
+use ethereum_types::U256;
 use parking_lot::{RwLock, Mutex};
+use rlp::UntrustedRlp;
+use transaction::SignedTransaction;
 
 use v1::impls::eth_filter::Filterable;
 use v1::helpers::{errors, limit_logs};
@@ -367,7 +367,6 @@ impl<T: LightChainClient + 'static> Eth for EthClient<T> {
 
 				self.transaction_queue.write().import(signed.into())
 					.map(|_| hash)
-					.map_err(Into::into)
 					.map_err(errors::transaction)
 			})
 			.map(Into::into)
@@ -493,7 +492,7 @@ impl<T: LightChainClient + 'static> Eth for EthClient<T> {
 		let limit = filter.limit;
 
 		Box::new(Filterable::logs(self, filter.into())
-			.map(move|logs| limit_logs(logs, limit)))
+			.map(move |logs| limit_logs(logs, limit)))
 	}
 
 	fn logs_details(&self, filter: Filter) -> BoxFuture<Vec<LogDetails>> {
@@ -521,7 +520,7 @@ impl<T: LightChainClient + 'static> Filterable for EthClient<T> {
 		self.client.block_hash(id).map(Into::into)
 	}
 
-	fn pending_transactions_hashes(&self, _block_number: u64) -> Vec<::bigint::hash::H256> {
+	fn pending_transactions_hashes(&self, _block_number: u64) -> Vec<::ethereum_types::H256> {
 		Vec::new()
 	}
 
@@ -543,35 +542,35 @@ impl<T: LightChainClient + 'static> Filterable for EthClient<T> {
 }
 
 fn extract_uncle_at_index<T: LightChainClient>(block: encoded::Block, index: Index, client: Arc<T>) -> Option<RichBlock> {
-		let uncle = match block.uncles().into_iter().nth(index.value()) {
-			Some(u) => u,
-			None => return None,
-		};
+	let uncle = match block.uncles().into_iter().nth(index.value()) {
+		Some(u) => u,
+		None => return None,
+	};
 
-		let extra_info = client.engine().extra_info(&uncle);
-		Some(RichBlock {
-			inner: Block {
-				hash: Some(uncle.hash().into()),
-				size: None,
-				parent_hash: uncle.parent_hash().clone().into(),
-				uncles_hash: uncle.uncles_hash().clone().into(),
-				author: uncle.author().clone().into(),
-				miner: uncle.author().clone().into(),
-				state_root: uncle.state_root().clone().into(),
-				transactions_root: uncle.transactions_root().clone().into(),
-				number: Some(uncle.number().into()),
-				gas_used: uncle.gas_used().clone().into(),
-				gas_limit: uncle.gas_limit().clone().into(),
-				logs_bloom: uncle.log_bloom().clone().into(),
-				timestamp: uncle.timestamp().into(),
-				difficulty: uncle.difficulty().clone().into(),
-				total_difficulty: None,
-				receipts_root: uncle.receipts_root().clone().into(),
-				extra_data: uncle.extra_data().clone().into(),
-				seal_fields: uncle.seal().into_iter().cloned().map(Into::into).collect(),
-				uncles: vec![],
-				transactions: BlockTransactions::Hashes(vec![]),
-			},
-			extra_info: extra_info,
-		})
+	let extra_info = client.engine().extra_info(&uncle);
+	Some(RichBlock {
+		inner: Block {
+			hash: Some(uncle.hash().into()),
+			size: None,
+			parent_hash: uncle.parent_hash().clone().into(),
+			uncles_hash: uncle.uncles_hash().clone().into(),
+			author: uncle.author().clone().into(),
+			miner: uncle.author().clone().into(),
+			state_root: uncle.state_root().clone().into(),
+			transactions_root: uncle.transactions_root().clone().into(),
+			number: Some(uncle.number().into()),
+			gas_used: uncle.gas_used().clone().into(),
+			gas_limit: uncle.gas_limit().clone().into(),
+			logs_bloom: uncle.log_bloom().clone().into(),
+			timestamp: uncle.timestamp().into(),
+			difficulty: uncle.difficulty().clone().into(),
+			total_difficulty: None,
+			receipts_root: uncle.receipts_root().clone().into(),
+			extra_data: uncle.extra_data().clone().into(),
+			seal_fields: uncle.seal().into_iter().cloned().map(Into::into).collect(),
+			uncles: vec![],
+			transactions: BlockTransactions::Hashes(vec![]),
+		},
+		extra_info: extra_info,
+	})
 }

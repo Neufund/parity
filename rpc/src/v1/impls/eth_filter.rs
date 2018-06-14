@@ -22,7 +22,7 @@ use std::collections::HashSet;
 use ethcore::miner::MinerService;
 use ethcore::filter::Filter as EthcoreFilter;
 use ethcore::client::{BlockChainClient, BlockId};
-use bigint::hash::H256;
+use ethereum_types::H256;
 use parking_lot::Mutex;
 
 use jsonrpc_core::{BoxFuture, Result};
@@ -61,7 +61,6 @@ pub trait Filterable {
 pub struct EthFilterClient<C, M> where
 	C: BlockChainClient,
 	M: MinerService {
-
 	client: Arc<C>,
 	miner: Arc<M>,
 	polls: Mutex<PollManager<PollFilter>>,
@@ -96,9 +95,9 @@ impl<C, M> Filterable for EthFilterClient<C, M> where C: BlockChainClient, M: Mi
 	}
 
 	fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>> {
+		// TODO: logs_details should be implemented, to be able to call it with Filterable
 		Box::new(future::ok(self.client.logs(filter).into_iter().map(Into::into).collect()))
 	}
-
 
 	fn pending_logs(&self, block_number: u64, filter: &EthcoreFilter) -> Vec<Log> {
 		pending_logs(&*self.miner, block_number, filter)
@@ -106,7 +105,6 @@ impl<C, M> Filterable for EthFilterClient<C, M> where C: BlockChainClient, M: Mi
 
 	fn polls(&self) -> &Mutex<PollManager<PollFilter>> { &self.polls }
 }
-
 
 
 impl<T: Filterable + Send + Sync + 'static> EthFilter for T {
@@ -119,7 +117,8 @@ impl<T: Filterable + Send + Sync + 'static> EthFilter for T {
 
 	fn new_block_filter(&self) -> Result<RpcU256> {
 		let mut polls = self.polls().lock();
-		let id = polls.create_poll(PollFilter::Block(self.best_block_number()));
+		// +1, since we don't want to include the current block
+		let id = polls.create_poll(PollFilter::Block(self.best_block_number() + 1));
 		Ok(id.into())
 	}
 
@@ -137,7 +136,7 @@ impl<T: Filterable + Send + Sync + 'static> EthFilter for T {
 			None => Either::A(future::ok(FilterChanges::Empty)),
 			Some(filter) => match *filter {
 				PollFilter::Block(ref mut block_number) => {
-					// + 1, cause we want to return hashes including current block hash.
+					// +1, cause we want to return hashes including current block hash.
 					let current_number = self.best_block_number() + 1;
 					let hashes = (*block_number..current_number).into_iter()
 						.map(BlockId::Number)
@@ -147,31 +146,31 @@ impl<T: Filterable + Send + Sync + 'static> EthFilter for T {
 					*block_number = current_number;
 
 					Either::A(future::ok(FilterChanges::Hashes(hashes)))
-				},
+				}
 				PollFilter::PendingTransaction(ref mut previous_hashes) => {
 					// get hashes of pending transactions
 					let best_block = self.best_block_number();
 					let current_hashes = self.pending_transactions_hashes(best_block);
 
 					let new_hashes =
-					{
-						let previous_hashes_set = previous_hashes.iter().collect::<HashSet<_>>();
+						{
+							let previous_hashes_set = previous_hashes.iter().collect::<HashSet<_>>();
 
-						//	find all new hashes
-						current_hashes
-							.iter()
-							.filter(|hash| !previous_hashes_set.contains(hash))
-							.cloned()
-							.map(Into::into)
-							.collect::<Vec<RpcH256>>()
-					};
+							//	find all new hashes
+							current_hashes
+								.iter()
+								.filter(|hash| !previous_hashes_set.contains(hash))
+								.cloned()
+								.map(Into::into)
+								.collect::<Vec<RpcH256>>()
+						};
 
 					// save all hashes of pending transactions
 					*previous_hashes = current_hashes;
 
 					// return new hashes
 					Either::A(future::ok(FilterChanges::Hashes(new_hashes)))
-				},
+				}
 				PollFilter::Logs(ref mut block_number, ref mut previous_logs, ref filter) => {
 					// retrive the current block number
 					let current_number = self.best_block_number();
@@ -209,7 +208,10 @@ impl<T: Filterable + Send + Sync + 'static> EthFilter for T {
 					// retrieve logs in range from_block..min(BlockId::Latest..to_block)
 					let limit = filter.limit;
 					Either::B(self.logs(filter)
-						.map(move |mut logs| { logs.extend(pending); logs }) // append fetched pending logs
+						.map(move |mut logs| {
+							logs.extend(pending);
+							logs
+						}) // append fetched pending logs
 						.map(move |logs| limit_logs(logs, limit)) // limit the logs
 						.map(FilterChanges::Logs))
 				}
@@ -243,7 +245,10 @@ impl<T: Filterable + Send + Sync + 'static> EthFilter for T {
 		let limit = filter.limit;
 		let logs = self.logs(filter);
 		Box::new(logs
-			.map(move |mut logs| { logs.extend(pending); logs })
+			.map(move |mut logs| {
+				logs.extend(pending);
+				logs
+			})
 			.map(move |logs| limit_logs(logs, limit))
 		)
 	}

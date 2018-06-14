@@ -30,15 +30,6 @@ pub use self::denominations::*;
 use machine::EthereumMachine;
 use super::spec::*;
 
-/// Most recent fork block that we support on Mainnet.
-pub const FORK_SUPPORTED_FOUNDATION: u64 = 4370000;
-
-/// Most recent fork block that we support on Ropsten.
-pub const FORK_SUPPORTED_ROPSTEN: u64 = 10;
-
-/// Most recent fork block that we support on Kovan.
-pub const FORK_SUPPORTED_KOVAN: u64 = 0;
-
 fn load<'a, T: Into<Option<SpecParams<'a>>>>(params: T, b: &[u8]) -> Spec {
 	match params.into() {
 		Some(params) => Spec::load(params, b),
@@ -100,6 +91,9 @@ pub fn new_morden<'a, T: Into<SpecParams<'a>>>(params: T) -> Spec {
 /// Create a new Foundation Frontier-era chain spec as though it never changes to Homestead.
 pub fn new_frontier_test() -> Spec { load(None, include_bytes!("../../res/ethereum/frontier_test.json")) }
 
+/// Create a new Ropsten chain spec.
+pub fn new_ropsten_test() -> Spec { load(None, include_bytes!("../../res/ethereum/ropsten.json")) }
+
 /// Create a new Foundation Homestead-era chain spec as though it never changed from Frontier.
 pub fn new_homestead_test() -> Spec { load(None, include_bytes!("../../res/ethereum/homestead_test.json")) }
 
@@ -146,7 +140,7 @@ pub fn new_kovan_wasm_test_machine() -> EthereumMachine { load_machine(include_b
 
 #[cfg(test)]
 mod tests {
-	use bigint::prelude::U256;
+	use ethereum_types::U256;
 	use state::*;
 	use super::*;
 	use tests::helpers::*;

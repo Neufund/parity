@@ -1,6 +1,5 @@
 stages:
   - test
-  - js-build
   - push-release
   - build
 variables:
@@ -148,7 +147,6 @@ linux-snap:
     paths:
     - parity.zip
     name: "stable-x86_64-unknown-snap-gnu_parity"
-  allow_failure: true
 darwin:
   stage: build
   only:
@@ -190,7 +188,7 @@ docker-build:
   before_script:
     - docker info
   script:
-    - if [ "$CI_BUILD_REF_NAME" == "beta-release" ]; then DOCKER_TAG="latest"; else DOCKER_TAG=$CI_BUILD_REF_NAME; fi
+    - if [ "$CI_BUILD_REF_NAME" == "master" ]; then DOCKER_TAG="latest"; else DOCKER_TAG=$CI_BUILD_REF_NAME; fi
     - echo "Tag:" $DOCKER_TAG
     - docker login -u $Docker_Hub_User_Parity -p $Docker_Hub_Pass_Parity
     - scripts/docker-build.sh $DOCKER_TAG
@@ -236,26 +234,6 @@ test-rust-nightly:
     - rust
     - rust-nightly
   allow_failure: true
-js-test:
-  stage: test
-  image: parity/rust:gitlab-ci
-  script:
-    - scripts/gitlab-test.sh js-test
-  tags:
-    - rust-stable
-js-release:
-  stage: js-build
-  only:
-    - master
-    - stable
-    - beta
-    - tags
-    - triggers
-  image: parity/rust:gitlab-ci
-  script:
-    - scripts/gitlab-test.sh js-release
-  tags:
-    - javascript
 push-release:
   stage: push-release
   only:

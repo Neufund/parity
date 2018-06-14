@@ -20,21 +20,20 @@ use std::collections::{BTreeMap, HashMap};
 use std::cmp;
 use std::sync::Arc;
 
-use block::ExecutedBlock;
+use block::{ExecutedBlock, IsBlock};
 use builtin::Builtin;
 use client::BlockChainClient;
-use error::{Error, TransactionError};
+use error::Error;
 use executive::Executive;
 use header::{BlockNumber, Header};
 use spec::CommonParams;
 use state::{CleanupMode, Substate};
-use trace::{NoopTracer, NoopVMTracer, Tracer, ExecutiveTracer, RewardType};
-use transaction::{SYSTEM_ADDRESS, UnverifiedTransaction, SignedTransaction};
+use trace::{NoopTracer, NoopVMTracer, Tracer, ExecutiveTracer, RewardType, Tracing};
+use transaction::{self, SYSTEM_ADDRESS, UnverifiedTransaction, SignedTransaction};
 use tx_filter::TransactionFilter;
 
-use bigint::prelude::U256;
+use ethereum_types::{U256, Address};
 use bytes::BytesRef;
-use util::Address;
 use vm::{CallType, ActionParams, ActionValue, ParamsType};
 use vm::{EnvInfo, Schedule, CreateContractAddress};
 
@@ -136,7 +135,7 @@ impl EthereumMachine {
 			env_info
 		};
 
-		let mut state = block.fields_mut().state;
+		let mut state = block.state_mut();
 		let params = ActionParams {
 			code_address: contract_address.clone(),
 			address: contract_address.clone(),
@@ -164,12 +163,12 @@ impl EthereumMachine {
 	/// Push last known block hash to the state.
 	fn push_last_hash(&self, block: &mut ExecutedBlock) -> Result<(), Error> {
 		let params = self.params();
-		if block.fields().header.number() == params.eip210_transition {
-			let state = block.fields_mut().state;
+		if block.header().number() == params.eip210_transition {
+			let state = block.state_mut();
 			state.init_code(&params.eip210_contract_address, params.eip210_contract_code.clone())?;
 		}
-		if block.fields().header.number() >= params.eip210_transition {
-			let parent_hash = block.fields().header.parent_hash().clone();
+		if block.header().number() >= params.eip210_transition {
+			let parent_hash = block.header().parent_hash().clone();
 			let _ = self.execute_as_system(
 				block,
 				params.eip210_contract_address,
@@ -186,8 +185,8 @@ impl EthereumMachine {
 		self.push_last_hash(block)?;
 
 		if let Some(ref ethash_params) = self.ethash_extensions {
-			if block.fields().header.number() == ethash_params.dao_hardfork_transition {
-				let state = block.fields_mut().state;
+			if block.header().number() == ethash_params.dao_hardfork_transition {
+				let state = block.state_mut();
 				for child in &ethash_params.dao_hardfork_accounts {
 					let beneficiary = &ethash_params.dao_hardfork_beneficiary;
 					state.balance(child)
@@ -221,7 +220,7 @@ impl EthereumMachine {
 					let total_lower_limit = cmp::max(lower_limit, gas_floor_target);
 					let total_upper_limit = cmp::min(upper_limit, gas_ceil_target);
 					let gas_limit = cmp::max(gas_floor_target, cmp::min(total_upper_limit,
-						lower_limit + (header.gas_used().clone() * 6.into() / 5.into()) / bound_divisor));
+						lower_limit + (header.gas_used().clone() * 6u32 / 5.into()) / bound_divisor));
 					round_block_gas_limit(gas_limit, total_lower_limit, total_upper_limit)
 				};
 				// ensure that we are not violating protocol limits
@@ -336,7 +335,7 @@ impl EthereumMachine {
 
 	/// Verify a particular transaction is valid, regardless of order.
 	pub fn verify_transaction_unordered(&self, t: UnverifiedTransaction, _header: &Header) -> Result<SignedTransaction, Error> {
-		SignedTransaction::new(t)
+		Ok(SignedTransaction::new(t)?)
 	}
 
 	/// Does basic verification of the transaction.
@@ -364,7 +363,7 @@ impl EthereumMachine {
 	pub fn verify_transaction(&self, t: &SignedTransaction, header: &Header, client: &BlockChainClient) -> Result<(), Error> {
 		if let Some(ref filter) = self.tx_filter.as_ref() {
 			if !filter.transaction_allowed(header.parent_hash(), t, client) {
-				return Err(TransactionError::NotAllowed.into())
+				return Err(transaction::Error::NotAllowed.into())
 			}
 		}
 
@@ -374,7 +373,7 @@ impl EthereumMachine {
 	/// Additional params.
 	pub fn additional_params(&self) -> HashMap<String, String> {
 		hash_map![
-			"registrar".to_owned() => self.params.registrar.hex()
+			"registrar".to_owned() => format!("{:x}", self.params.registrar)
 		]
 	}
 }
@@ -421,11 +420,11 @@ impl<'a> ::parity_machine::LocalizedMachine<'a> for EthereumMachine {
 
 impl ::parity_machine::WithBalances for EthereumMachine {
 	fn balance(&self, live: &ExecutedBlock, address: &Address) -> Result<U256, Error> {
-		live.fields().state.balance(address).map_err(Into::into)
+		live.state().balance(address).map_err(Into::into)
 	}
 
 	fn add_balance(&self, live: &mut ExecutedBlock, address: &Address, amount: &U256) -> Result<(), Error> {
-		live.fields_mut().state.add_balance(address, amount, CleanupMode::NoEmpty).map_err(Into::into)
+		live.state_mut().add_balance(address, amount, CleanupMode::NoEmpty).map_err(Into::into)
 	}
 
 	fn note_rewards(
@@ -434,21 +433,19 @@ impl ::parity_machine::WithBalances for EthereumMachine {
 		direct: &[(Address, U256)],
 		indirect: &[(Address, U256)],
 	) -> Result<(), Self::Error> {
-		use block::IsBlock;
+		if let Tracing::Enabled(ref mut traces) = *live.traces_mut() {
+			let mut tracer = ExecutiveTracer::default();
 
-		if !live.tracing_enabled() { return Ok(()) }
+			for &(address, amount) in direct {
+				tracer.trace_reward(address, amount, RewardType::Block);
+			}
 
-		let mut tracer = ExecutiveTracer::default();
+			for &(address, amount) in indirect {
+				tracer.trace_reward(address, amount, RewardType::Uncle);
+			}
 
-		for &(address, amount) in direct {
-			tracer.trace_reward(address, amount, RewardType::Block);
+			traces.push(tracer.drain().into());
 		}
-
-		for &(address, amount) in indirect {
-			tracer.trace_reward(address, amount, RewardType::Uncle);
-		}
-
-		live.fields_mut().push_traces(tracer);
 
 		Ok(())
 	}
@@ -477,8 +474,32 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn should_disallow_unsigned_transactions() {
+		use tests::helpers::get_default_ethash_extensions;
+
+		let rlp = "ea80843b9aca0083015f90948921ebb5f79e9e3920abe571004d0b1d5119c154865af3107a400080038080".into();
+		let transaction: UnverifiedTransaction = ::rlp::decode(&::rustc_hex::FromHex::from_hex(rlp).unwrap());
+		let spec = ::ethereum::new_ropsten_test();
+		let ethparams = get_default_ethash_extensions();
+
+		let machine = EthereumMachine::with_ethash_extensions(
+			spec.params().clone(),
+			Default::default(),
+			ethparams,
+		);
+		let mut header = ::header::Header::new();
+		header.set_number(15);
+
+		let res = machine.verify_transaction_basic(&transaction, &header);
+		match res {
+			Err(Error::Transaction(transaction::Error::InvalidSignature(_))) => (),
+			e => panic!("Expected: Transaction Invalid Signature, Got: {:?}", e),
+		}
+	}
+
+	#[test]
 	fn ethash_gas_limit_is_multiple_of_determinant() {
-		use bigint::prelude::U256;
+		use ethereum_types::U256;
 
 		let spec = ::ethereum::new_homestead_test();
 		let ethparams = ::tests::helpers::get_default_ethash_extensions();

@@ -59,8 +59,8 @@
 #![recursion_limit="128"]
 
 extern crate ethcore_io as io;
-extern crate ethcore_bigint as bigint;
 extern crate ethcore_bytes;
+extern crate ethereum_types;
 extern crate parking_lot;
 extern crate mio;
 extern crate tiny_keccak;
@@ -92,9 +92,6 @@ extern crate log;
 extern crate serde_derive;
 
 #[cfg(test)]
-extern crate ethcore_devtools as devtools;
-
-#[cfg(test)]
 extern crate tempdir;
 
 mod host;
@@ -108,9 +105,6 @@ mod node_table;
 mod stats;
 mod ip_utils;
 mod connection_filter;
-
-#[cfg(test)]
-mod tests;
 
 pub use host::{HostInfo, PeerId, PacketId, ProtocolId, NetworkContext, NetworkIoMessage, NetworkConfiguration};
 pub use service::NetworkService;

@@ -17,12 +17,12 @@
 use std::sync::Arc;
 use std::str::FromStr;
 use rustc_hex::FromHex;
-use bigint::prelude::U256;
-use util::Address;
+use ethereum_types::{U256, Address};
 
 use ethcore::miner::MinerService;
 use ethcore::client::TestBlockChainClient;
 use ethsync::ManageNetwork;
+use futures_cpupool::CpuPool;
 
 use jsonrpc_core::IoHandler;
 use v1::{ParitySet, ParitySetClient};
@@ -54,7 +54,8 @@ fn parity_set_client(
 	net: &Arc<TestManageNetwork>,
 ) -> TestParitySetClient {
 	let dapps_service = Arc::new(TestDappsService);
-	ParitySetClient::new(client, miner, updater, &(net.clone() as Arc<ManageNetwork>), Some(dapps_service), TestFetch::default())
+	let pool = CpuPool::new(1);
+	ParitySetClient::new(client, miner, updater, &(net.clone() as Arc<ManageNetwork>), Some(dapps_service), TestFetch::default(), pool)
 }
 
 #[test]
@@ -213,7 +214,7 @@ fn rpc_parity_set_hash_content() {
 
 #[test]
 fn rpc_parity_remove_transaction() {
-	use ethcore::transaction::{Transaction, Action};
+	use transaction::{Transaction, Action};
 
 	let miner = miner_service();
 	let client = client_service();

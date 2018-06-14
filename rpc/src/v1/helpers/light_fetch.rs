@@ -23,7 +23,6 @@ use ethcore::encoded;
 use ethcore::executed::{Executed, ExecutionError};
 use ethcore::ids::BlockId;
 use ethcore::filter::Filter as EthcoreFilter;
-use ethcore::transaction::{Action, Transaction as EthTransaction, SignedTransaction, LocalizedTransaction};
 use ethcore::receipt::Receipt;
 
 use jsonrpc_core::{BoxFuture, Result};
@@ -38,10 +37,10 @@ use light::on_demand::{request, OnDemand, HeaderRef, Request as OnDemandRequest,
 use light::request::Field;
 
 use ethsync::LightSync;
-use bigint::prelude::U256;
+use ethereum_types::{U256, Address};
 use hash::H256;
-use util::Address;
 use parking_lot::Mutex;
+use transaction::{Action, Transaction as EthTransaction, SignedTransaction, LocalizedTransaction};
 
 use v1::helpers::{CallRequest as CallRequestHelper, errors, dispatch};
 use v1::types::{BlockNumber, CallRequest, Log, LogDetails, Transaction};
@@ -130,9 +129,8 @@ impl LightFetch {
 				}
 			}
 			BlockId::Hash(h) => {
-				reqs.push(request::HeaderByHash(h.into()).into());
-
 				let idx = reqs.len();
+				reqs.push(request::HeaderByHash(h.into()).into());
 				Ok(HeaderRef::Unresolved(idx, h.into()))
 			}
 			_ => Err(errors::unknown_block()) // latest, earliest, and pending will have all already returned.
@@ -184,7 +182,7 @@ impl LightFetch {
 
 		reqs.push(request::Account { header: header_ref, address: address }.into());
 
-		self.send_requests(reqs, |mut res|match res.pop() {
+		self.send_requests(reqs, |mut res| match res.pop() {
 			Some(OnDemandResponse::Account(acc)) => acc,
 			_ => panic!("responses correspond directly with requests in amount and type; qed"),
 		})
@@ -316,7 +314,7 @@ impl LightFetch {
 
 		match (block_number(filter.to_block), block_number(filter.from_block)) {
 			(Some(to), Some(from)) if to < from => return Box::new(future::ok(Vec::new())),
-			(Some(_), Some(_)) => {},
+			(Some(_), Some(_)) => {}
 			_ => return Box::new(future::err(errors::unknown_block())),
 		}
 
@@ -356,7 +354,6 @@ impl LightFetch {
 		}
 	}
 
-
 	/// Get transaction logs_details
 	pub fn logs_details(&self, filter: EthcoreFilter) -> BoxFuture<Vec<LogDetails>> {
 		use std::collections::BTreeMap;
@@ -373,7 +370,7 @@ impl LightFetch {
 
 		match (block_number(filter.to_block), block_number(filter.from_block)) {
 			(Some(to), Some(from)) if to < from => return Box::new(future::ok(Vec::new())),
-			(Some(_), Some(_)) => {},
+			(Some(_), Some(_)) => {}
 			_ => return Box::new(future::err(errors::unknown_block())),
 		}
 
@@ -416,7 +413,7 @@ impl LightFetch {
 	// Get a transaction by hash. also returns the index in the block.
 	// Only returns transactions in the canonical chain.
 	pub fn transaction_by_hash(&self, tx_hash: H256, eip86_transition: u64)
-		-> BoxFuture<Option<(Transaction, usize)>>
+							   -> BoxFuture<Option<(Transaction, usize)>>
 	{
 		let params = (self.sync.clone(), self.on_demand.clone());
 		let fetcher: Self = self.clone();
@@ -478,9 +475,9 @@ impl LightFetch {
 	{
 		let maybe_future = self.sync.with_context(move |ctx| {
 			Box::new(self.on_demand.request_raw(ctx, reqs)
-					 .expect(NO_INVALID_BACK_REFS)
-					 .map(parse_response)
-					 .map_err(errors::on_demand_cancel))
+				.expect(NO_INVALID_BACK_REFS)
+				.map(parse_response)
+				.map_err(errors::on_demand_cancel))
 		});
 
 		match maybe_future {
@@ -513,7 +510,7 @@ fn execute_tx(gas_known: bool, params: ExecuteParams) -> BoxFuture<ExecutionResu
 						// exception?
 						if executed.exception.is_some() {
 							let old_gas = params.tx.gas;
-							params.tx.gas = params.tx.gas * 2.into();
+							params.tx.gas = params.tx.gas * 2u32;
 							if params.tx.gas > params.hdr.gas_limit() {
 								params.tx.gas = old_gas;
 							} else {
@@ -529,7 +526,7 @@ fn execute_tx(gas_known: bool, params: ExecuteParams) -> BoxFuture<ExecutionResu
 		}))
 	} else {
 		trace!(target: "light_fetch", "Placing execution request for {} gas in on_demand",
-			params.tx.gas);
+		params.tx.gas);
 
 		let request = request::TransactionProof {
 			tx: params.tx.fake_sign(params.from),

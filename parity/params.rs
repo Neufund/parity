@@ -16,8 +16,8 @@
 
 use std::{str, fs, fmt};
 use std::time::Duration;
-use bigint::prelude::U256;
-use util::Address;
+use ethereum_types::{U256, Address};
+use futures_cpupool::CpuPool;
 use parity_version::version_data;
 use journaldb::Algorithm;
 use ethcore::spec::{Spec, SpecParams};
@@ -233,15 +233,15 @@ impl GasPricerConfig {
 impl Default for GasPricerConfig {
 	fn default() -> Self {
 		GasPricerConfig::Calibrated {
-			initial_minimum: 11904761856u64.into(),
-			usd_per_tx: 0.0025f32,
+			initial_minimum: 476190464u64.into(),
+			usd_per_tx: 0.0001f32,
 			recalibration_period: Duration::from_secs(3600),
 		}
 	}
 }
 
 impl GasPricerConfig {
-	pub fn to_gas_pricer(&self, fetch: FetchClient) -> GasPricer {
+	pub fn to_gas_pricer(&self, fetch: FetchClient, p: CpuPool) -> GasPricer {
 		match *self {
 			GasPricerConfig::Fixed(u) => GasPricer::Fixed(u),
 			GasPricerConfig::Calibrated { usd_per_tx, recalibration_period, .. } => {
@@ -250,7 +250,8 @@ impl GasPricerConfig {
 						usd_per_tx: usd_per_tx,
 						recalibration_period: recalibration_period,
 					},
-					fetch
+					fetch,
+					p,
 				)
 			}
 		}

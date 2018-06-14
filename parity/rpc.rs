@@ -74,6 +74,7 @@ pub struct UiConfiguration {
 	pub interface: String,
 	pub port: u16,
 	pub hosts: Option<Vec<String>>,
+	pub info_page_only: bool,
 }
 
 impl UiConfiguration {
@@ -110,10 +111,11 @@ impl From<UiConfiguration> for HttpConfiguration {
 impl Default for UiConfiguration {
 	fn default() -> Self {
 		UiConfiguration {
-			enabled: true && cfg!(feature = "ui-enabled"),
+			enabled: cfg!(feature = "ui-enabled"),
 			port: 8180,
 			interface: "127.0.0.1".into(),
 			hosts: Some(vec![]),
+			info_page_only: true,
 		}
 	}
 }
@@ -162,7 +164,7 @@ impl Default for WsConfiguration {
 			interface: "127.0.0.1".into(),
 			port: 8546,
 			apis: ApiSet::UnsafeContext,
-			origins: Some(vec!["chrome-extension://*".into(), "moz-extension://*".into()]),
+			origins: Some(vec!["parity://*".into(),"chrome-extension://*".into(), "moz-extension://*".into()]),
 			hosts: Some(Vec::new()),
 			signer_path: replace_home(&data_dir, "$BASE/signer").into(),
 			support_token_api: true,
@@ -227,7 +229,7 @@ pub fn new_ws<D: rpc_apis::Dependencies>(
 	let allowed_hosts = into_domains(with_domain(conf.hosts, domain, &Some(url.clone().into()), &None));
 
 	let signer_path;
-	let path = match conf.support_token_api && conf.ui_address.is_some() {
+	let path = match conf.support_token_api {
 		true => {
 			signer_path = ::signer::codes_path(&conf.signer_path);
 			Some(signer_path.as_path())

@@ -22,8 +22,7 @@ use parking_lot::Mutex;
 use ethcore::client::ChainNotify;
 use ethkey::{Random, Generator, Public, sign};
 use bytes::Bytes;
-use bigint::hash::H256;
-use bigint::prelude::U256;
+use ethereum_types::{H256, U256};
 use key_server_set::KeyServerSet;
 use key_server_cluster::{ClusterClient, ClusterSessionsListener, ClusterSession};
 use key_server_cluster::generation_session::SessionImpl as GenerationSession;
@@ -362,7 +361,7 @@ impl ClusterSessionsListener<GenerationSession> for ServiceContractListener {
 
 /// Returns true when session, related to `server_key_id` must be started on this KeyServer.
 fn is_processed_by_this_key_server(key_server_set: &KeyServerSet, self_key_pair: &NodeKeyPair, server_key_id: &H256) -> bool {
-	let servers = key_server_set.get();
+	let servers = key_server_set.snapshot().current_set;
 	let total_servers_count = servers.len();
 	match total_servers_count {
 		0 => return false,
@@ -377,7 +376,7 @@ fn is_processed_by_this_key_server(key_server_set: &KeyServerSet, self_key_pair:
 
 	let server_key_id_value: U256 = server_key_id.into();
 	let range_interval = U256::max_value() / total_servers_count.into();
-	let range_begin = (range_interval + 1.into()) * this_server_index.into();
+	let range_begin = (range_interval + 1.into()) * this_server_index as u32;
 	let range_end = range_begin.saturating_add(range_interval);
 
 	server_key_id_value >= range_begin && server_key_id_value <= range_end
@@ -584,7 +583,7 @@ mod tests {
 	}
 
 	#[test]
-	fn server_key_generation_is_scheduled_when_requested_key_is_unknnown() {
+	fn server_key_generation_is_scheduled_when_requested_key_is_unknown() {
 		let mut contract = DummyServiceContract::default();
 		contract.logs.push(vec![Default::default(), Default::default(), Default::default()]);
 		let listener = make_service_contract_listener(Some(Arc::new(contract)), None, None);
@@ -606,7 +605,7 @@ mod tests {
 	}
 
 	#[test]
-	fn server_key_restore_is_scheduled_when_requested_key_is_knnown() {
+	fn server_key_restore_is_scheduled_when_requested_key_is_known() {
 		let mut contract = DummyServiceContract::default();
 		contract.logs.push(vec![Default::default(), Default::default(), Default::default()]);
 		let listener = make_service_contract_listener(Some(Arc::new(contract)), None, None);

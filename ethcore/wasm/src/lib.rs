@@ -18,8 +18,7 @@
 
 extern crate byteorder;
 extern crate ethcore_logger;
-extern crate ethcore_util as util;
-extern crate ethcore_bigint as bigint;
+extern crate ethereum_types;
 #[macro_use] extern crate log;
 extern crate libc;
 extern crate parity_wasm;
@@ -39,7 +38,7 @@ use wasmi::{Error as InterpreterError, Trap};
 
 use runtime::{Runtime, RuntimeContext};
 
-use bigint::uint::U256;
+use ethereum_types::U256;
 
 /// Wrapped interpreter error
 #[derive(Debug)]

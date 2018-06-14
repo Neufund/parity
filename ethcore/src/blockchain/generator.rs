@@ -17,8 +17,7 @@
 //! Blockchain generator for tests.
 
 use std::collections::VecDeque;
-use bigint::prelude::{U256, H256};
-use bloomchain::Bloom;
+use ethereum_types::{U256, H256, Bloom};
 
 use bytes::Bytes;
 use header::Header;
@@ -53,6 +52,11 @@ impl Block {
 	#[inline]
 	pub fn encoded(&self) -> Bytes {
 		encode(self).into_vec()
+	}
+
+	#[inline]
+	pub fn difficulty(&self) -> U256 {
+		*self.header.difficulty()
 	}
 }
 

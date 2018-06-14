@@ -8,7 +8,7 @@ license = "MIT"
 keywords = ["ethereum", "ethcore", "bloom", "chain", "filter"]
 
 [dependencies]
-ethcore-bigint = { path = "../bigint" }
+ethbloom = "0.4"
 
 [dev-dependencies]
 rustc-hex = "1.0"

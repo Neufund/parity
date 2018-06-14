@@ -21,25 +21,27 @@
 
 use super::{WalletInfo, TransactionInfo, KeyPath};
 
-use bigint::hash::H256;
-use ethkey::{Address, Signature};
+use std::cmp::{min, max};
+use std::fmt;
+use std::sync::{Arc, Weak};
+use std::time::Duration;
+use std::thread;
+
+use ethereum_types::{U256, H256, Address};
+
+use ethkey::Signature;
 use hidapi;
 use libusb;
 use parking_lot::{Mutex, RwLock};
 use protobuf;
 use protobuf::{Message, ProtobufEnum};
-use std::cmp::{min, max};
-use std::fmt;
-use std::sync::{Arc, Weak};
-use std::time::Duration;
-use bigint::prelude::uint::U256;
 
 use trezor_sys::messages::{EthereumAddress, PinMatrixAck, MessageType, EthereumTxRequest, EthereumSignTx, EthereumGetAddress, EthereumTxAck, ButtonAck};
 
 /// Trezor v1 vendor ID
 pub const TREZOR_VID: u16 = 0x534c;
-/// Trezor product IDs
-pub const TREZOR_PIDS: [u16; 1] = [0x0001];
+/// Trezor product IDs 
+pub const TREZOR_PIDS: [u16; 1] = [0x0001]; 
 
 const ETH_DERIVATION_PATH: [u32; 5] = [0x8000002C, 0x8000003C, 0x80000000, 0, 0]; // m/44'/60'/0'/0/0
 const ETC_DERIVATION_PATH: [u32; 5] = [0x8000002C, 0x8000003D, 0x80000000, 0, 0]; // m/44'/61'/0'/0/0
@@ -418,7 +420,7 @@ impl libusb::Hotplug for EventHandler {
 		debug!(target: "hw", "Trezor V1 arrived");
 		if let Some(trezor) = self.trezor.upgrade() {
 			// Wait for the device to boot up
-			::std::thread::sleep(Duration::from_millis(1000));
+			thread::sleep(Duration::from_millis(1000));
 			if let Err(e) = trezor.update_devices() {
 				debug!(target: "hw", "Trezor V1 connect error: {:?}", e);
 			}
@@ -441,8 +443,7 @@ impl libusb::Hotplug for EventHandler {
 /// This test can't be run without an actual trezor device connected
 /// (and unlocked) attached to the machine that's running the test
 fn test_signature() {
-	use bigint::prelude::uint::U256;
-	use bigint::hash::{H160, H256};
+	use ethereum_types::{H160, H256, U256};
 
 	let hidapi = Arc::new(Mutex::new(hidapi::HidApi::new().unwrap()));
 	let manager = Manager::new(hidapi.clone());

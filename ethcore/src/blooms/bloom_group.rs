@@ -15,8 +15,8 @@
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use bloomchain::group as bc;
-use bloomchain::{Bloom, BloomCompat};
 use heapsize::HeapSizeOf;
+use ethereum_types::Bloom;
 
 /// Represents group of X consecutive blooms.
 #[derive(Debug, Clone, RlpEncodableWrapper, RlpDecodableWrapper)]

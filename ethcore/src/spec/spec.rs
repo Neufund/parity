@@ -16,24 +16,20 @@
 
 //! Parameters for a block chain.
 
-use std::io::Read;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
-use bigint::hash::{H256, H2048};
-use bigint::prelude::U256;
 use bytes::Bytes;
+use ethereum_types::{H256, Bloom, U256, Address};
 use ethjson;
 use hash::{KECCAK_NULL_RLP, keccak};
+use memorydb::MemoryDB;
 use parking_lot::RwLock;
 use rlp::{Rlp, RlpStream};
 use rustc_hex::FromHex;
-use util::*;
 use vm::{EnvInfo, CallType, ActionValue, ActionParams, ParamsType};
-
-use super::genesis::Genesis;
-use super::seal::Generic as GenericSeal;
 
 use builtin::Builtin;
 use engines::{EthEngine, NullEngine, InstantSeal, BasicAuthority, AuthorityRound, Tendermint, DEFAULT_BLOCKHASH_CONTRACT};
@@ -42,9 +38,11 @@ use executive::Executive;
 use factory::Factories;
 use header::{BlockNumber, Header};
 use machine::EthereumMachine;
-use pod_state::*;
-use state::{Backend, State, Substate};
+use pod_state::PodState;
+use spec::Genesis;
+use spec::seal::Generic as GenericSeal;
 use state::backend::Basic as BasicBackend;
+use state::{Backend, State, Substate};
 use trace::{NoopTracer, NoopVMTracer};
 
 pub use ethash::OptimizeFor;
@@ -595,7 +593,7 @@ impl Spec {
 		header.set_extra_data(self.extra_data.clone());
 		header.set_state_root(self.state_root());
 		header.set_receipts_root(self.receipts_root.clone());
-		header.set_log_bloom(H2048::new().clone());
+		header.set_log_bloom(Bloom::default());
 		header.set_gas_used(self.gas_used.clone());
 		header.set_gas_limit(self.gas_limit.clone());
 		header.set_difficulty(self.difficulty.clone());
@@ -711,7 +709,7 @@ impl Spec {
 				author: *genesis.author(),
 				timestamp: genesis.timestamp(),
 				difficulty: *genesis.difficulty(),
-				gas_limit: *genesis.gas_limit(),
+				gas_limit: U256::max_value(),
 				last_hashes: Arc::new(Vec::new()),
 				gas_used: 0.into(),
 			};
@@ -720,7 +718,7 @@ impl Spec {
 			let tx = Transaction {
 				nonce: self.engine.account_start_nonce(0),
 				action: Action::Call(a),
-				gas: U256::from(50_000_000), // TODO: share with client.
+				gas: U256::max_value(),
 				gas_price: U256::default(),
 				value: U256::default(),
 				data: d,
@@ -781,6 +779,13 @@ impl Spec {
 		load_bundled!("authority_round")
 	}
 
+	/// Create a new Spec with AuthorityRound consensus which does internal sealing (not
+	/// requiring work) with empty step messages enabled.
+	/// Accounts with secrets keccak("0") and keccak("1") are the validators.
+	pub fn new_test_round_empty_steps() -> Self {
+		load_bundled!("authority_round_empty_steps")
+	}
+
 	/// Create a new Spec with Tendermint consensus which does internal sealing (not requiring
 	/// work).
 	/// Account keccak("0") and keccak("1") are a authorities.
@@ -825,9 +830,8 @@ impl Spec {
 mod tests {
 	use super::*;
 	use state::State;
-	use std::str::FromStr;
 	use tests::helpers::get_temp_state_db;
-	use views::*;
+	use views::BlockView;
 
 	// https://github.com/paritytech/parity/issues/1840
 	#[test]
@@ -841,16 +845,12 @@ mod tests {
 
 		assert_eq!(
 			test_spec.state_root(),
-			H256::from_str(
-				"f3f4696bbf3b3b07775128eb7a3763279a394e382130f27c21e70233e04946a9",
-			).unwrap()
+			"f3f4696bbf3b3b07775128eb7a3763279a394e382130f27c21e70233e04946a9".into()
 		);
 		let genesis = test_spec.genesis_block();
 		assert_eq!(
 			BlockView::new(&genesis).header_view().hash(),
-			H256::from_str(
-				"0cd786a2425d16f152c658316c423e6ce1181e15c3295826d7c9904cba9ce303",
-			).unwrap()
+			"0cd786a2425d16f152c658316c423e6ce1181e15c3295826d7c9904cba9ce303".into()
 		);
 	}
 
@@ -866,10 +866,8 @@ mod tests {
 			spec.engine.account_start_nonce(0),
 			Default::default(),
 		).unwrap();
-		let expected = H256::from_str(
-			"0000000000000000000000000000000000000000000000000000000000000001",
-		).unwrap();
-		let address = Address::from_str("0000000000000000000000000000000000000005").unwrap();
+		let expected = "0000000000000000000000000000000000000000000000000000000000000001".into();
+		let address = "0000000000000000000000000000000000001337".into();
 
 		assert_eq!(state.storage_at(&address, &H256::zero()).unwrap(), expected);
 		assert_eq!(state.balance(&address).unwrap(), 1.into());

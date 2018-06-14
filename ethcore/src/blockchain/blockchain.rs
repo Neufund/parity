@@ -21,15 +21,13 @@ use std::sync::Arc;
 use std::mem;
 use itertools::Itertools;
 use bloomchain as bc;
-use bloomchain::Bloom;
 use heapsize::HeapSizeOf;
-use bigint::prelude::U256;
-use bigint::hash::{H256};
+use ethereum_types::{H256, Bloom, U256};
 use parking_lot::{Mutex, RwLock};
 use bytes::Bytes;
 use rlp::*;
+use rlp_compress::{compress, decompress, blocks_swapper};
 use header::*;
-use super::extras::*;
 use transaction::*;
 use views::*;
 use log_entry::{LogEntry, LocalizedLogEntry};
@@ -37,6 +35,7 @@ use receipt::Receipt;
 use blooms::{BloomGroup, GroupPosition};
 use blockchain::best_block::{BestBlock, BestAncientBlock};
 use blockchain::block_info::{BlockInfo, BlockLocation, BranchBecomingCanonChainData};
+use blockchain::extras::{BlockReceipts, BlockDetails, TransactionAddress, EPOCH_KEY_PREFIX, EpochTransitions};
 use types::blockchain_info::BlockChainInfo;
 use types::tree_route::TreeRoute;
 use blockchain::update::ExtrasUpdate;
@@ -57,6 +56,12 @@ pub trait BlockProvider {
 	/// Returns true if the given block is known
 	/// (though not necessarily a part of the canon chain).
 	fn is_known(&self, hash: &H256) -> bool;
+
+	/// Returns true if the given block is known and in the canon chain.
+	fn is_canon(&self, hash: &H256) -> bool {
+		let is_canon = || Some(hash == &self.block_hash(self.block_number(hash)?)?);
+		is_canon().unwrap_or(false)
+	}
 
 	/// Get the first block of the best part of the chain.
 	/// Return `None` if there is no gap and the first block is the genesis.
@@ -123,7 +128,7 @@ pub trait BlockProvider {
 	fn transaction(&self, address: &TransactionAddress) -> Option<LocalizedTransaction> {
 		self.block_body(&address.block_hash)
 			.and_then(|body| self.block_number(&address.block_hash)
-			.and_then(|n| body.view().localized_transaction_at(&address.block_hash, n, address.index)))
+				.and_then(|n| body.view().localized_transaction_at(&address.block_hash, n, address.index)))
 	}
 
 	/// Get transaction receipt.
@@ -136,7 +141,7 @@ pub trait BlockProvider {
 	fn transactions(&self, hash: &H256) -> Option<Vec<LocalizedTransaction>> {
 		self.block_body(hash)
 			.and_then(|body| self.block_number(hash)
-			.map(|n| body.view().localized_transactions(hash, n)))
+				.map(|n| body.view().localized_transactions(hash, n)))
 	}
 
 	/// Returns reference to genesis hash.
@@ -154,12 +159,8 @@ pub trait BlockProvider {
 	fn blocks_with_bloom(&self, bloom: &Bloom, from_block: BlockNumber, to_block: BlockNumber) -> Vec<BlockNumber>;
 
 	/// Returns logs matching given filter.
-	fn logs<F>(&self, blocks: Vec<BlockNumber>, matches: F, limit: Option<usize>) -> Vec<LocalizedLogEntry>
+	fn logs<F>(&self, blocks: Vec<H256>, matches: F, limit: Option<usize>) -> Vec<LocalizedLogEntry>
 		where F: Fn(&LogEntry) -> bool + Send + Sync, Self: Sized;
-}
-
-macro_rules! otry {
-	($e:expr) => { match $e { Some(x) => x, None => return None } }
 }
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
@@ -278,7 +279,7 @@ impl BlockProvider for BlockChain {
 
 		let result = match opt {
 			Some(b) => {
-				let bytes: Bytes = UntrustedRlp::new(&b).decompress(RlpType::Blocks).into_vec();
+				let bytes = decompress(&b, blocks_swapper()).into_vec();
 				let mut write = self.block_headers.write();
 				write.insert(*hash, bytes.clone());
 				Some(encoded::Header::new(bytes))
@@ -314,7 +315,7 @@ impl BlockProvider for BlockChain {
 
 		let result = match opt {
 			Some(b) => {
-				let bytes: Bytes = UntrustedRlp::new(&b).decompress(RlpType::Blocks).into_vec();
+				let bytes = decompress(&b, blocks_swapper()).into_vec();
 				let mut write = self.block_bodies.write();
 				write.insert(*hash, bytes.clone());
 				Some(encoded::Body::new(bytes))
@@ -365,16 +366,18 @@ impl BlockProvider for BlockChain {
 			.collect()
 	}
 
-	fn logs<F>(&self, mut blocks: Vec<BlockNumber>, matches: F, limit: Option<usize>) -> Vec<LocalizedLogEntry>
+	/// Returns logs matching given filter. The order of logs returned will be the same as the order of the blocks
+	/// provided. And it's the callers responsibility to sort blocks provided in advance.
+	fn logs<F>(&self, mut blocks: Vec<H256>, matches: F, limit: Option<usize>) -> Vec<LocalizedLogEntry>
 		where F: Fn(&LogEntry) -> bool + Send + Sync, Self: Sized {
 		// sort in reverse order
-		blocks.sort_by(|a, b| b.cmp(a));
+		blocks.reverse();
 
 		let mut logs = blocks
 			.chunks(128)
 			.flat_map(move |blocks_chunk| {
 				blocks_chunk.into_par_iter()
-					.filter_map(|number| self.block_hash(*number).map(|hash| (*number, hash)))
+					.filter_map(|hash| self.block_number(&hash).map(|r| (r, hash)))
 					.filter_map(|(number, hash)| self.block_receipts(&hash).map(|r| (number, hash, r.receipts)))
 					.filter_map(|(number, hash, receipts)| self.block_body(&hash).map(|ref b| (number, hash, receipts, b.transaction_hashes())))
 					.flat_map(|(number, hash, mut receipts, mut hashes)| {
@@ -401,7 +404,7 @@ impl BlockProvider for BlockChain {
 									.enumerate()
 									.map(move |(i, log)| LocalizedLogEntry {
 										entry: log,
-										block_hash: hash,
+										block_hash: *hash,
 										block_number: number,
 										transaction_hash: tx_hash,
 										// iterating in reverse order
@@ -672,8 +675,8 @@ impl BlockChain {
 		let mut from_branch = vec![];
 		let mut to_branch = vec![];
 
-		let mut from_details = otry!(self.block_details(&from));
-		let mut to_details = otry!(self.block_details(&to));
+		let mut from_details = self.block_details(&from)?;
+		let mut to_details = self.block_details(&to)?;
 		let mut current_from = from;
 		let mut current_to = to;
 
@@ -681,13 +684,13 @@ impl BlockChain {
 		while from_details.number > to_details.number {
 			from_branch.push(current_from);
 			current_from = from_details.parent.clone();
-			from_details = otry!(self.block_details(&from_details.parent));
+			from_details = self.block_details(&from_details.parent)?;
 		}
 
 		while to_details.number > from_details.number {
 			to_branch.push(current_to);
 			current_to = to_details.parent.clone();
-			to_details = otry!(self.block_details(&to_details.parent));
+			to_details = self.block_details(&to_details.parent)?;
 		}
 
 		assert_eq!(from_details.number, to_details.number);
@@ -696,11 +699,11 @@ impl BlockChain {
 		while current_from != current_to {
 			from_branch.push(current_from);
 			current_from = from_details.parent.clone();
-			from_details = otry!(self.block_details(&from_details.parent));
+			from_details = self.block_details(&from_details.parent)?;
 
 			to_branch.push(current_to);
 			current_to = to_details.parent.clone();
-			to_details = otry!(self.block_details(&to_details.parent));
+			to_details = self.block_details(&to_details.parent)?;
 		}
 
 		let index = from_branch.len();
@@ -734,9 +737,8 @@ impl BlockChain {
 
 		assert!(self.pending_best_block.read().is_none());
 
-		let block_rlp = UntrustedRlp::new(bytes);
-		let compressed_header = block_rlp.at(0).unwrap().compress(RlpType::Blocks);
-		let compressed_body = UntrustedRlp::new(&Self::block_to_body(bytes)).compress(RlpType::Blocks);
+		let compressed_header = compress(block.header_rlp().as_raw(), blocks_swapper());
+		let compressed_body = compress(&Self::block_to_body(bytes), blocks_swapper());
 
 		// store block in db
 		batch.put(db::COL_HEADERS, &hash, &compressed_header);
@@ -849,7 +851,7 @@ impl BlockChain {
 	/// Get a specific epoch transition by block number and provided block hash.
 	pub fn epoch_transition(&self, block_num: u64, block_hash: H256) -> Option<EpochTransition> {
 		trace!(target: "blockchain", "Loading epoch transition at block {}, {}",
-			block_num, block_hash);
+		block_num, block_hash);
 
 		self.db.read(db::COL_EXTRA, &block_num).and_then(|transitions: EpochTransitions| {
 			transitions.candidates.into_iter().find(|c| c.block_hash == block_hash)
@@ -863,8 +865,8 @@ impl BlockChain {
 	/// The block corresponding the the parent hash must be stored already.
 	pub fn epoch_transition_for(&self, parent_hash: H256) -> Option<EpochTransition> {
 		// slow path: loop back block by block
-		for hash in otry!(self.ancestry_iter(parent_hash)) {
-			let details = otry!(self.block_details(&hash));
+		for hash in self.ancestry_iter(parent_hash)? {
+			let details = self.block_details(&hash)?;
 
 			// look for transition in database.
 			if let Some(transition) = self.epoch_transition(details.number, hash) {
@@ -876,7 +878,7 @@ impl BlockChain {
 			//
 			// if `block_hash` is canonical it will only return transitions up to
 			// the parent.
-			if otry!(self.block_hash(details.number)) == hash {
+			if self.block_hash(details.number)? == hash {
 				return self.epoch_transitions()
 					.map(|(_, t)| t)
 					.take_while(|t| t.block_number <= details.number)
@@ -935,18 +937,21 @@ impl BlockChain {
 
 		assert!(self.pending_best_block.read().is_none());
 
+		let compressed_header = compress(block.header_rlp().as_raw(), blocks_swapper());
+		let compressed_body = compress(&Self::block_to_body(bytes), blocks_swapper());
+
 		// store block in db
-		batch.put_compressed(db::COL_HEADERS, &hash, block.header_rlp().as_raw().to_vec());
-		batch.put_compressed(db::COL_BODIES, &hash, Self::block_to_body(bytes));
+		batch.put(db::COL_HEADERS, &hash, &compressed_header);
+		batch.put(db::COL_BODIES, &hash, &compressed_body);
 
 		let info = self.block_info(&header);
 
 		if let BlockLocation::BranchBecomingCanonChain(ref d) = info.location {
 			info!(target: "reorg", "Reorg to {} ({} {} {})",
-				Colour::Yellow.bold().paint(format!("#{} {}", info.number, info.hash)),
-				Colour::Red.paint(d.retracted.iter().join(" ")),
-				Colour::White.paint(format!("#{} {}", self.block_details(&d.ancestor).expect("`ancestor` is in the route; qed").number, d.ancestor)),
-				Colour::Green.paint(d.enacted.iter().join(" "))
+			Colour::Yellow.bold().paint(format!("#{} {}", info.number, info.hash)),
+			Colour::Red.paint(d.retracted.iter().join(" ")),
+			Colour::White.paint(format!("#{} {}", self.block_details(&d.ancestor).expect("`ancestor` is in the route; qed").number, d.ancestor)),
+			Colour::Green.paint(d.enacted.iter().join(" "))
 			);
 		}
 
@@ -1400,12 +1405,12 @@ impl BlockChain {
 			block_receipts.shrink_to_fit();
 
 			block_headers.heap_size_of_children() +
-			block_bodies.heap_size_of_children() +
-			block_details.heap_size_of_children() +
-			block_hashes.heap_size_of_children() +
-			transaction_addresses.heap_size_of_children() +
-			blocks_blooms.heap_size_of_children() +
-			block_receipts.heap_size_of_children()
+				block_bodies.heap_size_of_children() +
+				block_details.heap_size_of_children() +
+				block_hashes.heap_size_of_children() +
+				transaction_addresses.heap_size_of_children() +
+				blocks_blooms.heap_size_of_children() +
+				block_receipts.heap_size_of_children()
 		});
 	}
 
@@ -1436,11 +1441,6 @@ impl BlockChain {
 			ancient_block_number: best_ancient_block.as_ref().map(|b| b.number),
 		}
 	}
-
-	#[cfg(test)]
-	pub fn db(&self) -> &Arc<KeyValueDB> {
-		&self.db
-	}
 }
 
 #[cfg(test)]
@@ -1451,7 +1451,7 @@ mod tests {
 	use hash::keccak;
 	use kvdb::KeyValueDB;
 	use kvdb_memorydb;
-	use bigint::hash::*;
+	use ethereum_types::*;
 	use receipt::{Receipt, TransactionOutcome};
 	use blockchain::{BlockProvider, BlockChain, Config, ImportRoute};
 	use tests::helpers::*;
@@ -1965,17 +1965,33 @@ mod tests {
 			value: 103.into(),
 			data: "601080600c6000396000f3006000355415600957005b60203560003555".from_hex().unwrap(),
 		}.sign(&secret(), None);
+		let t4 = Transaction {
+			nonce: 0.into(),
+			gas_price: 0.into(),
+			gas: 100_000.into(),
+			action: Action::Create,
+			value: 104.into(),
+			data: "601080600c6000396000f3006000355415600957005b60203560003555".from_hex().unwrap(),
+		}.sign(&secret(), None);
 		let tx_hash1 = t1.hash();
 		let tx_hash2 = t2.hash();
 		let tx_hash3 = t3.hash();
+		let tx_hash4 = t4.hash();
 
 		let genesis = BlockBuilder::genesis();
 		let b1 = genesis.add_block_with_transactions(vec![t1, t2]);
 		let b2 = b1.add_block_with_transactions(iter::once(t3));
+		let b3 = genesis.add_block_with(|| BlockOptions {
+			transactions: vec![t4.clone()],
+			difficulty: U256::from(9),
+			..Default::default()
+		}); // Branch block
 		let b1_hash = b1.last().hash();
 		let b1_number = b1.last().number();
 		let b2_hash = b2.last().hash();
 		let b2_number = b2.last().number();
+		let b3_hash = b3.last().hash();
+		let b3_number = b3.last().number();
 
 		let db = new_db();
 		let bc = new_chain(&genesis.last().encoded(), db.clone());
@@ -1988,14 +2004,14 @@ mod tests {
 				LogEntry { address: Default::default(), topics: vec![], data: vec![2], },
 			],
 		},
-		Receipt {
-			outcome: TransactionOutcome::StateRoot(H256::default()),
-			gas_used: 10_000.into(),
-			log_bloom: Default::default(),
-			logs: vec![
-				LogEntry { address: Default::default(), topics: vec![], data: vec![3], },
-			],
-		}]);
+														  Receipt {
+															  outcome: TransactionOutcome::StateRoot(H256::default()),
+															  gas_used: 10_000.into(),
+															  log_bloom: Default::default(),
+															  logs: vec![
+																  LogEntry { address: Default::default(), topics: vec![], data: vec![3], },
+															  ],
+														  }]);
 		insert_block(&db, &bc, &b2.last().encoded(), vec![
 			Receipt {
 				outcome: TransactionOutcome::StateRoot(H256::default()),
@@ -2006,10 +2022,21 @@ mod tests {
 				],
 			}
 		]);
+		insert_block(&db, &bc, &b3.last().encoded(), vec![
+			Receipt {
+				outcome: TransactionOutcome::StateRoot(H256::default()),
+				gas_used: 10_000.into(),
+				log_bloom: Default::default(),
+				logs: vec![
+					LogEntry { address: Default::default(), topics: vec![], data: vec![5], },
+				],
+			}
+		]);
 
 		// when
-		let logs1 = bc.logs(vec![1, 2], |_| true, None);
-		let logs2 = bc.logs(vec![1, 2], |_| true, Some(1));
+		let logs1 = bc.logs(vec![b1_hash, b2_hash], |_| true, None);
+		let logs2 = bc.logs(vec![b1_hash, b2_hash], |_| true, Some(1));
+		let logs3 = bc.logs(vec![b3_hash], |_| true, None);
 
 		// then
 		assert_eq!(logs1, vec![
@@ -2061,16 +2088,26 @@ mod tests {
 				log_index: 0,
 			}
 		]);
+		assert_eq!(logs3, vec![
+			LocalizedLogEntry {
+				entry: LogEntry { address: Default::default(), topics: vec![], data: vec![5] },
+				block_hash: b3_hash,
+				block_number: b3_number,
+				transaction_hash: tx_hash4,
+				transaction_index: 0,
+				transaction_log_index: 0,
+				log_index: 0,
+			}
+		]);
 	}
 
 	#[test]
 	fn test_bloom_filter_simple() {
-		// TODO: From here
-		let bloom_b1: H2048 = "00000020000000000000000000000000000000000000000002000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000400000000000000000000002000".into();
+		let bloom_b1: Bloom = "00000020000000000000000000000000000000000000000002000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000400000000000000000000002000".into();
 
-		let bloom_b2: H2048 = "00000000000000000000000000000000000000000000020000001000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000008000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".into();
+		let bloom_b2: Bloom = "00000000000000000000000000000000000000000000020000001000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000008000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".into();
 
-		let bloom_ba: H2048 = "00000000000000000000000000000000000000000000020000000800000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000008000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".into();
+		let bloom_ba: Bloom = "00000000000000000000000000000000000000000000020000000800000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000008000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".into();
 
 		let genesis = BlockBuilder::genesis();
 		let b1 = genesis.add_block_with(|| BlockOptions {
@@ -2134,17 +2171,17 @@ mod tests {
 
 	#[test]
 	fn test_insert_unordered() {
-		let bloom_b1: H2048 = "00000020000000000000000000000000000000000000000002000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000400000000000000000000002000".into();
+		let bloom_b1: Bloom = "00000020000000000000000000000000000000000000000002000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000400000000000000000000002000".into();
 
-		let bloom_b2: H2048 = "00000000000000000000000000000000000000000000020000001000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000008000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".into();
+		let bloom_b2: Bloom = "00000000000000000000000000000000000000000000020000001000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000008000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".into();
 
-		let bloom_b3: H2048 = "00000000000000000000000000000000000000000000020000000800000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000008000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".into();
+		let bloom_b3: Bloom = "00000000000000000000000000000000000000000000020000000800000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000008000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".into();
 
 		let genesis = BlockBuilder::genesis();
 		let b1 = genesis.add_block_with_bloom(bloom_b1);
 		let b2 = b1.add_block_with_bloom(bloom_b2);
 		let b3 = b2.add_block_with_bloom(bloom_b3);
-		let b1_total_difficulty = *genesis.last().header.difficulty() + *b1.last().header.difficulty();
+		let b1_total_difficulty = genesis.last().difficulty() + b1.last().difficulty();
 
 		let db = new_db();
 		let bc = new_chain(&genesis.last().encoded(), db.clone());

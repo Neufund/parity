@@ -32,14 +32,14 @@ extern crate zip;
 
 extern crate jsonrpc_http_server;
 
-extern crate ethcore_util as util;
-extern crate ethcore_bigint as bigint;
 extern crate ethcore_bytes as bytes;
+extern crate ethereum_types;
 extern crate fetch;
 extern crate node_health;
 extern crate parity_dapps_glue as parity_dapps;
 extern crate parity_hash_fetch as hash_fetch;
 extern crate parity_ui;
+extern crate parity_ui_deprecation;
 extern crate keccak_hash as hash;
 extern crate parity_version;
 
@@ -159,6 +159,7 @@ impl Middleware {
 		registrar: Arc<ContractClient>,
 		sync_status: Arc<SyncStatus>,
 		fetch: F,
+		info_page_only: bool,
 	) -> Self {
 		let content_fetcher = Arc::new(apps::fetcher::ContentFetcher::new(
 			hash_fetch::urlhint::URLHintContract::new(registrar),
@@ -166,6 +167,23 @@ impl Middleware {
 			fetch.clone(),
 			pool.clone(),
 		).embeddable_on(None).allow_dapps(false));
+
+		if info_page_only {
+			let mut special = HashMap::default();
+			special.insert(router::SpecialEndpoint::Home, Some(apps::ui_deprecation(pool.clone())));
+
+			return Middleware {
+				endpoints: Default::default(),
+				router: router::Router::new(
+					content_fetcher,
+					None,
+					special,
+					None,
+					dapps_domain.to_owned(),
+				),
+			}
+		}
+
 		let special = {
 			let mut special = special_endpoints(
 				pool.clone(),
