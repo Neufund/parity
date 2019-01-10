@@ -32,7 +32,7 @@ use light::on_demand::{request, OnDemand};
 use ethcore::account_provider::AccountProvider;
 use ethcore::encoded;
 use ethcore::filter::Filter as EthcoreFilter;
-use ethcore::ids::BlockId;
+use ethcore::ids::{BlockId};
 use sync::LightSync;
 use hash::{KECCAK_NULL_RLP, KECCAK_EMPTY_LIST_RLP};
 use ethereum_types::U256;
@@ -47,7 +47,7 @@ use v1::helpers::light_fetch::{self, LightFetch};
 use v1::traits::Eth;
 use v1::types::{
 	RichBlock, Block, BlockTransactions, BlockNumber, LightBlockNumber, Bytes, SyncStatus, SyncInfo,
-	Transaction, CallRequest, Index, Filter, Log, Receipt, Work,
+	Transaction, CallRequest, Index, Filter, Log, LogDetails, Receipt, Work,
 	H64 as RpcH64, H256 as RpcH256, H160 as RpcH160, U256 as RpcU256,
 };
 use v1::metadata::Metadata;
@@ -494,6 +494,10 @@ impl<T: LightChainClient + 'static> Eth for EthClient<T> {
 				Ok(value) => value,
 				Err(err) => return Box::new(future::err(err)),
 			}).map(move |logs| limit_logs(logs, limit)))
+	}
+
+	fn log_details(&self, _:Filter) -> BoxFuture<Vec<LogDetails>> {
+		return Box::new(future::err(errors::light_unimplemented(None)))
 	}
 
 	fn work(&self, _timeout: Trailing<u64>) -> Result<Work> {

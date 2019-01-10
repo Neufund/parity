@@ -25,6 +25,7 @@ pub mod light_fetch;
 pub mod nonce;
 pub mod oneshot;
 pub mod secretstore;
+pub mod log_details;
 
 mod network_settings;
 mod poll_filter;
@@ -38,7 +39,7 @@ mod subscription_manager;
 pub use self::dispatch::{Dispatcher, FullDispatcher};
 pub use self::network_settings::NetworkSettings;
 pub use self::poll_manager::PollManager;
-pub use self::poll_filter::{PollFilter, SyncPollFilter, limit_logs};
+pub use self::poll_filter::{PollFilter, SyncPollFilter, limit_logs, limit_localized_logs};
 pub use self::requests::{
 	TransactionRequest, FilledTransactionRequest, ConfirmationRequest, ConfirmationPayload, CallRequest,
 };

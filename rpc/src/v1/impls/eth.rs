@@ -40,13 +40,14 @@ use jsonrpc_core::{BoxFuture, Result};
 use jsonrpc_core::futures::future;
 use jsonrpc_macros::Trailing;
 
-use v1::helpers::{errors, limit_logs, fake_sign};
+use v1::helpers::{errors, limit_logs, limit_localized_logs, fake_sign};
 use v1::helpers::dispatch::{FullDispatcher, default_gas_price};
 use v1::helpers::block_import::is_major_importing;
+use v1::helpers::log_details;
 use v1::traits::Eth;
 use v1::types::{
 	RichBlock, Block, BlockTransactions, BlockNumber, Bytes, SyncStatus, SyncInfo,
-	Transaction, CallRequest, Index, Filter, Log, Receipt, Work,
+	Transaction, CallRequest, Index, Filter, Log, LogDetails, Receipt, Work,
 	H64 as RpcH64, H256 as RpcH256, H160 as RpcH160, U256 as RpcU256, block_number_to_id,
 };
 use v1::metadata::Metadata;
@@ -710,6 +711,7 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM, T: StateInfo + 'static> Eth for EthClient<
 
 	fn logs(&self, filter: Filter) -> BoxFuture<Vec<Log>> {
 		let include_pending = filter.to_block == Some(BlockNumber::Pending);
+
 		let filter: EthcoreFilter = match filter.try_into() {
 			Ok(value) => value,
 			Err(err) => return Box::new(future::err(err)),
@@ -729,6 +731,30 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM, T: StateInfo + 'static> Eth for EthClient<
 		}
 
 		let logs = limit_logs(logs, filter.limit);
+
+		Box::new(future::ok(logs))
+	}
+
+	fn log_details(&self, filter: Filter) -> BoxFuture<Vec<LogDetails>> {
+		let rebuild_log = |log| {
+			let mut rebuilt_log:LogDetails = From::from(log);
+
+			rebuilt_log.value = log_details::value(&*self.client, &rebuilt_log);
+			rebuilt_log.timestamp = log_details::timestamp(&*self.client, &rebuilt_log);
+			rebuilt_log
+		};
+
+		let logs = match filter.try_into() {
+			Ok(filter) => match self.client.logs(filter.clone())
+				.map(|logs| limit_localized_logs(logs, filter.limit)) {
+				Ok(logs) => logs
+					.into_iter()
+					.map(rebuild_log)
+					.collect::<Vec<LogDetails>>(),
+				Err(id) => return Box::new(future::err(errors::filter_block_not_found(id)))
+			},
+			Err(err) => return Box::new(future::err(err)),
+		};
 
 		Box::new(future::ok(logs))
 	}

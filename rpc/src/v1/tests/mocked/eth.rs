@@ -200,7 +200,7 @@ fn rpc_eth_logs() {
 		entry: LogEntry {
 			address: Address::default(),
 			topics: vec![],
-			data: vec![1,2,3],
+			data: vec![1, 2, 3],
 		},
 		transaction_index: 0,
 		transaction_log_index: 0,
@@ -212,7 +212,7 @@ fn rpc_eth_logs() {
 		entry: LogEntry {
 			address: Address::default(),
 			topics: vec![],
-			data: vec![1,2,3],
+			data: vec![1, 2, 3],
 		},
 		transaction_index: 0,
 		transaction_log_index: 1,
@@ -233,6 +233,53 @@ fn rpc_eth_logs() {
 	assert_eq!(tester.io.handle_request_sync(request3), Some(response3.to_owned()));
 }
 
+//#[test]
+//fn rpc_eth_detailed_logs() {
+//	let tester = EthTester::default();
+//	tester.client.set_logs(
+//		vec![
+//			LocalizedLogEntry {
+//				block_number: 1,
+//				block_hash: H256::default(),
+//				entry: LogEntry {
+//					address: Address::default(),
+//					topics: vec![],
+//					data: vec![1, 2, 3],
+//				},
+//				transaction_index: 0,
+//				transaction_log_index: 0,
+//				transaction_hash: H256::default(),
+//				log_index: 0,
+//			},
+//			LocalizedLogEntry {
+//				block_number: 1,
+//				block_hash: H256::default(),
+//				entry: LogEntry {
+//					address: Address::default(),
+//					topics: vec![],
+//					data: vec![1, 2, 3],
+//				},
+//				transaction_index: 0,
+//				transaction_log_index: 1,
+//				transaction_hash: H256::default(),
+//				log_index: 1,
+//			}
+//		]
+//	);
+
+//	let request1 = r#"{"jsonrpc": "2.0", "method": "eth_getLogs", "params": [{}], "id": 1}"#;
+//	let request2 = r#"{"jsonrpc": "2.0", "method": "eth_getLogs", "params": [{"limit":1}], "id": 1}"#;
+//	let request3 = r#"{"jsonrpc": "2.0", "method": "eth_getLogs", "params": [{"limit":0}], "id": 1}"#;
+//
+//	let response1 = r#"{"jsonrpc":"2.0","result":[{"address":"0x0000000000000000000000000000000000000000","blockHash":"0x0000000000000000000000000000000000000000000000000000000000000000","blockNumber":"0x1","data":"0x010203","logIndex":"0x0","removed":false,"topics":[],"transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000000","transactionIndex":"0x0","transactionLogIndex":"0x0","type":"mined"},{"address":"0x0000000000000000000000000000000000000000","blockHash":"0x0000000000000000000000000000000000000000000000000000000000000000","blockNumber":"0x1","data":"0x010203","logIndex":"0x1","removed":false,"topics":[],"transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000000","transactionIndex":"0x0","transactionLogIndex":"0x1","type":"mined"}],"id":1}"#;
+//	let response2 = r#"{"jsonrpc":"2.0","result":[{"address":"0x0000000000000000000000000000000000000000","blockHash":"0x0000000000000000000000000000000000000000000000000000000000000000","blockNumber":"0x1","data":"0x010203","logIndex":"0x1","removed":false,"topics":[],"transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000000","transactionIndex":"0x0","transactionLogIndex":"0x1","type":"mined"}],"id":1}"#;
+//	let response3 = r#"{"jsonrpc":"2.0","result":[],"id":1}"#;
+//
+//	assert_eq!(tester.io.handle_request_sync(request1), Some(response1.to_owned()));
+//	assert_eq!(tester.io.handle_request_sync(request2), Some(response2.to_owned()));
+//	assert_eq!(tester.io.handle_request_sync(request3), Some(response3.to_owned()));
+//}
+
 #[test]
 fn rpc_eth_logs_error() {
 	let tester = EthTester::default();
@@ -252,7 +299,7 @@ fn rpc_logs_filter() {
 		entry: LogEntry {
 			address: Address::default(),
 			topics: vec![],
-			data: vec![1,2,3],
+			data: vec![1, 2, 3],
 		},
 		transaction_index: 0,
 		transaction_log_index: 0,
@@ -264,7 +311,7 @@ fn rpc_logs_filter() {
 		entry: LogEntry {
 			address: Address::default(),
 			topics: vec![],
-			data: vec![1,2,3],
+			data: vec![1, 2, 3],
 		},
 		transaction_index: 0,
 		transaction_log_index: 1,
@@ -329,7 +376,7 @@ fn rpc_eth_submit_hashrate() {
 
 	assert_eq!(tester.io.handle_request_sync(request), Some(response.to_owned()));
 	assert_eq!(tester.hashrates.lock().get(&H256::from("0x59daa26581d0acd1fce254fb7e85952f4c09d0915afd33d3886cd914bc7d283c")).cloned().unwrap().1,
-		U256::from(0x500_000));
+			   U256::from(0x500_000));
 }
 
 #[test]
@@ -820,7 +867,7 @@ fn rpc_eth_send_transaction() {
 		gas: U256::from(0x76c0),
 		action: Action::Call(Address::from_str("d46e8dd67c5d32be8058bb8eb970870f07244567").unwrap()),
 		value: U256::from(0x9184e72au64),
-		data: vec![]
+		data: vec![],
 	};
 	let signature = tester.accounts_provider.sign(address, None, t.hash(None)).unwrap();
 	let t = t.with_signature(signature, None);
@@ -837,7 +884,7 @@ fn rpc_eth_send_transaction() {
 		gas: U256::from(0x76c0),
 		action: Action::Call(Address::from_str("d46e8dd67c5d32be8058bb8eb970870f07244567").unwrap()),
 		value: U256::from(0x9184e72au64),
-		data: vec![]
+		data: vec![],
 	};
 	let signature = tester.accounts_provider.sign(address, None, t.hash(None)).unwrap();
 	let t = t.with_signature(signature, None);
@@ -871,7 +918,7 @@ fn rpc_eth_sign_transaction() {
 		gas: U256::from(0x76c0),
 		action: Action::Call(Address::from_str("d46e8dd67c5d32be8058bb8eb970870f07244567").unwrap()),
 		value: U256::from(0x9184e72au64),
-		data: vec![]
+		data: vec![],
 	};
 	let signature = tester.accounts_provider.sign(address, None, t.hash(None)).unwrap();
 	let t = t.with_signature(signature, None);
@@ -976,7 +1023,7 @@ fn rpc_eth_send_raw_transaction() {
 		gas: U256::from(0x76c0),
 		action: Action::Call(Address::from_str("d46e8dd67c5d32be8058bb8eb970870f07244567").unwrap()),
 		value: U256::from(0x9184e72au64),
-		data: vec![]
+		data: vec![],
 	};
 	let signature = tester.accounts_provider.sign(address, None, t.hash(None)).unwrap();
 	let t = t.with_signature(signature, None);
