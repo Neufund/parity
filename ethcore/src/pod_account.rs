@@ -1,41 +1,35 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
-
-//! Account system expressed in Plain Old Data.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::fmt;
 use std::collections::BTreeMap;
 use itertools::Itertools;
 use hash::{keccak};
-use ethereum_types::{H256, U256};
-use hashdb::HashDB;
-use kvdb::DBValue;
-use keccak_hasher::KeccakHasher;
+use bigint::prelude::U256;
+use bigint::hash::H256;
 use triehash::sec_trie_root;
+use util::*;
 use bytes::Bytes;
 use trie::TrieFactory;
-use ethtrie::RlpCodec;
 use state::Account;
 use ethjson;
 use types::account_diff::*;
 use rlp::{self, RlpStream};
-use serde::Serializer;
-use rustc_hex::ToHex;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// An account, expressed as Plain-Old-Data (hence the name).
 /// Does not have a DB overlay cache, code hash or anything like that.
 pub struct PodAccount {
@@ -43,20 +37,19 @@ pub struct PodAccount {
 	pub balance: U256,
 	/// The nonce of the account.
 	pub nonce: U256,
-	#[serde(serialize_with="opt_bytes_to_hex")]
 	/// The code of the account or `None` in the special case that it is unknown.
 	pub code: Option<Bytes>,
 	/// The storage of the account.
 	pub storage: BTreeMap<H256, H256>,
 }
 
-fn opt_bytes_to_hex<S>(opt_bytes: &Option<Bytes>, serializer: S) -> Result<S::Ok, S::Error>
-	where S: Serializer
-{
-	serializer.collect_str(&format_args!("0x{}",opt_bytes.as_ref().map_or("".to_string(), |b|b.to_hex())))
-}
-
 impl PodAccount {
+	/// Construct new object.
+	#[cfg(test)]
+	pub fn new(balance: U256, nonce: U256, code: Bytes, storage: BTreeMap<H256, H256>) -> PodAccount {
+		PodAccount { balance: balance, nonce: nonce, code: Some(code), storage: storage }
+	}
+
 	/// Convert Account to a PodAccount.
 	/// NOTE: This will silently fail unless the account is fully cached.
 	pub fn from_account(acc: &Account) -> PodAccount {
@@ -73,13 +66,13 @@ impl PodAccount {
 		let mut stream = RlpStream::new_list(4);
 		stream.append(&self.nonce);
 		stream.append(&self.balance);
-		stream.append(&sec_trie_root(self.storage.iter().map(|(k, v)| (k, rlp::encode(&U256::from(&**v))))));
+		stream.append(&sec_trie_root(self.storage.iter().map(|(k, v)| (k.to_vec(), rlp::encode(&U256::from(&**v)).to_vec())).collect()));
 		stream.append(&keccak(&self.code.as_ref().unwrap_or(&vec![])));
 		stream.out()
 	}
 
 	/// Place additional data into given hash DB.
-	pub fn insert_additional(&self, db: &mut HashDB<KeccakHasher, DBValue>, factory: &TrieFactory<KeccakHasher, RlpCodec>) {
+	pub fn insert_additional(&self, db: &mut HashDB, factory: &TrieFactory) {
 		match self.code {
 			Some(ref c) if !c.is_empty() => { db.insert(c); }
 			_ => {}
@@ -178,6 +171,7 @@ pub fn diff_pod(pre: Option<&PodAccount>, post: Option<&PodAccount>) -> Option<A
 		_ => None,
 	}
 }
+
 
 #[cfg(test)]
 mod test {

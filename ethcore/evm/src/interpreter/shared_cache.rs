@@ -1,27 +1,27 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::sync::Arc;
 use hash::KECCAK_EMPTY;
 use heapsize::HeapSizeOf;
-use ethereum_types::H256;
+use bigint::hash::H256;
 use parking_lot::Mutex;
-use memory_cache::MemoryLruCache;
+use util::cache::MemoryLruCache;
 use bit_set::BitSet;
-use super::super::instructions::{self, Instruction};
+use super::super::instructions;
 
 const DEFAULT_CACHE_SIZE: usize = 4 * 1024 * 1024;
 
@@ -50,22 +50,17 @@ impl SharedCache {
 	}
 
 	/// Get jump destinations bitmap for a contract.
-	pub fn jump_destinations(&self, code_hash: &Option<H256>, code: &[u8]) -> Arc<BitSet> {
-		if let Some(ref code_hash) = code_hash {
-			if code_hash == &KECCAK_EMPTY {
-				return Self::find_jump_destinations(code);
-			}
+	pub fn jump_destinations(&self, code_hash: &H256, code: &[u8]) -> Arc<BitSet> {
+		if code_hash == &KECCAK_EMPTY {
+			return Self::find_jump_destinations(code);
+		}
 
-			if let Some(d) = self.jump_destinations.lock().get_mut(code_hash) {
-				return d.0.clone();
-			}
+		if let Some(d) = self.jump_destinations.lock().get_mut(code_hash) {
+			return d.0.clone();
 		}
 
 		let d = Self::find_jump_destinations(code);
-
-		if let Some(ref code_hash) = code_hash {
-			self.jump_destinations.lock().insert(*code_hash, Bits(d.clone()));
-		}
+		self.jump_destinations.lock().insert(code_hash.clone(), Bits(d.clone()));
 
 		d
 	}
@@ -75,14 +70,12 @@ impl SharedCache {
 		let mut position = 0;
 
 		while position < code.len() {
-			let instruction = Instruction::from_u8(code[position]);
+			let instruction = code[position];
 
-			if let Some(instruction) = instruction {
-				if instruction == instructions::JUMPDEST {
-					jump_dests.insert(position);
-				} else if let Some(push_bytes) = instruction.push_bytes() {
-					position += push_bytes;
-				}
+			if instruction == instructions::JUMPDEST {
+				jump_dests.insert(position);
+			} else if instructions::is_push(instruction) {
+				position += instructions::get_push_bytes(instruction);
 			}
 			position += 1;
 		}
@@ -97,6 +90,7 @@ impl Default for SharedCache {
 		SharedCache::new(DEFAULT_CACHE_SIZE)
 	}
 }
+
 
 #[test]
 fn test_find_jump_destinations() {

@@ -1,23 +1,23 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Trace errors.
 
 use std::fmt;
-use rlp::{Encodable, RlpStream, Decodable, DecoderError, Rlp};
+use rlp::{Encodable, RlpStream, Decodable, DecoderError, UntrustedRlp};
 use vm::Error as VmError;
 
 /// Trace evm errors.
@@ -115,7 +115,7 @@ impl Encodable for Error {
 }
 
 impl Decodable for Error {
-	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 		use self::Error::*;
 		let value: u8 = rlp.as_val()?;
 		match value {

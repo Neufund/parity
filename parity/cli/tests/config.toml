@@ -57,12 +57,13 @@ reseal_min_period = 4000
 reseal_max_period = 60000
 price_update_period = "hourly"
 tx_queue_size = 8192
+tx_queue_gas = "off"
 
 [footprint]
 tracing = "on"
 pruning = "fast"
 pruning_history = 64
-cache_size_db = 256
+cache_size_db = 128
 cache_size_blocks = 16
 cache_size_queue = 100
 cache_size_state = 25
@@ -70,17 +71,14 @@ db_compaction = "ssd"
 fat_db = "off"
 scale_verifiers = false
 
-[light]
-on_demand_response_time_window = 2
-on_demand_request_backoff_start = 9
-on_demand_request_backoff_max = 15
-on_demand_request_backoff_rounds_max = 10
-on_demand_request_consecutive_failures = 1
-
 [snapshots]
 disable_periodic = true
 
+[vm]
+jit = false
+
 [misc]
+ntp_servers = ["0.parity.pool.ntp.org:123"]
 logging = "own_tx=trace"
 log_file = "/var/log/parity.log"
 color = true

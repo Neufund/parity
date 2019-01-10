@@ -1,35 +1,35 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Transactions Confirmations rpc implementation
 
 use std::sync::Arc;
 
 use ethcore::account_provider::AccountProvider;
+use ethcore::transaction::{SignedTransaction, PendingTransaction};
 use ethkey;
-use parity_runtime::Executor;
+use futures::{future, BoxFuture, Future, IntoFuture};
+use parity_reactor::Remote;
+use rlp::UntrustedRlp;
 use parking_lot::Mutex;
-use rlp::Rlp;
-use types::transaction::{SignedTransaction, PendingTransaction};
 
-use jsonrpc_core::{Result, BoxFuture, Error};
-use jsonrpc_core::futures::{future, Future, IntoFuture};
-use jsonrpc_core::futures::future::Either;
+use jsonrpc_core::{futures, Error};
 use jsonrpc_pubsub::SubscriptionId;
 use jsonrpc_macros::pubsub::{Sink, Subscriber};
+use v1::helpers::accounts::unwrap_provider;
 use v1::helpers::dispatch::{self, Dispatcher, WithToken, eth_data_hash};
 use v1::helpers::{errors, SignerService, SigningQueue, ConfirmationPayload, FilledTransactionRequest, Subscribers};
 use v1::metadata::Metadata;
@@ -39,7 +39,7 @@ use v1::types::{TransactionModification, ConfirmationRequest, ConfirmationRespon
 /// Transactions confirmation (personal) rpc implementation.
 pub struct SignerClient<D: Dispatcher> {
 	signer: Arc<SignerService>,
-	accounts: Arc<AccountProvider>,
+	accounts: Option<Arc<AccountProvider>>,
 	dispatcher: D,
 	subscribers: Arc<Mutex<Subscribers<Sink<Vec<ConfirmationRequest>>>>>,
 }
@@ -47,10 +47,10 @@ pub struct SignerClient<D: Dispatcher> {
 impl<D: Dispatcher + 'static> SignerClient<D> {
 	/// Create new instance of signer client.
 	pub fn new(
-		store: &Arc<AccountProvider>,
+		store: &Option<Arc<AccountProvider>>,
 		dispatcher: D,
 		signer: &Arc<SignerService>,
-		executor: Executor,
+		remote: Remote,
 	) -> Self {
 		let subscribers = Arc::new(Mutex::new(Subscribers::default()));
 		let subs = Arc::downgrade(&subscribers);
@@ -60,7 +60,7 @@ impl<D: Dispatcher + 'static> SignerClient<D> {
 				let requests = s.requests().into_iter().map(Into::into).collect::<Vec<ConfirmationRequest>>();
 				for subscription in subs.lock().values() {
 					let subscription: &Sink<_> = subscription;
-					executor.spawn(subscription
+					remote.spawn(subscription
 						.notify(Ok(requests.clone()))
 						.map(|_| ())
 						.map_err(|e| warn!(target: "rpc", "Unable to send notification: {}", e))
@@ -72,25 +72,37 @@ impl<D: Dispatcher + 'static> SignerClient<D> {
 		SignerClient {
 			signer: signer.clone(),
 			accounts: store.clone(),
-			dispatcher,
-			subscribers,
+			dispatcher: dispatcher,
+			subscribers: subscribers,
 		}
 	}
 
-	fn confirm_internal<F, T>(&self, id: U256, modification: TransactionModification, f: F) -> BoxFuture<WithToken<ConfirmationResponse>> where
+	fn account_provider(&self) -> Result<Arc<AccountProvider>, Error> {
+		unwrap_provider(&self.accounts)
+	}
+
+	fn confirm_internal<F, T>(&self, id: U256, modification: TransactionModification, f: F) -> BoxFuture<WithToken<ConfirmationResponse>, Error> where
 		F: FnOnce(D, Arc<AccountProvider>, ConfirmationPayload) -> T,
 		T: IntoFuture<Item=WithToken<ConfirmationResponse>, Error=Error>,
 		T::Future: Send + 'static
 	{
 		let id = id.into();
 		let dispatcher = self.dispatcher.clone();
-		let signer = self.signer.clone();
 
-		Box::new(signer.take(&id).map(|sender| {
-			let mut payload = sender.request.payload.clone();
+		let setup = || {
+			Ok((self.account_provider()?, self.signer.clone()))
+		};
+
+		let (accounts, signer) = match setup() {
+			Ok(x) => x,
+			Err(e) => return future::err(e).boxed(),
+		};
+
+		signer.peek(&id).map(|confirmation| {
+			let mut payload = confirmation.payload.clone();
 			// Modify payload
 			if let ConfirmationPayload::SendTransaction(ref mut request) = payload {
-				if let Some(sender) = modification.sender {
+				if let Some(sender) = modification.sender.clone() {
 					request.from = sender.into();
 					// Altering sender should always reset the nonce.
 					request.nonce = None;
@@ -105,25 +117,23 @@ impl<D: Dispatcher + 'static> SignerClient<D> {
 					request.condition = condition.clone().map(Into::into);
 				}
 			}
-			let fut = f(dispatcher, self.accounts.clone(), payload);
-			Either::A(fut.into_future().then(move |result| {
+			let fut = f(dispatcher, accounts, payload);
+			fut.into_future().then(move |result| {
 				// Execute
 				if let Ok(ref response) = result {
-					signer.request_confirmed(sender, Ok((*response).clone()));
-				} else {
-					signer.request_untouched(sender);
+					signer.request_confirmed(id, Ok((*response).clone()));
 				}
 
 				result
-			}))
+			}).boxed()
 		})
-		.unwrap_or_else(|| Either::B(future::err(errors::invalid_params("Unknown RequestID", id)))))
+		.unwrap_or_else(|| future::err(errors::invalid_params("Unknown RequestID", id)).boxed())
 	}
 
-	fn verify_transaction<F>(bytes: Bytes, request: FilledTransactionRequest, process: F) -> Result<ConfirmationResponse> where
-		F: FnOnce(PendingTransaction) -> Result<ConfirmationResponse>,
+	fn verify_transaction<F>(bytes: Bytes, request: FilledTransactionRequest, process: F) -> Result<ConfirmationResponse, Error> where
+		F: FnOnce(PendingTransaction) -> Result<ConfirmationResponse, Error>,
 	{
-		let signed_transaction = Rlp::new(&bytes.0).as_val().map_err(errors::rlp)?;
+		let signed_transaction = UntrustedRlp::new(&bytes.0).as_val().map_err(errors::rlp)?;
 		let signed_transaction = SignedTransaction::new(signed_transaction).map_err(|e| errors::invalid_params("Invalid signature.", e))?;
 		let sender = signed_transaction.sender();
 
@@ -155,7 +165,7 @@ impl<D: Dispatcher + 'static> SignerClient<D> {
 impl<D: Dispatcher + 'static> Signer for SignerClient<D> {
 	type Metadata = Metadata;
 
-	fn requests_to_confirm(&self) -> Result<Vec<ConfirmationRequest>> {
+	fn requests_to_confirm(&self) -> Result<Vec<ConfirmationRequest>, Error> {
 		Ok(self.signer.requests()
 			.into_iter()
 			.map(Into::into)
@@ -166,33 +176,32 @@ impl<D: Dispatcher + 'static> Signer for SignerClient<D> {
 	// TODO [ToDr] TransactionModification is redundant for some calls
 	// might be better to replace it in future
 	fn confirm_request(&self, id: U256, modification: TransactionModification, pass: String)
-		-> BoxFuture<ConfirmationResponse>
+		-> BoxFuture<ConfirmationResponse, Error>
 	{
-		Box::new(self.confirm_internal(id, modification, move |dis, accounts, payload| {
-			dispatch::execute(dis, accounts, payload, dispatch::SignWith::Password(pass.into()))
-		}).map(|v| v.into_value()))
+		self.confirm_internal(id, modification, move |dis, accounts, payload| {
+			dispatch::execute(dis, accounts, payload, dispatch::SignWith::Password(pass))
+		}).map(|v| v.into_value()).boxed()
 	}
 
 	fn confirm_request_with_token(&self, id: U256, modification: TransactionModification, token: String)
-		-> BoxFuture<ConfirmationResponseWithToken>
+		-> BoxFuture<ConfirmationResponseWithToken, Error>
 	{
-		Box::new(self.confirm_internal(id, modification, move |dis, accounts, payload| {
-			dispatch::execute(dis, accounts, payload, dispatch::SignWith::Token(token.into()))
+		self.confirm_internal(id, modification, move |dis, accounts, payload| {
+			dispatch::execute(dis, accounts, payload, dispatch::SignWith::Token(token))
 		}).and_then(|v| match v {
 			WithToken::No(_) => Err(errors::internal("Unexpected response without token.", "")),
 			WithToken::Yes(response, token) => Ok(ConfirmationResponseWithToken {
 				result: response,
 				token: token,
 			}),
-		}))
+		}).boxed()
 	}
 
-	fn confirm_request_raw(&self, id: U256, bytes: Bytes) -> Result<ConfirmationResponse> {
+	fn confirm_request_raw(&self, id: U256, bytes: Bytes) -> Result<ConfirmationResponse, Error> {
 		let id = id.into();
 
-		self.signer.take(&id).map(|sender| {
-			let payload = sender.request.payload.clone();
-			let result = match payload {
+		self.signer.peek(&id).map(|confirmation| {
+			let result = match confirmation.payload {
 				ConfirmationPayload::SendTransaction(request) => {
 					Self::verify_transaction(bytes, request, |pending_transaction| {
 						self.dispatcher.dispatch_transaction(pending_transaction)
@@ -202,8 +211,7 @@ impl<D: Dispatcher + 'static> Signer for SignerClient<D> {
 				},
 				ConfirmationPayload::SignTransaction(request) => {
 					Self::verify_transaction(bytes, request, |pending_transaction| {
-						let rich = self.dispatcher.enrich(pending_transaction.transaction);
-						Ok(ConfirmationResponse::SignTransaction(rich))
+						Ok(ConfirmationResponse::SignTransaction(pending_transaction.transaction.into()))
 					})
 				},
 				ConfirmationPayload::EthSignMessage(address, data) => {
@@ -215,39 +223,29 @@ impl<D: Dispatcher + 'static> Signer for SignerClient<D> {
 						Err(err) => Err(errors::invalid_params("Invalid signature received.", err)),
 					}
 				},
-				ConfirmationPayload::SignMessage(address, hash) => {
-					let signature = ethkey::Signature::from_electrum(&bytes.0);
-					match ethkey::verify_address(&address, &signature, &hash) {
-						Ok(true) => Ok(ConfirmationResponse::Signature(bytes.0.as_slice().into())),
-						Ok(false) => Err(errors::invalid_params("Sender address does not match the signature.", ())),
-						Err(err) => Err(errors::invalid_params("Invalid signature received.", err)),
-					}
-				},
 				ConfirmationPayload::Decrypt(_address, _data) => {
 					// TODO [ToDr]: Decrypt can we verify if the answer is correct?
 					Ok(ConfirmationResponse::Decrypt(bytes))
 				},
 			};
 			if let Ok(ref response) = result {
-				self.signer.request_confirmed(sender, Ok(response.clone()));
-			} else {
-				self.signer.request_untouched(sender);
+				self.signer.request_confirmed(id, Ok(response.clone()));
 			}
 			result
 		}).unwrap_or_else(|| Err(errors::invalid_params("Unknown RequestID", id)))
 	}
 
-	fn reject_request(&self, id: U256) -> Result<bool> {
-		let res = self.signer.take(&id.into()).map(|sender| self.signer.request_rejected(sender));
+	fn reject_request(&self, id: U256) -> Result<bool, Error> {
+		let res = self.signer.request_rejected(id.into());
 		Ok(res.is_some())
 	}
 
-	fn generate_token(&self) -> Result<String> {
+	fn generate_token(&self) -> Result<String, Error> {
 		self.signer.generate_token()
 			.map_err(|e| errors::token(e))
 	}
 
-	fn generate_web_proxy_token(&self, domain: String) -> Result<String> {
+	fn generate_web_proxy_token(&self, domain: String) -> Result<String, Error> {
 		Ok(self.signer.generate_web_proxy_access_token(domain.into()))
 	}
 
@@ -255,8 +253,8 @@ impl<D: Dispatcher + 'static> Signer for SignerClient<D> {
 		self.subscribers.lock().push(sub)
 	}
 
-	fn unsubscribe_pending(&self, id: SubscriptionId) -> Result<bool> {
+	fn unsubscribe_pending(&self, id: SubscriptionId) -> BoxFuture<bool, Error> {
 		let res = self.subscribers.lock().remove(&id).is_some();
-		Ok(res)
+		futures::future::ok(res).boxed()
 	}
 }

@@ -1,24 +1,26 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Defines error types and levels of punishment to use upon
 //! encountering.
 
+use rlp::DecoderError;
+use network::NetworkError;
+
 use std::fmt;
-use {rlp, network};
 
 /// Levels of punishment.
 ///
@@ -39,9 +41,9 @@ pub enum Punishment {
 #[derive(Debug)]
 pub enum Error {
 	/// An RLP decoding error.
-	Rlp(rlp::DecoderError),
+	Rlp(DecoderError),
 	/// A network error.
-	Network(network::Error),
+	Network(NetworkError),
 	/// Out of credits.
 	NoCredits,
 	/// Unrecognized packet code.
@@ -90,14 +92,14 @@ impl Error {
 	}
 }
 
-impl From<rlp::DecoderError> for Error {
-	fn from(err: rlp::DecoderError) -> Self {
+impl From<DecoderError> for Error {
+	fn from(err: DecoderError) -> Self {
 		Error::Rlp(err)
 	}
 }
 
-impl From<network::Error> for Error {
-	fn from(err: network::Error) -> Self {
+impl From<NetworkError> for Error {
+	fn from(err: NetworkError) -> Self {
 		Error::Network(err)
 	}
 }

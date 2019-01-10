@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! `TransactionRequest` type
 
@@ -25,13 +25,13 @@ use std::fmt;
 /// Transaction request coming from RPC
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[serde(rename_all = "camelCase")]
 pub struct TransactionRequest {
 	/// Sender
 	pub from: Option<H160>,
 	/// Recipient
 	pub to: Option<H160>,
 	/// Gas Price
+	#[serde(rename="gasPrice")]
 	pub gas_price: Option<U256>,
 	/// Gas
 	pub gas: Option<U256>,
@@ -62,27 +62,21 @@ pub fn format_ether(i: U256) -> String {
 }
 
 impl fmt::Display for TransactionRequest {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		let eth = self.value.unwrap_or(U256::from(0));
 		match self.to {
 			Some(ref to) => write!(
 				f,
 				"{} ETH from {} to 0x{:?}",
 				Colour::White.bold().paint(format_ether(eth)),
-				Colour::White.bold().paint(
-					self.from.as_ref()
-						.map(|f| format!("0x{:?}", f))
-						.unwrap_or_else(|| "?".to_string())),
+				Colour::White.bold().paint(format!("0x{:?}", self.from)),
 				to
 			),
 			None => write!(
 				f,
 				"{} ETH from {} for contract creation",
 				Colour::White.bold().paint(format_ether(eth)),
-				Colour::White.bold().paint(
-					self.from.as_ref()
-						.map(|f| format!("0x{:?}", f))
-						.unwrap_or_else(|| "?".to_string())),
+				Colour::White.bold().paint(format!("0x{:?}", self.from)),
 			),
 		}
 	}
@@ -132,6 +126,7 @@ impl Into<helpers::TransactionRequest> for TransactionRequest {
 		}
 	}
 }
+
 
 #[cfg(test)]
 mod tests {

@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! JSONRPC interface for Whisper.
 //!
@@ -27,8 +27,8 @@ use jsonrpc_core::{Error, ErrorCode, Metadata};
 use jsonrpc_pubsub::{Session, PubSubMetadata, SubscriptionId};
 use jsonrpc_macros::pubsub;
 
-use ethereum_types::H256;
-use memzero::Memzero;
+use bigint::hash::H256;
+use futures::{future, BoxFuture};
 use parking_lot::RwLock;
 
 use self::filter::Filter;
@@ -140,7 +140,7 @@ build_rpc_trait! {
 			/// Unsubscribe from filter matching given ID. Return
 			/// true on success, error otherwise.
 			#[rpc(name = "shh_unsubscribe")]
-			fn unsubscribe(&self, SubscriptionId) -> Result<bool, Error>;
+			fn unsubscribe(&self, SubscriptionId) -> BoxFuture<bool, Error>;
 		}
 	}
 }
@@ -226,7 +226,7 @@ impl<P: PoolHandle + 'static, M: Send + Sync + 'static> Whisper for WhisperClien
 
 	fn add_private_key(&self, private: types::Private) -> Result<types::Identity, Error> {
 		let key_pair = Key::from_secret(private.into_inner().into())
-			.ok_or_else(|| whisper_error("Invalid private key"))?;
+			.map_err(|_| whisper_error("Invalid private key"))?;
 
 		Ok(HexEncode(self.store.write().insert(key_pair)))
 	}
@@ -287,7 +287,7 @@ impl<P: PoolHandle + 'static, M: Send + Sync + 'static> Whisper for WhisperClien
 				let mut rng = OsRng::new()
 					.map_err(|_| whisper_error("unable to acquire secure randomness"))?;
 
-				let key = Memzero::from(rng.gen::<[u8; 32]>());
+				let key = rng.gen();
 				if req.topics.is_empty() {
 					return Err(whisper_error("must supply at least one topic for broadcast message"));
 				}
@@ -317,7 +317,7 @@ impl<P: PoolHandle + 'static, M: Send + Sync + 'static> Whisper for WhisperClien
 				sign_with: sign_with.as_ref(),
 			}).map_err(whisper_error)?;
 
-			encryption.encrypt(&payload).ok_or(whisper_error("encryption error"))?
+			encryption.encrypt(&payload)
 		};
 
 		// mining the packet is the heaviest item of work by far.
@@ -377,7 +377,7 @@ impl<P: PoolHandle + 'static, M: Send + Sync + PubSubMetadata> WhisperPubSub for
 		}
 	}
 
-	fn unsubscribe(&self, id: SubscriptionId) -> Result<bool, Error> {
+	fn unsubscribe(&self, id: SubscriptionId) -> BoxFuture<bool, Error> {
 		use std::str::FromStr;
 
 		let res = match id {
@@ -387,6 +387,6 @@ impl<P: PoolHandle + 'static, M: Send + Sync + PubSubMetadata> WhisperPubSub for
 			SubscriptionId::Number(_) => Err("unrecognized ID"),
 		};
 
-		res.map_err(whisper_error)
+		Box::new(future::done(res.map_err(whisper_error)))
 	}
 }

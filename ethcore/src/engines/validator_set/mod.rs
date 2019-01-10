@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 /// Validator lists.
 
@@ -24,16 +24,14 @@ mod contract;
 mod multi;
 
 use std::sync::Weak;
-
+use ids::BlockId;
+use bigint::hash::H256;
+use util::Address;
 use bytes::Bytes;
-use ethereum_types::{H256, Address};
 use ethjson::spec::ValidatorSet as ValidatorSpec;
-use machine::{AuxiliaryData, Call, EthereumMachine};
-use types::BlockNumber;
-use types::header::Header;
-use types::ids::BlockId;
-
 use client::EngineClient;
+use header::{Header, BlockNumber};
+use machine::{AuxiliaryData, Call, EthereumMachine};
 
 #[cfg(test)]
 pub use self::test::TestSet;
@@ -41,7 +39,9 @@ pub use self::simple_list::SimpleList;
 use self::contract::ValidatorContract;
 use self::safe_contract::ValidatorSafeContract;
 use self::multi::Multi;
-use super::SystemCall;
+
+/// A system-calling closure. Enacts calls on a block's state from the system address.
+pub type SystemCall<'a> = FnMut(Address, Bytes) -> Result<Bytes, String> + 'a;
 
 /// Creates a validator set from spec.
 pub fn new_validator_set(spec: ValidatorSpec) -> Box<ValidatorSet> {
@@ -56,7 +56,7 @@ pub fn new_validator_set(spec: ValidatorSpec) -> Box<ValidatorSet> {
 }
 
 /// A validator set.
-pub trait ValidatorSet: Send + Sync + 'static {
+pub trait ValidatorSet: Send + Sync {
 	/// Get the default "Call" helper, for use in general operation.
 	// TODO [keorn]: this is a hack intended to migrate off of
 	// a strict dependency on state always being available.

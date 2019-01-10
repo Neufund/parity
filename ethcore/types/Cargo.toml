@@ -5,16 +5,15 @@ version = "0.1.0"
 authors = ["Parity Technologies <admin@parity.io>"]
 
 [dependencies]
-ethereum-types = "0.4"
+rlp = { path = "../../util/rlp" }
+rlp_derive = { path = "../../util/rlp_derive" }
+ethcore-bytes = { path = "../../util/bytes" }
+ethcore-util = { path = "../../util" }
+ethcore-bigint = { path = "../../util/bigint" }
 ethjson = { path = "../../json" }
-ethkey = { path = "../../accounts/ethkey" }
+bloomable = { path = "../../util/bloomable" }
+hash = { path = "../../util/hash" }
 heapsize = "0.4"
-keccak-hash = "0.1"
-parity-bytes = "0.1"
-parity-machine = { path = "../../machine" }
-rlp = { version = "0.3.0", features = ["ethereum"] }
-rlp_derive = { path = "../../util/rlp-derive" }
-unexpected = { path = "../../util/unexpected" }
 
 [dev-dependencies]
 rustc-hex= "1.0"

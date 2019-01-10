@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Snapshot and restoration commands.
 
@@ -21,22 +21,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use hash::keccak;
-use ethcore::account_provider::AccountProvider;
-use ethcore::snapshot::{Progress, RestorationStatus, SnapshotConfiguration, SnapshotService as SS};
+use ethcore::snapshot::{Progress, RestorationStatus, SnapshotService as SS};
 use ethcore::snapshot::io::{SnapshotReader, PackedReader, PackedWriter};
 use ethcore::snapshot::service::Service as SnapshotService;
+use ethcore::service::ClientService;
 use ethcore::client::{Mode, DatabaseCompactionProfile, VMType};
 use ethcore::miner::Miner;
-use ethcore_service::ClientService;
-use types::ids::BlockId;
+use ethcore::ids::BlockId;
 
 use cache::CacheConfig;
 use params::{SpecType, Pruning, Switch, tracing_switch_to_bool, fatdb_switch_to_bool};
 use helpers::{to_client_config, execute_upgrades};
 use dir::Directories;
 use user_defaults::UserDefaults;
-use ethcore_private_tx;
-use db;
+use fdlimit;
 
 /// Kinds of snapshot commands.
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -60,10 +58,9 @@ pub struct SnapshotCommand {
 	pub fat_db: Switch,
 	pub compaction: DatabaseCompactionProfile,
 	pub file_path: Option<String>,
+	pub wal: bool,
 	pub kind: Kind,
 	pub block_at: BlockId,
-	pub max_round_blocks_to_import: usize,
-	pub snapshot_conf: SnapshotConfiguration,
 }
 
 // helper for reading chunks from arbitrary reader and feeding them into the
@@ -123,7 +120,6 @@ fn restore_using<R: SnapshotReader>(snapshot: Arc<SnapshotService>, reader: &R, 
 
 	match snapshot.status() {
 		RestorationStatus::Ongoing { .. } => Err("Snapshot file is incomplete and missing chunks.".into()),
-		RestorationStatus::Initializing { .. } => Err("Snapshot restoration is still initializing.".into()),
 		RestorationStatus::Failed => Err("Snapshot restoration failed.".into()),
 		RestorationStatus::Inactive => {
 			info!("Restoration complete.");
@@ -150,6 +146,8 @@ impl SnapshotCommand {
 		// load user defaults
 		let user_defaults = UserDefaults::load(&user_defaults_path)?;
 
+		fdlimit::raise_fd_limit();
+
 		// select pruning algorithm
 		let algorithm = self.pruning.to_algorithm(&user_defaults);
 
@@ -164,44 +162,32 @@ impl SnapshotCommand {
 		let snapshot_path = db_dirs.snapshot_path();
 
 		// execute upgrades
-		execute_upgrades(&self.dirs.base, &db_dirs, algorithm, &self.compaction)?;
+		execute_upgrades(&self.dirs.base, &db_dirs, algorithm, self.compaction.compaction_profile(db_dirs.db_root_path().as_path()))?;
 
 		// prepare client config
-		let mut client_config = to_client_config(
+		let client_config = to_client_config(
 			&self.cache_config,
 			spec.name.to_lowercase(),
 			Mode::Active,
 			tracing,
 			fat_db,
 			self.compaction,
+			self.wal,
 			VMType::default(),
 			"".into(),
 			algorithm,
 			self.pruning_history,
 			self.pruning_memory,
-			true,
-			self.max_round_blocks_to_import,
+			true
 		);
-
-		client_config.snapshot = self.snapshot_conf;
-
-		let restoration_db_handler = db::restoration_db_handler(&client_path, &client_config);
-		let client_db = restoration_db_handler.open(&client_path)
-			.map_err(|e| format!("Failed to open database {:?}", e))?;
 
 		let service = ClientService::start(
 			client_config,
 			&spec,
-			client_db,
+			&client_path,
 			&snapshot_path,
-			restoration_db_handler,
 			&self.dirs.ipc_path(),
-			// TODO [ToDr] don't use test miner here
-			// (actually don't require miner at all)
-			Arc::new(Miner::new_for_tests(&spec, None)),
-			Arc::new(AccountProvider::transient_provider()),
-			Box::new(ethcore_private_tx::NoopEncryptor),
-			Default::default(),
+			Arc::new(Miner::with_spec(&spec))
 		).map_err(|e| format!("Client service error: {:?}", e))?;
 
 		Ok(service)

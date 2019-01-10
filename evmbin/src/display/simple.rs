@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Simple VM output.
 
@@ -27,16 +27,11 @@ use info as vm;
 pub struct Informant;
 
 impl vm::Informant for Informant {
-
-	type Sink = ();
-
-	fn before_test(&mut self, name: &str, action: &str) {
+	fn before_test(&self, name: &str, action: &str) {
 		println!("Test: {} ({})", name, action);
 	}
 
-	fn clone_sink(&self) -> Self::Sink { () }
-
-	fn finish(result: vm::RunResult<Self::Output>, _sink: &mut Self::Sink) {
+	fn finish(result: Result<vm::Success, vm::Failure>) {
 		match result {
 			Ok(success) => {
 				println!("Output: 0x{}", success.output.to_hex());
@@ -52,9 +47,7 @@ impl vm::Informant for Informant {
 }
 
 impl trace::VMTracer for Informant {
-	type Output = ();
-
-	fn prepare_subtrace(&mut self, _code: &[u8]) { Default::default() }
-	fn done_subtrace(&mut self) {}
-	fn drain(self) -> Option<()> { None }
+	fn prepare_subtrace(&self, _code: &[u8]) -> Self where Self: Sized { Default::default() }
+	fn done_subtrace(&mut self, _sub: Self) {}
+	fn drain(self) -> Option<trace::VMTrace> { None }
 }

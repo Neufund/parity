@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Request credit management.
 //!
@@ -29,9 +29,9 @@
 use request::{self, Request};
 use super::error::Error;
 
-use rlp::{Rlp, RlpStream, Decodable, Encodable, DecoderError};
-use ethereum_types::U256;
-use std::time::{Duration, Instant};
+use rlp::*;
+use bigint::prelude::U256;
+use time::{Duration, SteadyTime};
 
 /// Credits value.
 ///
@@ -41,19 +41,19 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credits {
 	estimate: U256,
-	recharge_point: Instant,
+	recharge_point: SteadyTime,
 }
 
 impl Credits {
 	/// Get the current amount of credits..
-	pub fn current(&self) -> U256 { self.estimate }
+	pub fn current(&self) -> U256 { self.estimate.clone() }
 
 	/// Make a definitive update.
 	/// This will be the value obtained after receiving
 	/// a response to a request.
 	pub fn update_to(&mut self, value: U256) {
 		self.estimate = value;
-		self.recharge_point = Instant::now();
+		self.recharge_point = SteadyTime::now();
 	}
 
 	/// Maintain ratio to current limit against an old limit.
@@ -68,85 +68,62 @@ impl Credits {
 	/// If unsuccessful, the structure will be unaltered an an
 	/// error will be produced.
 	pub fn deduct_cost(&mut self, cost: U256) -> Result<(), Error> {
-		if cost > self.estimate {
-			Err(Error::NoCredits)
-		} else {
-			self.estimate = self.estimate - cost;
-			Ok(())
+		match cost > self.estimate {
+			true => Err(Error::NoCredits),
+			false => {
+				self.estimate = self.estimate - cost;
+				Ok(())
+			}
 		}
 	}
 }
 
 /// A cost table, mapping requests to base and per-request costs.
-/// Costs themselves may be missing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CostTable {
 	base: U256, // cost per packet.
-	headers: Option<U256>, // cost per header
-	transaction_index: Option<U256>,
-	body: Option<U256>,
-	receipts: Option<U256>,
-	account: Option<U256>,
-	storage: Option<U256>,
-	code: Option<U256>,
-	header_proof: Option<U256>,
-	transaction_proof: Option<U256>, // cost per gas.
-	epoch_signal: Option<U256>,
-}
-
-impl CostTable {
-	fn costs_set(&self) -> usize {
-		let mut num_set = 0;
-
-		{
-			let mut incr_if_set = |cost: &Option<_>| if cost.is_some() { num_set += 1 };
-			incr_if_set(&self.headers);
-			incr_if_set(&self.transaction_index);
-			incr_if_set(&self.body);
-			incr_if_set(&self.receipts);
-			incr_if_set(&self.account);
-			incr_if_set(&self.storage);
-			incr_if_set(&self.code);
-			incr_if_set(&self.header_proof);
-			incr_if_set(&self.transaction_proof);
-			incr_if_set(&self.epoch_signal);
-		}
-
-		num_set
-	}
+	headers: U256, // cost per header
+	transaction_index: U256,
+	body: U256,
+	receipts: U256,
+	account: U256,
+	storage: U256,
+	code: U256,
+	header_proof: U256,
+	transaction_proof: U256, // cost per gas.
+	epoch_signal: U256,
 }
 
 impl Default for CostTable {
 	fn default() -> Self {
 		// arbitrarily chosen constants.
 		CostTable {
-			base: 100_000.into(),
-			headers: Some(10000.into()),
-			transaction_index: Some(10000.into()),
-			body: Some(15000.into()),
-			receipts: Some(5000.into()),
-			account: Some(25000.into()),
-			storage: Some(25000.into()),
-			code: Some(20000.into()),
-			header_proof: Some(15000.into()),
-			transaction_proof: Some(2.into()),
-			epoch_signal: Some(10000.into()),
+			base: 100000.into(),
+			headers: 10000.into(),
+			transaction_index: 10000.into(),
+			body: 15000.into(),
+			receipts: 5000.into(),
+			account: 25000.into(),
+			storage: 25000.into(),
+			code: 20000.into(),
+			header_proof: 15000.into(),
+			transaction_proof: 2.into(),
+			epoch_signal: 10000.into(),
 		}
 	}
 }
 
 impl Encodable for CostTable {
 	fn rlp_append(&self, s: &mut RlpStream) {
-		fn append_cost(s: &mut RlpStream, cost: &Option<U256>, kind: request::Kind) {
-			if let Some(ref cost) = *cost {
-				s.begin_list(2);
-				// hack around https://github.com/paritytech/parity-ethereum/issues/4356
-				Encodable::rlp_append(&kind, s);
-				s.append(cost);
-			}
+		fn append_cost(s: &mut RlpStream, cost: &U256, kind: request::Kind) {
+			s.begin_list(2);
+
+			// hack around https://github.com/paritytech/parity/issues/4356
+			Encodable::rlp_append(&kind, s);
+			s.append(cost);
 		}
 
-		s.begin_list(1 + self.costs_set()).append(&self.base);
+		s.begin_list(11).append(&self.base);
 		append_cost(s, &self.headers, request::Kind::Headers);
 		append_cost(s, &self.transaction_index, request::Kind::TransactionIndex);
 		append_cost(s, &self.body, request::Kind::Body);
@@ -161,7 +138,7 @@ impl Encodable for CostTable {
 }
 
 impl Decodable for CostTable {
-	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 		let base = rlp.val_at(0)?;
 
 		let mut headers = None;
@@ -191,25 +168,21 @@ impl Decodable for CostTable {
 			}
 		}
 
-		let table = CostTable {
-			base,
-			headers,
-			transaction_index,
-			body,
-			receipts,
-			account,
-			storage,
-			code,
-			header_proof,
-			transaction_proof,
-			epoch_signal,
-		};
+		let unwrap_cost = |cost: Option<U256>| cost.ok_or(DecoderError::Custom("Not all costs specified in cost table."));
 
-		if table.costs_set() == 0 {
-			Err(DecoderError::Custom("no cost types set."))
-		} else {
-			Ok(table)
-		}
+		Ok(CostTable {
+			base: base,
+			headers: unwrap_cost(headers)?,
+			transaction_index: unwrap_cost(transaction_index)?,
+			body: unwrap_cost(body)?,
+			receipts: unwrap_cost(receipts)?,
+			account: unwrap_cost(account)?,
+			storage: unwrap_cost(storage)?,
+			code: unwrap_cost(code)?,
+			header_proof: unwrap_cost(header_proof)?,
+			transaction_proof: unwrap_cost(transaction_proof)?,
+			epoch_signal: unwrap_cost(epoch_signal)?,
+		})
 	}
 }
 
@@ -226,45 +199,38 @@ impl FlowParams {
 	/// credit limit, and (minimum) rate of recharge.
 	pub fn new(limit: U256, costs: CostTable, recharge: U256) -> Self {
 		FlowParams {
-			costs,
-			limit,
-			recharge,
+			costs: costs,
+			limit: limit,
+			recharge: recharge,
 		}
 	}
 
 	/// Create new flow parameters from ,
 	/// proportion of total capacity which should be given to a peer,
-	/// and stored capacity a peer can accumulate.
-	pub fn from_request_times<F: Fn(::request::Kind) -> Duration>(
-		request_time: F,
+	/// and number of seconds of stored capacity a peer can accumulate.
+	pub fn from_request_times<F: Fn(::request::Kind) -> u64>(
+		request_time_ns: F,
 		load_share: f64,
-		max_stored: Duration
+		max_stored_seconds: u64
 	) -> Self {
 		use request::Kind;
 
 		let load_share = load_share.abs();
 
 		let recharge: u64 = 100_000_000;
-		let max = {
-			let sec = max_stored.as_secs().saturating_mul(recharge);
-			let nanos = (max_stored.subsec_nanos() as u64).saturating_mul(recharge) / 1_000_000_000;
-			sec + nanos
-		};
+		let max = recharge.saturating_mul(max_stored_seconds);
 
 		let cost_for_kind = |kind| {
 			// how many requests we can handle per second
-			let rq_dur = request_time(kind);
-			let second_duration = {
-				let as_ns = rq_dur.as_secs() as f64 * 1_000_000_000f64 + rq_dur.subsec_nanos() as f64;
-				1_000_000_000f64 / as_ns
-			};
+			let ns = request_time_ns(kind);
+			let second_duration = 1_000_000_000f64 / ns as f64;
 
 			// scale by share of the load given to this peer.
 			let serve_per_second = second_duration * load_share;
 			let serve_per_second = serve_per_second.max(1.0 / 10_000.0);
 
 			// as a percentage of the recharge per second.
-			Some(U256::from((recharge as f64 / serve_per_second) as u64))
+			U256::from((recharge as f64 / serve_per_second) as u64)
 		};
 
 		let costs = CostTable {
@@ -282,7 +248,7 @@ impl FlowParams {
 		};
 
 		FlowParams {
-			costs,
+			costs: costs,
 			limit: max.into(),
 			recharge: recharge.into(),
 		}
@@ -290,21 +256,21 @@ impl FlowParams {
 
 	/// Create effectively infinite flow params.
 	pub fn free() -> Self {
-		let free_cost: Option<U256> = Some(0.into());
+		let free_cost: U256 = 0.into();
 		FlowParams {
-			limit: (!0_u64).into(),
+			limit: (!0u64).into(),
 			recharge: 1.into(),
 			costs: CostTable {
-				base: 0.into(),
-				headers: free_cost,
-				transaction_index: free_cost,
-				body: free_cost,
-				receipts: free_cost,
-				account: free_cost,
-				storage: free_cost,
-				code: free_cost,
-				header_proof: free_cost,
-				transaction_proof: free_cost,
+				base: free_cost.clone(),
+				headers: free_cost.clone(),
+				transaction_index: free_cost.clone(),
+				body: free_cost.clone(),
+				receipts: free_cost.clone(),
+				account: free_cost.clone(),
+				storage: free_cost.clone(),
+				code: free_cost.clone(),
+				header_proof: free_cost.clone(),
+				transaction_proof: free_cost.clone(),
 				epoch_signal: free_cost,
 			}
 		}
@@ -324,9 +290,9 @@ impl FlowParams {
 
 	/// Compute the actual cost of a request, given the kind of request
 	/// and number of requests made.
-	pub fn compute_cost(&self, request: &Request) -> Option<U256> {
+	pub fn compute_cost(&self, request: &Request) -> U256 {
 		match *request {
-			Request::Headers(ref req) => self.costs.headers.map(|c| c * U256::from(req.max)),
+			Request::Headers(ref req) => self.costs.headers * req.max.into(),
 			Request::HeaderProof(_) => self.costs.header_proof,
 			Request::TransactionIndex(_) => self.costs.transaction_index,
 			Request::Body(_) => self.costs.body,
@@ -334,42 +300,34 @@ impl FlowParams {
 			Request::Account(_) => self.costs.account,
 			Request::Storage(_) => self.costs.storage,
 			Request::Code(_) => self.costs.code,
-			Request::Execution(ref req) => self.costs.transaction_proof.map(|c| c * req.gas),
+			Request::Execution(ref req) => self.costs.transaction_proof * req.gas,
 			Request::Signal(_) => self.costs.epoch_signal,
 		}
 	}
 
 	/// Compute the cost of a set of requests.
 	/// This is the base cost plus the cost of each individual request.
-	pub fn compute_cost_multi(&self, requests: &[Request]) -> Option<U256> {
-		let mut cost = self.costs.base;
-		for request in requests {
-			match self.compute_cost(request) {
-				Some(c) => cost = cost + c,
-				None => return None,
-			}
-		}
-
-		Some(cost)
+	pub fn compute_cost_multi(&self, requests: &[Request]) -> U256 {
+		requests.iter().fold(self.costs.base, |cost, req| cost + self.compute_cost(req))
 	}
 
 	/// Create initial credits.
 	pub fn create_credits(&self) -> Credits {
 		Credits {
 			estimate: self.limit,
-			recharge_point: Instant::now(),
+			recharge_point: SteadyTime::now(),
 		}
 	}
 
 	/// Recharge the given credits based on time passed since last
 	/// update.
 	pub fn recharge(&self, credits: &mut Credits) {
-		let now = Instant::now();
+		let now = SteadyTime::now();
 
 		// recompute and update only in terms of full seconds elapsed
 		// in order to keep the estimate as an underestimate.
-		let elapsed = (now - credits.recharge_point).as_secs();
-		credits.recharge_point += Duration::from_secs(elapsed);
+		let elapsed = (now - credits.recharge_point).num_seconds();
+		credits.recharge_point = credits.recharge_point + Duration::seconds(elapsed);
 
 		let elapsed: U256 = elapsed.into();
 
@@ -406,7 +364,7 @@ mod tests {
 		let costs = CostTable::default();
 		let serialized = ::rlp::encode(&costs);
 
-		let new_costs: CostTable = ::rlp::decode(&*serialized).unwrap();
+		let new_costs: CostTable = ::rlp::decode(&*serialized);
 
 		assert_eq!(costs, new_costs);
 	}
@@ -417,7 +375,7 @@ mod tests {
 		use std::time::Duration;
 
 		let flow_params = FlowParams::new(100.into(), Default::default(), 20.into());
-		let mut credits = flow_params.create_credits();
+		let mut credits =  flow_params.create_credits();
 
 		assert!(credits.deduct_cost(101.into()).is_err());
 		assert!(credits.deduct_cost(10.into()).is_ok());
@@ -432,24 +390,24 @@ mod tests {
 	#[test]
 	fn scale_by_load_share_and_time() {
 		let flow_params = FlowParams::from_request_times(
-			|_| Duration::new(0, 10_000),
+			|_| 10_000,
 			0.05,
-			Duration::from_secs(60),
+			60,
 		);
 
 		let flow_params2 = FlowParams::from_request_times(
-			|_| Duration::new(0, 10_000),
+			|_| 10_000,
 			0.1,
-			Duration::from_secs(60),
+			60,
 		);
 
 		let flow_params3 = FlowParams::from_request_times(
-			|_| Duration::new(0, 5_000),
+			|_| 5_000,
 			0.05,
-			Duration::from_secs(60),
+			60,
 		);
 
 		assert_eq!(flow_params2.costs, flow_params3.costs);
-		assert_eq!(flow_params.costs.headers.unwrap(), flow_params2.costs.headers.unwrap() * 2u32);
+		assert_eq!(flow_params.costs.headers, flow_params2.costs.headers * 2.into());
 	}
 }

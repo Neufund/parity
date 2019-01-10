@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Description of the node.
 
@@ -28,22 +28,24 @@ pub struct NodeKind {
 
 /// Who the node is available to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub enum Availability {
 	/// A personal node, not intended to be available to everyone.
+	#[serde(rename="personal")]
 	Personal,
 	/// A public, open node.
+	#[serde(rename="public")]
 	Public,
 }
 
 /// The capability of the node.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub enum Capability {
 	/// A full node stores the full state and fully enacts incoming blocks.
+	#[serde(rename="full")]
 	Full,
 	/// A light node does a minimal header sync and fetches data as needed
 	/// from the network.
+	#[serde(rename="light")]
 	Light,
 }
 

@@ -1,50 +1,29 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeSet;
+use std::iter::repeat;
 use rand::{Rng, OsRng};
-use ethkey::{self, Public, Secret, Random, Generator, math};
+use ethkey::{Public, Secret, math};
 use crypto;
 use bytes::Bytes;
 use jsonrpc_core::Error;
 use v1::helpers::errors;
-use v1::types::{H256, H512, EncryptedDocumentKey};
-use tiny_keccak::Keccak;
 
 /// Initialization vector length.
 const INIT_VEC_LEN: usize = 16;
-
-/// Generate document key to store in secret store.
-pub fn generate_document_key(account_public: Public, server_key_public: Public) -> Result<EncryptedDocumentKey, Error> {
-	// generate random plain document key
-	let document_key = Random.generate().map_err(errors::encryption)?;
-
-	// encrypt document key using server key
-	let (common_point, encrypted_point) = encrypt_secret(document_key.public(), &server_key_public)?;
-
-	// ..and now encrypt document key with account public
-	let encrypted_key = ethkey::crypto::ecies::encrypt(&account_public, &crypto::DEFAULT_MAC, document_key.public())
-		.map_err(errors::encryption)?;
-
-	Ok(EncryptedDocumentKey {
-		common_point: common_point.into(),
-		encrypted_point: encrypted_point.into(),
-		encrypted_key: encrypted_key.into(),
-	})
-}
 
 /// Encrypt document with distributely generated key.
 pub fn encrypt_document(key: Bytes, document: Bytes) -> Result<Bytes, Error> {
@@ -53,13 +32,10 @@ pub fn encrypt_document(key: Bytes, document: Bytes) -> Result<Bytes, Error> {
 
 	// use symmetric encryption to encrypt document
 	let iv = initialization_vector();
-	let mut encrypted_document = vec![0; document.len() + iv.len()];
-	{
-		let (mut encryption_buffer, iv_buffer) = encrypted_document.split_at_mut(document.len());
-
-		crypto::aes::encrypt_128_ctr(&key, &iv, &document, &mut encryption_buffer).map_err(errors::encryption)?;
-		iv_buffer.copy_from_slice(&iv);
-	}
+	let mut encrypted_document = Vec::with_capacity(document.len() + iv.len());
+	encrypted_document.extend(repeat(0).take(document.len()));
+	crypto::aes::encrypt(&key, &iv, &document, &mut encrypted_document);
+	encrypted_document.extend_from_slice(&iv);
 
 	Ok(encrypted_document)
 }
@@ -77,29 +53,16 @@ pub fn decrypt_document(key: Bytes, mut encrypted_document: Bytes) -> Result<Byt
 
 	// use symmetric decryption to decrypt document
 	let iv = encrypted_document.split_off(encrypted_document_len - INIT_VEC_LEN);
-	let mut document = vec![0; encrypted_document_len - INIT_VEC_LEN];
-	crypto::aes::decrypt_128_ctr(&key, &iv, &encrypted_document, &mut document).map_err(errors::encryption)?;
+	let mut document = Vec::with_capacity(encrypted_document_len - INIT_VEC_LEN);
+	document.extend(repeat(0).take(encrypted_document_len - INIT_VEC_LEN));
+	crypto::aes::decrypt(&key, &iv, &encrypted_document, &mut document);
 
 	Ok(document)
 }
 
-/// Decrypt document given secret shadow.
 pub fn decrypt_document_with_shadow(decrypted_secret: Public, common_point: Public, shadows: Vec<Secret>, encrypted_document: Bytes) -> Result<Bytes, Error> {
 	let key = decrypt_with_shadow_coefficients(decrypted_secret, common_point, shadows)?;
 	decrypt_document(key.to_vec(), encrypted_document)
-}
-
-/// Calculate Keccak(ordered servers set)
-pub fn ordered_servers_keccak(servers_set: BTreeSet<H512>) -> H256 {
-	let mut servers_set_keccak = Keccak::new_keccak256();
-	for server in servers_set {
-		servers_set_keccak.update(&server.0);
-	}
-
-	let mut servers_set_keccak_value = [0u8; 32];
-	servers_set_keccak.finalize(&mut servers_set_keccak_value);
-
-	servers_set_keccak_value.into()
 }
 
 fn into_document_key(key: Bytes) -> Result<Bytes, Error> {
@@ -131,28 +94,6 @@ fn decrypt_with_shadow_coefficients(mut decrypted_shadow: Public, mut common_sha
 	math::public_add(&mut decrypted_shadow, &common_shadow_point)
 		.map_err(errors::encryption)?;
 	Ok(decrypted_shadow)
-}
-
-fn encrypt_secret(secret: &Public, joint_public: &Public) -> Result<(Public, Public), Error> {
-	// TODO: it is copypaste of `encrypt_secret` from secret_store/src/key_server_cluster/math.rs
-	// use shared version from SS math library, when it'll be available
-
-	let key_pair = Random.generate()
-		.map_err(errors::encryption)?;
-
-	// k * T
-	let mut common_point = math::generation_point();
-	math::public_mul_secret(&mut common_point, key_pair.secret())
-		.map_err(errors::encryption)?;
-
-	// M + k * y
-	let mut encrypted_point = joint_public.clone();
-	math::public_mul_secret(&mut encrypted_point, key_pair.secret())
-		.map_err(errors::encryption)?;
-	math::public_add(&mut encrypted_point, secret)
-		.map_err(errors::encryption)?;
-
-	Ok((common_point, encrypted_point))
 }
 
 #[cfg(test)]

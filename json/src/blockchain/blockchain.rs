@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Blockchain deserialization.
 
@@ -21,49 +21,31 @@ use hash::H256;
 use blockchain::state::State;
 use blockchain::header::Header;
 use blockchain::block::Block;
-use spec::{ForkSpec, Genesis, Seal, Ethereum};
-
-/// Json Block test possible engine kind.
-#[derive(Debug, PartialEq, Deserialize)]
-pub enum Engine {
-	/// Default (old) behaviour.
-	Ethash,
-	/// No check of block's difficulty and nonce for tests.
-	NoProof,
-}
-
-impl Default for Engine {
-	fn default() -> Self {
-		Engine::Ethash
-	}
-}
+use state::test::ForkSpec;
+use spec::{Genesis, Seal, Ethereum};
 
 /// Blockchain deserialization.
 #[derive(Debug, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct BlockChain {
 	/// Genesis block header.
-	#[serde(rename = "genesisBlockHeader")]
+	#[serde(rename="genesisBlockHeader")]
 	pub genesis_block: Header,
 	/// Genesis block rlp.
-	#[serde(rename = "genesisRLP")]
+	#[serde(rename="genesisRLP")]
 	pub genesis_rlp: Option<Bytes>,
 	/// Blocks.
 	pub blocks: Vec<Block>,
 	/// Post state.
+	#[serde(rename="postState")]
 	pub post_state: State,
 	/// Pre state.
-	#[serde(rename = "pre")]
+	#[serde(rename="pre")]
 	pub pre_state: State,
 	/// Hash of best block.
-	#[serde(rename = "lastblockhash")]
+	#[serde(rename="lastblockhash")]
 	pub best_block: H256,
 	/// Network.
 	pub network: ForkSpec,
-	#[serde(default)]
-	#[serde(rename="sealEngine")]
-	/// Engine
-	pub engine: Engine,
 }
 
 impl BlockChain {

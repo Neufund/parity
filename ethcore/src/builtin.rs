@@ -1,35 +1,35 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
-
-//! Standard built-in contracts.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::cmp::{max, min};
 use std::io::{self, Read};
 
 use byteorder::{ByteOrder, BigEndian};
-use parity_crypto::digest;
+use crypto::sha2::Sha256 as Sha256Digest;
+use crypto::ripemd160::Ripemd160 as Ripemd160Digest;
+use crypto::digest::Digest;
 use num::{BigUint, Zero, One};
 
 use hash::keccak;
-use ethereum_types::{H256, U256};
+use bigint::prelude::U256;
+use bigint::hash::H256;
 use bytes::BytesRef;
 use ethkey::{Signature, recover as ec_recover};
 use ethjson;
 
-/// Execution error.
 #[derive(Debug)]
 pub struct Error(pub &'static str);
 
@@ -101,17 +101,18 @@ impl Pricer for ModexpPricer {
 		let exp_len = read_len();
 		let mod_len = read_len();
 
-		if mod_len.is_zero() && base_len.is_zero() {
-			return U256::zero()
-		}
-
 		let max_len = U256::from(u32::max_value() / 2);
-		if base_len > max_len || mod_len > max_len || exp_len > max_len {
+		if base_len > max_len || mod_len > max_len {
 			return U256::max_value();
 		}
-		let (base_len, exp_len, mod_len) = (base_len.low_u64(), exp_len.low_u64(), mod_len.low_u64());
 
+		let base_len = base_len.low_u64();
+		let exp_len = exp_len.low_u64();
+		let mod_len = mod_len.low_u64();
 		let m = max(mod_len, base_len);
+		if m == 0 {
+			return U256::zero();
+		}
 		// read fist 32-byte word of the exponent.
 		let exp_low = if base_len + 96 >= input.len() as u64 { U256::zero() } else {
 			let mut buf = [0; 32];
@@ -123,11 +124,7 @@ impl Pricer for ModexpPricer {
 
 		let adjusted_exp_len = Self::adjusted_exp_len(exp_len, exp_low);
 
-		let (gas, overflow) = Self::mult_complexity(m).overflowing_mul(max(adjusted_exp_len, 1));
-		if overflow {
-			return U256::max_value();
-		}
-		(gas / self.divisor as u64).into()
+		(Self::mult_complexity(m) * max(adjusted_exp_len, 1) / self.divisor as u64).into()
 	}
 }
 
@@ -136,7 +133,8 @@ impl ModexpPricer {
 		let bit_index = if exp_low.is_zero() { 0 } else { (255 - exp_low.leading_zeros()) as u64 };
 		if len <= 32 {
 			bit_index
-		} else {
+		}
+		else {
 			8 * (len - 32) + bit_index
 		}
 	}
@@ -210,8 +208,8 @@ impl From<ethjson::spec::Builtin> for Builtin {
 	}
 }
 
-/// Ethereum built-in factory.
-pub fn ethereum_builtin(name: &str) -> Box<Impl> {
+// Ethereum builtin creator.
+fn ethereum_builtin(name: &str) -> Box<Impl> {
 	match name {
 		"identity" => Box::new(Identity) as Box<Impl>,
 		"ecrecover" => Box::new(EcRecover) as Box<Impl>,
@@ -296,66 +294,61 @@ impl Impl for EcRecover {
 
 impl Impl for Sha256 {
 	fn execute(&self, input: &[u8], output: &mut BytesRef) -> Result<(), Error> {
-		let d = digest::sha256(input);
-		output.write(0, &*d);
+		let mut sha = Sha256Digest::new();
+		sha.input(input);
+
+		let mut out = [0; 32];
+		sha.result(&mut out);
+
+		output.write(0, &out);
+
 		Ok(())
 	}
 }
 
 impl Impl for Ripemd160 {
 	fn execute(&self, input: &[u8], output: &mut BytesRef) -> Result<(), Error> {
-		let hash = digest::ripemd160(input);
-		output.write(0, &[0; 12][..]);
-		output.write(12, &hash);
+		let mut sha = Ripemd160Digest::new();
+		sha.input(input);
+
+		let mut out = [0; 32];
+		sha.result(&mut out[12..32]);
+
+		output.write(0, &out);
+
 		Ok(())
 	}
 }
 
-// calculate modexp: left-to-right binary exponentiation to keep multiplicands lower
-fn modexp(mut base: BigUint, exp: Vec<u8>, modulus: BigUint) -> BigUint {
-	const BITS_PER_DIGIT: usize = 8;
+// calculate modexp: exponentiation by squaring. the `num` crate has pow, but not modular.
+fn modexp(mut base: BigUint, mut exp: BigUint, modulus: BigUint) -> BigUint {
+	use num::Integer;
 
-	// n^m % 0 || n^m % 1
-	if modulus <= BigUint::one() {
+	if modulus <= BigUint::one() { // n^m % 0 || n^m % 1
 		return BigUint::zero();
 	}
 
-	// normalize exponent
-	let mut exp = exp.into_iter().skip_while(|d| *d == 0).peekable();
-
-	// n^0 % m
-	if let None = exp.peek() {
+	if exp.is_zero() { // n^0 % m
 		return BigUint::one();
 	}
 
-	// 0^n % m, n > 0
-	if base.is_zero() {
+	if base.is_zero() { // 0^n % m, n>0
 		return BigUint::zero();
 	}
 
+	let mut result = BigUint::one();
 	base = base % &modulus;
 
-	// Fast path for base divisible by modulus.
+	// fast path for base divisible by modulus.
 	if base.is_zero() { return BigUint::zero() }
-
-	// Left-to-right binary exponentiation (Handbook of Applied Cryptography - Algorithm 14.79).
-	// http://www.cacr.math.uwaterloo.ca/hac/about/chap14.pdf
-	let mut result = BigUint::one();
-
-	for digit in exp {
-		let mut mask = 1 << (BITS_PER_DIGIT - 1);
-
-		for _ in 0..BITS_PER_DIGIT {
-			result = &result * &result % &modulus;
-
-			if digit & mask > 0 {
-				result = result * &base % &modulus;
-			}
-
-			mask >>= 1;
+	while !exp.is_zero() {
+		if exp.is_odd() {
+			result = (result * &base) % &modulus;
 		}
-	}
 
+		exp = exp >> 1;
+		base = (base.clone() * base) % &modulus;
+	}
 	result
 }
 
@@ -382,19 +375,15 @@ impl Impl for ModexpImpl {
 		} else {
 			// read the numbers themselves.
 			let mut buf = vec![0; max(mod_len, max(base_len, exp_len))];
-			let mut read_num = |reader: &mut io::Chain<&[u8], io::Repeat>, len: usize| {
+			let mut read_num = |len| {
 				reader.read_exact(&mut buf[..len]).expect("reading from zero-extended memory cannot fail; qed");
 				BigUint::from_bytes_be(&buf[..len])
 			};
 
-			let base = read_num(&mut reader, base_len);
-
-			let mut exp_buf = vec![0; exp_len];
-			reader.read_exact(&mut exp_buf[..exp_len]).expect("reading from zero-extended memory cannot fail; qed");
-
-			let modulus = read_num(&mut reader, mod_len);
-
-			modexp(base, exp_buf, modulus)
+			let base = read_num(base_len);
+			let exp = read_num(exp_len);
+			let modulus = read_num(mod_len);
+			modexp(base, exp, modulus)
 		};
 
 		// write output to given memory, left padded and same length as the modulus.
@@ -560,7 +549,7 @@ impl Bn128PairingImpl {
 mod tests {
 	use super::{Builtin, Linear, ethereum_builtin, Pricer, ModexpPricer, modexp as me};
 	use ethjson;
-	use ethereum_types::U256;
+	use bigint::prelude::U256;
 	use bytes::BytesRef;
 	use rustc_hex::FromHex;
 	use num::{BigUint, Zero, One};
@@ -571,31 +560,31 @@ mod tests {
 		let mut base = BigUint::parse_bytes(b"12345", 10).unwrap();
 		let mut exp = BigUint::zero();
 		let mut modulus = BigUint::parse_bytes(b"789", 10).unwrap();
-		assert_eq!(me(base, exp.to_bytes_be(), modulus), BigUint::one());
+		assert_eq!(me(base, exp, modulus), BigUint::one());
 
 		// 0^n % m == 0
 		base = BigUint::zero();
 		exp = BigUint::parse_bytes(b"12345", 10).unwrap();
 		modulus = BigUint::parse_bytes(b"789", 10).unwrap();
-		assert_eq!(me(base, exp.to_bytes_be(), modulus), BigUint::zero());
+		assert_eq!(me(base, exp, modulus), BigUint::zero());
 
 		// n^m % 1 == 0
 		base = BigUint::parse_bytes(b"12345", 10).unwrap();
 		exp = BigUint::parse_bytes(b"789", 10).unwrap();
 		modulus = BigUint::one();
-		assert_eq!(me(base, exp.to_bytes_be(), modulus), BigUint::zero());
+		assert_eq!(me(base, exp, modulus), BigUint::zero());
 
 		// if n % d == 0, then n^m % d == 0
 		base = BigUint::parse_bytes(b"12345", 10).unwrap();
 		exp = BigUint::parse_bytes(b"789", 10).unwrap();
 		modulus = BigUint::parse_bytes(b"15", 10).unwrap();
-		assert_eq!(me(base, exp.to_bytes_be(), modulus), BigUint::zero());
+		assert_eq!(me(base, exp, modulus), BigUint::zero());
 
 		// others
 		base = BigUint::parse_bytes(b"12345", 10).unwrap();
 		exp = BigUint::parse_bytes(b"789", 10).unwrap();
 		modulus = BigUint::parse_bytes(b"97", 10).unwrap();
-		assert_eq!(me(base, exp.to_bytes_be(), modulus), BigUint::parse_bytes(b"55", 10).unwrap());
+		assert_eq!(me(base, exp, modulus), BigUint::parse_bytes(b"55", 10).unwrap());
 	}
 
 	#[test]
@@ -718,31 +707,6 @@ mod tests {
 			native: ethereum_builtin("modexp"),
 			activate_at: 0,
 		};
-
-		// test for potential gas cost multiplication overflow
-		{
-			let input = FromHex::from_hex("0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000003b27bafd00000000000000000000000000000000000000000000000000000000503c8ac3").unwrap();
-			let expected_cost = U256::max_value();
-			assert_eq!(f.cost(&input[..]), expected_cost.into());
-		}
-
-		// test for potential exp len overflow
-		{
-			let input = FromHex::from_hex("\
-				00000000000000000000000000000000000000000000000000000000000000ff\
-				2a1e530000000000000000000000000000000000000000000000000000000000\
-				0000000000000000000000000000000000000000000000000000000000000000"
-				).unwrap();
-
-			let mut output = vec![0u8; 32];
-			let expected = FromHex::from_hex("0000000000000000000000000000000000000000000000000000000000000000").unwrap();
-			let expected_cost = U256::max_value();
-
-			f.execute(&input[..], &mut BytesRef::Fixed(&mut output[..])).expect("Builtin should fail");
-			assert_eq!(output, expected);
-			assert_eq!(f.cost(&input[..]), expected_cost.into());
-		}
-
 		// fermat's little theorem example.
 		{
 			let input = FromHex::from_hex("\
@@ -849,6 +813,7 @@ mod tests {
 			assert_eq!(output, expected);
 		}
 
+
 		// no input, should not fail
 		{
 			let mut empty = [0u8; 0];
@@ -879,6 +844,7 @@ mod tests {
 			assert!(res.is_err(), "There should be built-in error here");
 		}
 	}
+
 
 	#[test]
 	fn bn128_mul() {

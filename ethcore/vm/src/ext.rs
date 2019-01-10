@@ -1,31 +1,32 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Interface for Evm externalities.
 
 use std::sync::Arc;
-use ethereum_types::{U256, H256, Address};
+use bigint::prelude::U256;
+use bigint::hash::H256;
+use util::*;
 use bytes::Bytes;
 use call_type::CallType;
 use env_info::EnvInfo;
 use schedule::Schedule;
 use return_data::ReturnData;
-use error::{Result, TrapKind};
+use error::Result;
 
-#[derive(Debug)]
 /// Result of externalities create function.
 pub enum ContractCreateResult {
 	/// Returned when creation was successfull.
@@ -34,11 +35,13 @@ pub enum ContractCreateResult {
 	/// Returned when contract creation failed.
 	/// VM doesn't have to know the reason.
 	Failed,
+	/// Returned when contract creation failed.
+	/// VM doesn't have to know the reason.
+	FailedInStaticCall,
 	/// Reverted with REVERT.
 	Reverted(U256, ReturnData),
 }
 
-#[derive(Debug)]
 /// Result of externalities call function.
 pub enum MessageCallResult {
 	/// Returned when message call was successfull.
@@ -53,21 +56,18 @@ pub enum MessageCallResult {
 }
 
 /// Specifies how an address is calculated for a new contract.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum CreateContractAddress {
-	/// Address is calculated from sender and nonce. pWASM `create` scheme.
+	/// Address is calculated from nonce and sender. Pre EIP-86 (Metropolis)
 	FromSenderAndNonce,
-	/// Address is calculated from sender, salt and code hash. pWASM `create2` scheme and EIP-1014 CREATE2 scheme.
-	FromSenderSaltAndCodeHash(H256),
-	/// Address is calculated from code hash and sender. Used by pwasm create ext.
+	/// Address is calculated from code hash. Default since EIP-86
+	FromCodeHash,
+	/// Address is calculated from code hash and sender. Used by CREATE_P2SH instruction.
 	FromSenderAndCodeHash,
 }
 
 /// Externalities interface for EVMs
 pub trait Ext {
-	/// Returns the storage value for a given key if reversion happens on the current transaction.
-	fn initial_storage_at(&self, key: &H256) -> Result<H256>;
-
 	/// Returns a value for given key.
 	fn storage_at(&self, key: &H256) -> Result<H256>;
 
@@ -92,40 +92,30 @@ pub trait Ext {
 	/// Creates new contract.
 	///
 	/// Returns gas_left and contract address if contract creation was succesfull.
-	fn create(
-		&mut self,
-		gas: &U256,
-		value: &U256,
-		code: &[u8],
-		address: CreateContractAddress,
-		trap: bool,
-	) -> ::std::result::Result<ContractCreateResult, TrapKind>;
+	fn create(&mut self, gas: &U256, value: &U256, code: &[u8], address: CreateContractAddress) -> ContractCreateResult;
 
 	/// Message call.
 	///
 	/// Returns Err, if we run out of gas.
 	/// Otherwise returns call_result which contains gas left
 	/// and true if subcall was successfull.
-	fn call(
-		&mut self,
+	#[cfg_attr(feature="dev", allow(too_many_arguments))]
+	fn call(&mut self,
 		gas: &U256,
 		sender_address: &Address,
 		receive_address: &Address,
 		value: Option<U256>,
 		data: &[u8],
 		code_address: &Address,
-		call_type: CallType,
-		trap: bool
-	) -> ::std::result::Result<MessageCallResult, TrapKind>;
+		output: &mut [u8],
+		call_type: CallType
+	) -> MessageCallResult;
 
 	/// Returns code at given address
-	fn extcode(&self, address: &Address) -> Result<Option<Arc<Bytes>>>;
-
-	/// Returns code hash at given address
-	fn extcodehash(&self, address: &Address) -> Result<Option<H256>>;
+	fn extcode(&self, address: &Address) -> Result<Arc<Bytes>>;
 
 	/// Returns code size at given address
-	fn extcodesize(&self, address: &Address) -> Result<Option<usize>>;
+	fn extcodesize(&self, address: &Address) -> Result<usize>;
 
 	/// Creates log entry with given topics and data
 	fn log(&mut self, topics: Vec<H256>, data: &[u8]) -> Result<()>;
@@ -150,20 +140,17 @@ pub trait Ext {
 	/// then A depth is 0, B is 1, C is 2 and so on.
 	fn depth(&self) -> usize;
 
-	/// Increments sstore refunds counter.
-	fn add_sstore_refund(&mut self, value: usize);
-
-	/// Decrements sstore refunds counter.
-	fn sub_sstore_refund(&mut self, value: usize);
+	/// Increments sstore refunds count by 1.
+	fn inc_sstore_clears(&mut self);
 
 	/// Decide if any more operations should be traced. Passthrough for the VM trace.
-	fn trace_next_instruction(&mut self, _pc: usize, _instruction: u8, _current_gas: U256) -> bool { false }
+	fn trace_next_instruction(&mut self, _pc: usize, _instruction: u8) -> bool { false }
 
 	/// Prepare to trace an operation. Passthrough for the VM trace.
-	fn trace_prepare_execute(&mut self, _pc: usize, _instruction: u8, _gas_cost: U256, _mem_written: Option<(usize, usize)>, _store_written: Option<(U256, U256)>) {}
+	fn trace_prepare_execute(&mut self, _pc: usize, _instruction: u8, _gas_cost: U256) {}
 
 	/// Trace the finalised execution of a single instruction.
-	fn trace_executed(&mut self, _gas_used: U256, _stack_push: &[U256], _mem: &[u8]) {}
+	fn trace_executed(&mut self, _gas_used: U256, _stack_push: &[U256], _mem_diff: Option<(usize, &[u8])>, _store_diff: Option<(U256, U256)>) {}
 
 	/// Check if running in static context.
 	fn is_static(&self) -> bool;

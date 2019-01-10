@@ -1,55 +1,46 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Parity EVM interpreter binary.
 
 #![warn(missing_docs)]
 
-extern crate common_types as types;
 extern crate ethcore;
 extern crate ethjson;
 extern crate rustc_hex;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
-#[macro_use]
-extern crate serde_json;
 extern crate docopt;
-extern crate parity_bytes as bytes;
-extern crate ethereum_types;
+extern crate ethcore_util as util;
+extern crate ethcore_bigint as bigint;
+extern crate ethcore_bytes as bytes;
 extern crate vm;
 extern crate evm;
 extern crate panic_hook;
-extern crate env_logger;
-
-#[cfg(test)]
-#[macro_use]
-extern crate pretty_assertions;
-
-#[cfg(test)]
-extern crate tempdir;
 
 use std::sync::Arc;
 use std::{fmt, fs};
 use std::path::PathBuf;
 use docopt::Docopt;
 use rustc_hex::FromHex;
-use ethereum_types::{U256, Address};
+use bigint::prelude::U256;
+use util::Address;
 use bytes::Bytes;
-use ethcore::{spec, json_tests, TrieSpec};
+use ethcore::spec;
 use vm::{ActionParams, CallType};
 
 mod info;
@@ -59,20 +50,13 @@ use info::Informant;
 
 const USAGE: &'static str = r#"
 EVM implementation for Parity.
-  Copyright 2015-2018 Parity Technologies (UK) Ltd.
+  Copyright 2016, 2017 Parity Technologies (UK) Ltd
 
 Usage:
-    parity-evm state-test <file> [--json --std-json --std-dump-json --only NAME --chain CHAIN --std-out-only --std-err-only]
+    parity-evm state-test <file> [--json --only NAME --chain CHAIN]
     parity-evm stats [options]
-    parity-evm stats-jsontests-vm <file>
     parity-evm [options]
     parity-evm [-h | --help]
-
-Commands:
-    state-test         Run a state test from a json file.
-    stats              Execute EVM runtime code and return the statistics.
-    stats-jsontests-vm Execute standard json-tests format VMTests and return
-                       timing statistics in tsv format.
 
 Transaction options:
     --code CODE        Contract code as hex (without 0x).
@@ -88,72 +72,22 @@ State test options:
 
 General options:
     --json             Display verbose results in JSON.
-    --std-json         Display results in standardized JSON format.
-    --std-err-only     With --std-json redirect to err output only.
-    --std-out-only     With --std-json redirect to out output only.
-    --std-dump-json    Display results in standardized JSON format
-                       with additional state dump.
-Display result state dump in standardized JSON format.
     --chain CHAIN      Chain spec file path.
     -h, --help         Display this message and exit.
 "#;
 
+
 fn main() {
-	panic_hook::set_abort();
-	env_logger::init();
+	panic_hook::set();
 
 	let args: Args = Docopt::new(USAGE).and_then(|d| d.deserialize()).unwrap_or_else(|e| e.exit());
 
 	if args.cmd_state_test {
 		run_state_test(args)
-	} else if args.cmd_stats_jsontests_vm {
-		run_stats_jsontests_vm(args)
 	} else if args.flag_json {
 		run_call(args, display::json::Informant::default())
-	} else if args.flag_std_dump_json || args.flag_std_json {
-		if args.flag_std_err_only {
-			run_call(args, display::std_json::Informant::err_only())
-		} else if args.flag_std_out_only {
-			run_call(args, display::std_json::Informant::out_only())
-		} else {
-			run_call(args, display::std_json::Informant::default())
-		};
 	} else {
 		run_call(args, display::simple::Informant::default())
-	}
-}
-
-fn run_stats_jsontests_vm(args: Args) {
-	use json_tests::HookType;
-	use std::collections::HashMap;
-	use std::time::{Instant, Duration};
-
-	let file = args.arg_file.expect("FILE (or PATH) is required");
-
-	let mut timings: HashMap<String, (Instant, Option<Duration>)> = HashMap::new();
-
-	{
-		let mut record_time = |name: &str, typ: HookType| {
-			match typ {
-				HookType::OnStart => {
-					timings.insert(name.to_string(), (Instant::now(), None));
-				},
-				HookType::OnStop => {
-					timings.entry(name.to_string()).and_modify(|v| {
-						v.1 = Some(v.0.elapsed());
-					});
-				},
-			}
-		};
-		if !file.is_file() {
-			json_tests::run_executive_test_path(&file, &[], &mut record_time);
-		} else {
-			json_tests::run_executive_test_file(&file, &mut record_time);
-		}
-	}
-
-	for (name, v) in timings {
-		println!("{}\t{}", name, display::as_micros(&v.1.expect("All hooks are called with OnStop; qed")));
 	}
 }
 
@@ -190,30 +124,19 @@ fn run_state_test(args: Args) {
 				let post_root = state.hash.into();
 				let transaction = multitransaction.select(&state.indexes).into();
 
-				let trie_spec = if args.flag_std_dump_json {
-					TrieSpec::Fat
-				} else {
-					TrieSpec::Secure
-				};
 				if args.flag_json {
-					info::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, display::json::Informant::default(), trie_spec)
-				} else if args.flag_std_dump_json || args.flag_std_json {
-					if args.flag_std_err_only {
-						info::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, display::std_json::Informant::err_only(), trie_spec)
-					} else if args.flag_std_out_only {
-						info::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, display::std_json::Informant::out_only(), trie_spec)
-					} else {
-						info::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, display::std_json::Informant::default(), trie_spec)
-					}
+					let i = display::json::Informant::default();
+					info::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, i)
 				} else {
-					info::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, display::simple::Informant::default(), trie_spec)
+					let i = display::simple::Informant::default();
+					info::run_transaction(&name, idx, &spec, &pre, post_root, &env_info, transaction, i)
 				}
 			}
 		}
 	}
 }
 
-fn run_call<T: Informant>(args: Args, informant: T) {
+fn run_call<T: Informant>(args: Args, mut informant: T) {
 	let from = arg(args.from(), "--from");
 	let to = arg(args.to(), "--to");
 	let code = arg(args.code(), "--code");
@@ -237,20 +160,17 @@ fn run_call<T: Informant>(args: Args, informant: T) {
 	params.code = code.map(Arc::new);
 	params.data = data;
 
-	let mut sink = informant.clone_sink();
-	let result = if args.flag_std_dump_json {
-		info::run_action(&spec, params, informant, TrieSpec::Fat)
-	} else {
-		info::run_action(&spec, params, informant, TrieSpec::Secure)
-	};
-	T::finish(result, &mut sink);
+	informant.set_gas(gas);
+	let result = info::run(&spec, gas, None, |mut client| {
+		client.call(params, &mut informant).map(|r| (r.gas_left, r.return_data.to_vec()))
+	});
+	T::finish(result);
 }
 
 #[derive(Debug, Deserialize)]
 struct Args {
 	cmd_stats: bool,
 	cmd_state_test: bool,
-	cmd_stats_jsontests_vm: bool,
 	arg_file: Option<PathBuf>,
 	flag_only: Option<String>,
 	flag_from: Option<String>,
@@ -261,17 +181,13 @@ struct Args {
 	flag_input: Option<String>,
 	flag_chain: Option<String>,
 	flag_json: bool,
-	flag_std_json: bool,
-	flag_std_dump_json: bool,
-	flag_std_err_only: bool,
-	flag_std_out_only: bool,
 }
 
 impl Args {
 	pub fn gas(&self) -> Result<U256, String> {
 		match self.flag_gas {
 			Some(ref gas) => gas.parse().map_err(to_string),
-			None => Ok(U256::from(u64::max_value())),
+			None => Ok(!U256::zero()),
 		}
 	}
 
@@ -312,7 +228,7 @@ impl Args {
 
 	pub fn spec(&self) -> Result<spec::Spec, String> {
 		Ok(match self.flag_chain {
-			Some(ref filename) => {
+			Some(ref filename) =>  {
 				let file = fs::File::open(filename).map_err(|e| format!("{}", e))?;
 				spec::Spec::load(&::std::env::temp_dir(), file)?
 			},
@@ -350,22 +266,16 @@ mod tests {
 		let args = run(&[
 			"parity-evm",
 			"--json",
-			"--std-json",
-			"--std-dump-json",
 			"--gas", "1",
 			"--gas-price", "2",
 			"--from", "0000000000000000000000000000000000000003",
 			"--to", "0000000000000000000000000000000000000004",
 			"--code", "05",
 			"--input", "06",
-			"--chain", "./testfile", "--std-err-only", "--std-out-only"
+			"--chain", "./testfile",
 		]);
 
 		assert_eq!(args.flag_json, true);
-		assert_eq!(args.flag_std_json, true);
-		assert_eq!(args.flag_std_dump_json, true);
-		assert_eq!(args.flag_std_err_only, true);
-		assert_eq!(args.flag_std_out_only, true);
 		assert_eq!(args.gas(), Ok(1.into()));
 		assert_eq!(args.gas_price(), Ok(2.into()));
 		assert_eq!(args.from(), Ok(3.into()));
@@ -384,15 +294,11 @@ mod tests {
 			"--chain", "homestead",
 			"--only=add11",
 			"--json",
-			"--std-json",
-			"--std-dump-json"
 		]);
 
 		assert_eq!(args.cmd_state_test, true);
 		assert!(args.arg_file.is_some());
 		assert_eq!(args.flag_json, true);
-		assert_eq!(args.flag_std_json, true);
-		assert_eq!(args.flag_std_dump_json, true);
 		assert_eq!(args.flag_chain, Some("homestead".to_owned()));
 		assert_eq!(args.flag_only, Some("add11".to_owned()));
 	}

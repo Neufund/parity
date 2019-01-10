@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Authority params deserialization.
 
@@ -21,10 +21,9 @@ use super::ValidatorSet;
 
 /// Authority params deserialization.
 #[derive(Debug, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(rename_all = "camelCase")]
 pub struct BasicAuthorityParams {
 	/// Block duration.
+	#[serde(rename="durationLimit")]
 	pub duration_limit: Uint,
 	/// Valid authorities
 	pub validators: ValidatorSet,
@@ -32,7 +31,6 @@ pub struct BasicAuthorityParams {
 
 /// Authority engine deserialization.
 #[derive(Debug, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct BasicAuthority {
 	/// Ethash params.
 	pub params: BasicAuthorityParams,
@@ -42,7 +40,7 @@ pub struct BasicAuthority {
 mod tests {
 	use serde_json;
 	use uint::Uint;
-	use ethereum_types::{U256, H160};
+	use bigint::prelude::{U256, H160};
 	use hash::Address;
 	use spec::basic_authority::BasicAuthority;
 	use spec::validator_set::ValidatorSet;

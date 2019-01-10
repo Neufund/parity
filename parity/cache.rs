@@ -1,26 +1,24 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::cmp::max;
 
 const MIN_BC_CACHE_MB: u32 = 4;
-const MIN_DB_CACHE_MB: u32 = 8;
+const MIN_DB_CACHE_MB: u32 = 2;
 const MIN_BLOCK_QUEUE_SIZE_LIMIT_MB: u32 = 16;
-const DEFAULT_DB_CACHE_SIZE: u32 = 128;
-const DEFAULT_BC_CACHE_SIZE: u32 = 8;
 const DEFAULT_BLOCK_QUEUE_SIZE_LIMIT_MB: u32 = 40;
 const DEFAULT_TRACE_CACHE_SIZE: u32 = 20;
 const DEFAULT_STATE_CACHE_SIZE: u32 = 25;
@@ -43,11 +41,7 @@ pub struct CacheConfig {
 
 impl Default for CacheConfig {
 	fn default() -> Self {
-		CacheConfig::new(
-			DEFAULT_DB_CACHE_SIZE,
-			DEFAULT_BC_CACHE_SIZE,
-			DEFAULT_BLOCK_QUEUE_SIZE_LIMIT_MB,
-			DEFAULT_STATE_CACHE_SIZE)
+		CacheConfig::new(32, 8, DEFAULT_BLOCK_QUEUE_SIZE_LIMIT_MB, DEFAULT_STATE_CACHE_SIZE)
 	}
 }
 
@@ -74,9 +68,14 @@ impl CacheConfig {
 		}
 	}
 
-	/// Size of db cache.
-	pub fn db_cache_size(&self) -> u32 {
-		max(MIN_DB_CACHE_MB, self.db)
+	/// Size of db cache for blockchain.
+	pub fn db_blockchain_cache_size(&self) -> u32 {
+		max(MIN_DB_CACHE_MB, self.db / 4)
+	}
+
+	/// Size of db cache for state.
+	pub fn db_state_cache_size(&self) -> u32 {
+		max(MIN_DB_CACHE_MB, self.db * 3 / 4)
 	}
 
 	/// Size of block queue size limit
@@ -123,16 +122,13 @@ mod tests {
 	fn test_cache_config_db_cache_sizes() {
 		let config = CacheConfig::new_with_total_cache_size(400);
 		assert_eq!(config.db, 280);
-		assert_eq!(config.db_cache_size(), 280);
+		assert_eq!(config.db_blockchain_cache_size(), 70);
+		assert_eq!(config.db_state_cache_size(), 210);
 	}
 
 	#[test]
 	fn test_cache_config_default() {
 		assert_eq!(CacheConfig::default(),
-				   CacheConfig::new(
-					   super::DEFAULT_DB_CACHE_SIZE,
-					   super::DEFAULT_BC_CACHE_SIZE,
-					   super::DEFAULT_BLOCK_QUEUE_SIZE_LIMIT_MB,
-					   super::DEFAULT_STATE_CACHE_SIZE));
+			CacheConfig::new(32, 8, super::DEFAULT_BLOCK_QUEUE_SIZE_LIMIT_MB, super::DEFAULT_STATE_CACHE_SIZE));
 	}
 }

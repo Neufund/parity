@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Ethash implementation
 //! See https://github.com/ethereum/wiki/wiki/Ethash
@@ -25,8 +25,9 @@ use seed_compute::SeedHashCompute;
 use shared::*;
 use std::io;
 
-use std::{mem, ptr};
+use std::mem;
 use std::path::Path;
+use std::ptr;
 
 const MIX_WORDS: usize = ETHASH_MIX_BYTES / 4;
 const MIX_NODES: usize = MIX_WORDS / NODE_WORDS;
@@ -110,7 +111,7 @@ pub fn quick_get_difficulty(header_hash: &H256, nonce: u64, mix_hash: &H256) -> 
 		let mut buf: [u8; 64 + 32] = mem::uninitialized();
 
 		ptr::copy_nonoverlapping(header_hash.as_ptr(), buf.as_mut_ptr(), 32);
-		ptr::copy_nonoverlapping(&nonce as *const u64 as *const u8, buf[32..].as_mut_ptr(), 8);
+		ptr::copy_nonoverlapping(mem::transmute(&nonce), buf[32..].as_mut_ptr(), 8);
 
 		keccak_512::unchecked(buf.as_mut_ptr(), 64, buf.as_ptr(), 40);
 		ptr::copy_nonoverlapping(mix_hash.as_ptr(), buf[64..].as_mut_ptr(), 32);
@@ -137,11 +138,11 @@ fn hash_compute(light: &Light, full_size: usize, header_hash: &H256, nonce: u64)
 		($n:expr, $value:expr) => {{
 			// We use explicit lifetimes to ensure that val's borrow is invalidated until the
 			// transmuted val dies.
-			unsafe fn make_const_array<T, U>(val: &mut [T]) -> &mut [U; $n] {
+			unsafe fn make_const_array<'a, T, U>(val: &'a mut [T]) -> &'a mut [U; $n] {
 				use ::std::mem;
 
 				debug_assert_eq!(val.len() * mem::size_of::<T>(), $n * mem::size_of::<U>());
- 				&mut *(val.as_mut_ptr() as *mut [U; $n])
+				mem::transmute(val.as_mut_ptr())
 			}
 
 			make_const_array($value)
@@ -177,7 +178,7 @@ fn hash_compute(light: &Light, full_size: usize, header_hash: &H256, nonce: u64)
 
 			ptr::copy_nonoverlapping(header_hash.as_ptr(), out.as_mut_ptr(), header_hash.len());
 			ptr::copy_nonoverlapping(
-				&nonce as *const u64 as *const u8,
+				mem::transmute(&nonce),
 				out[header_hash.len()..].as_mut_ptr(),
 				mem::size_of::<u64>(),
 			);
@@ -266,20 +267,18 @@ fn hash_compute(light: &Light, full_size: usize, header_hash: &H256, nonce: u64)
 
 	let mix_hash = buf.compress_bytes;
 
-	let value: H256 = {
+	let value: H256 = unsafe {
 		// We can interpret the buffer as an array of `u8`s, since it's `repr(C)`.
-		let read_ptr: *const u8 = &buf as *const MixBuf as *const u8;
+		let read_ptr: *const u8 = mem::transmute(&buf);
 		// We overwrite the second half since `keccak_256` has an internal buffer and so allows
 		// overlapping arrays as input.
-		let write_ptr: *mut u8 = &mut buf.compress_bytes as *mut [u8; 32] as *mut u8;
-		unsafe { 
-			keccak_256::unchecked(
-				write_ptr,
-				buf.compress_bytes.len(),
-				read_ptr,
-				buf.half_mix.bytes.len() + buf.compress_bytes.len(),
-			);
-		}
+		let write_ptr: *mut u8 = mem::transmute(&mut buf.compress_bytes);
+		keccak_256::unchecked(
+			write_ptr,
+			buf.compress_bytes.len(),
+			read_ptr,
+			buf.half_mix.bytes.len() + buf.compress_bytes.len(),
+		);
 		buf.compress_bytes
 	};
 
@@ -316,7 +315,6 @@ fn calculate_dag_item(node_index: u32, cache: &[Node]) -> Node {
 mod test {
 	use super::*;
 	use std::fs;
-	use tempdir::TempDir;
 
 	#[test]
 	fn test_get_cache_size() {
@@ -388,10 +386,8 @@ mod test {
 			0xe9, 0x7e, 0x53, 0x84,
 		];
 		let nonce = 0xd7b3ac70a301a249;
-
-		let tempdir = TempDir::new("").unwrap();
 		// difficulty = 0x085657254bd9u64;
-		let light = NodeCacheBuilder::new(None).light(tempdir.path(), 486382);
+		let light = NodeCacheBuilder::new(None).light(&::std::env::temp_dir(), 486382);
 		let result = light_compute(&light, &hash, nonce);
 		assert_eq!(result.mix_hash[..], mix_hash[..]);
 		assert_eq!(result.value[..], boundary[..]);
@@ -399,18 +395,18 @@ mod test {
 
 	#[test]
 	fn test_drop_old_data() {
-		let tempdir = TempDir::new("").unwrap();
+		let path = ::std::env::temp_dir();
 		let builder = NodeCacheBuilder::new(None);
-		let first = builder.light(tempdir.path(), 0).to_file().unwrap().to_owned();
+		let first = builder.light(&path, 0).to_file().unwrap().to_owned();
 
-		let second = builder.light(tempdir.path(), ETHASH_EPOCH_LENGTH).to_file().unwrap().to_owned();
+		let second = builder.light(&path, ETHASH_EPOCH_LENGTH).to_file().unwrap().to_owned();
 		assert!(fs::metadata(&first).is_ok());
 
-		let _ = builder.light(tempdir.path(), ETHASH_EPOCH_LENGTH * 2).to_file();
+		let _ = builder.light(&path, ETHASH_EPOCH_LENGTH * 2).to_file();
 		assert!(fs::metadata(&first).is_err());
 		assert!(fs::metadata(&second).is_ok());
 
-		let _ = builder.light(tempdir.path(), ETHASH_EPOCH_LENGTH * 3).to_file();
+		let _ = builder.light(&path, ETHASH_EPOCH_LENGTH * 3).to_file();
 		assert!(fs::metadata(&second).is_err());
 	}
 }

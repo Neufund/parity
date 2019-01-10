@@ -1,48 +1,47 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Snapshot network service implementation.
 
 use std::collections::HashSet;
-use std::io::{self, Read, ErrorKind};
-use std::fs::{self, File};
+use std::io::ErrorKind;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::cmp;
 
-use super::{ManifestData, StateRebuilder, Rebuilder, RestorationStatus, SnapshotService, MAX_CHUNK_SIZE};
+use super::{ManifestData, StateRebuilder, Rebuilder, RestorationStatus, SnapshotService};
 use super::io::{SnapshotReader, LooseReader, SnapshotWriter, LooseWriter};
 
-use blockchain::{BlockChain, BlockChainDB, BlockChainDBHandler};
-use client::{BlockInfo, BlockChainClient, Client, ChainInfo, ClientIoMessage};
+use blockchain::BlockChain;
+use client::{BlockChainClient, Client};
 use engines::EthEngine;
-use error::{Error, ErrorKind as SnapshotErrorKind};
-use snapshot::{Error as SnapshotError};
-use hash::keccak;
-use types::ids::BlockId;
+use error::Error;
+use ids::BlockId;
+use service::ClientIoMessage;
 
 use io::IoChannel;
 
-use ethereum_types::H256;
+use bigint::hash::H256;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use util::UtilError;
 use bytes::Bytes;
-use journaldb::Algorithm;
-use kvdb::DBTransaction;
-use snappy;
+use util::journaldb::Algorithm;
+use util::kvdb::{Database, DatabaseConfig};
+use util::snappy;
 
 /// Helper for removing directories in case of error.
 struct Guard(bool, PathBuf);
@@ -81,13 +80,14 @@ struct Restoration {
 	snappy_buffer: Bytes,
 	final_state_root: H256,
 	guard: Guard,
-	db: Arc<BlockChainDB>,
+	db: Arc<Database>,
 }
 
 struct RestorationParams<'a> {
 	manifest: ManifestData, // manifest to base restoration on.
 	pruning: Algorithm, // pruning algorithm for the database.
-	db: Arc<BlockChainDB>, // database
+	db_path: PathBuf, // database path
+	db_config: &'a DatabaseConfig, // configuration for the database.
 	writer: Option<LooseWriter>, // writer for recovered snapshot.
 	genesis: &'a [u8], // genesis block of the chain.
 	guard: Guard, // guard for the restoration directory.
@@ -102,7 +102,8 @@ impl Restoration {
 		let state_chunks = manifest.state_hashes.iter().cloned().collect();
 		let block_chunks = manifest.block_hashes.iter().cloned().collect();
 
-		let raw_db = params.db;
+		let raw_db = Arc::new(Database::open(params.db_config, &*params.db_path.to_string_lossy())
+			.map_err(UtilError::from)?);
 
 		let chain = BlockChain::new(Default::default(), params.genesis, raw_db.clone());
 		let components = params.engine.snapshot_components()
@@ -116,7 +117,7 @@ impl Restoration {
 			manifest: manifest,
 			state_chunks_left: state_chunks,
 			block_chunks_left: block_chunks,
-			state: StateRebuilder::new(raw_db.key_value().clone(), params.pruning),
+			state: StateRebuilder::new(raw_db.clone(), params.pruning),
 			secondary: secondary,
 			writer: params.writer,
 			snappy_buffer: Vec::new(),
@@ -129,11 +130,6 @@ impl Restoration {
 	// feeds a state chunk, aborts early if `flag` becomes false.
 	fn feed_state(&mut self, hash: H256, chunk: &[u8], flag: &AtomicBool) -> Result<(), Error> {
 		if self.state_chunks_left.contains(&hash) {
-			let expected_len = snappy::decompressed_len(chunk)?;
-			if expected_len > MAX_CHUNK_SIZE {
-				trace!(target: "snapshot", "Discarding large chunk: {} vs {}", expected_len, MAX_CHUNK_SIZE);
-				return Err(::snapshot::Error::ChunkTooLarge.into());
-			}
 			let len = snappy::decompress_into(chunk, &mut self.snappy_buffer)?;
 
 			self.state.feed(&self.snappy_buffer[..len], flag)?;
@@ -151,11 +147,6 @@ impl Restoration {
 	// feeds a block chunk
 	fn feed_blocks(&mut self, hash: H256, chunk: &[u8], engine: &EthEngine, flag: &AtomicBool) -> Result<(), Error> {
 		if self.block_chunks_left.contains(&hash) {
-			let expected_len = snappy::decompressed_len(chunk)?;
-			if expected_len > MAX_CHUNK_SIZE {
-				trace!(target: "snapshot", "Discarding large chunk: {} vs {}", expected_len, MAX_CHUNK_SIZE);
-				return Err(::snapshot::Error::ChunkTooLarge.into());
-			}
 			let len = snappy::decompress_into(chunk, &mut self.snappy_buffer)?;
 
 			self.secondary.feed(&self.snappy_buffer[..len], engine, flag)?;
@@ -178,7 +169,7 @@ impl Restoration {
 		// verify final state root.
 		let root = self.state.state_root();
 		if root != self.final_state_root {
-			warn!("Final restored state has wrong state root: expected {:?}, got {:?}", self.final_state_root, root);
+			warn!("Final restored state has wrong state root: expected {:?}, got {:?}", root, self.final_state_root);
 			return Err(TrieError::InvalidStateRoot(root).into());
 		}
 
@@ -205,34 +196,31 @@ impl Restoration {
 /// Type alias for client io channel.
 pub type Channel = IoChannel<ClientIoMessage>;
 
-/// Trait alias for the Client Service used
-pub trait SnapshotClient: BlockChainClient + BlockInfo + DatabaseRestore {}
-
 /// Snapshot service parameters.
 pub struct ServiceParams {
 	/// The consensus engine this is built on.
 	pub engine: Arc<EthEngine>,
 	/// The chain's genesis block.
 	pub genesis_block: Bytes,
+	/// Database configuration options.
+	pub db_config: DatabaseConfig,
 	/// State pruning algorithm.
 	pub pruning: Algorithm,
-	/// Handler for opening a restoration DB.
-	pub restoration_db_handler: Box<BlockChainDBHandler>,
 	/// Async IO channel for sending messages.
 	pub channel: Channel,
 	/// The directory to put snapshots in.
 	/// Usually "<chain hash>/snapshot"
 	pub snapshot_root: PathBuf,
 	/// A handle for database restoration.
-	pub client: Arc<SnapshotClient>,
+	pub db_restore: Arc<DatabaseRestore>,
 }
 
 /// `SnapshotService` implementation.
 /// This controls taking snapshots and restoring from them.
 pub struct Service {
 	restoration: Mutex<Option<Restoration>>,
-	restoration_db_handler: Box<BlockChainDBHandler>,
 	snapshot_root: PathBuf,
+	db_config: DatabaseConfig,
 	io_channel: Mutex<Channel>,
 	pruning: Algorithm,
 	status: Mutex<RestorationStatus>,
@@ -241,7 +229,7 @@ pub struct Service {
 	genesis_block: Bytes,
 	state_chunks: AtomicUsize,
 	block_chunks: AtomicUsize,
-	client: Arc<SnapshotClient>,
+	db_restore: Arc<DatabaseRestore>,
 	progress: super::Progress,
 	taking_snapshot: AtomicBool,
 	restoring_snapshot: AtomicBool,
@@ -252,8 +240,8 @@ impl Service {
 	pub fn new(params: ServiceParams) -> Result<Self, Error> {
 		let mut service = Service {
 			restoration: Mutex::new(None),
-			restoration_db_handler: params.restoration_db_handler,
 			snapshot_root: params.snapshot_root,
+			db_config: params.db_config,
 			io_channel: Mutex::new(params.channel),
 			pruning: params.pruning,
 			status: Mutex::new(RestorationStatus::Inactive),
@@ -262,7 +250,7 @@ impl Service {
 			genesis_block: params.genesis_block,
 			state_chunks: AtomicUsize::new(0),
 			block_chunks: AtomicUsize::new(0),
-			client: params.client,
+			db_restore: params.db_restore,
 			progress: Default::default(),
 			taking_snapshot: AtomicBool::new(false),
 			restoring_snapshot: AtomicBool::new(false),
@@ -275,8 +263,8 @@ impl Service {
 			}
 		}
 
-		// delete the temporary restoration DB dir if it does exist.
-		if let Err(e) = fs::remove_dir_all(service.restoration_db()) {
+		// delete the temporary restoration dir if it does exist.
+		if let Err(e) = fs::remove_dir_all(service.restoration_dir()) {
 			if e.kind() != ErrorKind::NotFound {
 				return Err(e.into())
 			}
@@ -330,117 +318,12 @@ impl Service {
 		dir
 	}
 
-	// previous snapshot chunks path.
-	fn prev_chunks_dir(&self) -> PathBuf {
-		let mut dir = self.snapshot_root.clone();
-		dir.push("prev_chunks");
-		dir
-	}
-
 	// replace one the client's database with our own.
 	fn replace_client_db(&self) -> Result<(), Error> {
-		let migrated_blocks = self.migrate_blocks()?;
-		trace!(target: "snapshot", "Migrated {} ancient blocks", migrated_blocks);
+		let our_db = self.restoration_db();
 
-		let rest_db = self.restoration_db();
-		self.client.restore_db(&*rest_db.to_string_lossy())?;
+		self.db_restore.restore_db(&*our_db.to_string_lossy())?;
 		Ok(())
-	}
-
-	// Migrate the blocks in the current DB into the new chain
-	fn migrate_blocks(&self) -> Result<usize, Error> {
-		// Count the number of migrated blocks
-		let mut count = 0;
-		let rest_db = self.restoration_db();
-
-		let cur_chain_info = self.client.chain_info();
-
-		let next_db = self.restoration_db_handler.open(&rest_db)?;
-		let next_chain = BlockChain::new(Default::default(), &[], next_db.clone());
-		let next_chain_info = next_chain.chain_info();
-
-		// The old database looks like this:
-		// [genesis, best_ancient_block] ... [first_block, best_block]
-		// If we are fully synced neither `best_ancient_block` nor `first_block` is set, and we can assume that the whole range from [genesis, best_block] is imported.
-		// The new database only contains the tip of the chain ([first_block, best_block]),
-		// so the useful set of blocks is defined as:
-		// [0 ... min(new.first_block, best_ancient_block or best_block)]
-		let find_range = || -> Option<(H256, H256)> {
-			let next_available_from = next_chain_info.first_block_number?;
-			let cur_available_to = cur_chain_info.ancient_block_number.unwrap_or(cur_chain_info.best_block_number);
-
-			let highest_block_num = cmp::min(next_available_from.saturating_sub(1), cur_available_to);
-
-			if highest_block_num == 0 {
-				return None;
-			}
-
-			trace!(target: "snapshot", "Trying to import ancient blocks until {}", highest_block_num);
-
-			// Here we start from the highest block number and go backward to 0,
-			// thus starting at `highest_block_num` and targetting `0`.
-			let target_hash = self.client.block_hash(BlockId::Number(0))?;
-			let start_hash = self.client.block_hash(BlockId::Number(highest_block_num))?;
-
-			Some((start_hash, target_hash))
-		};
-
-		let (start_hash, target_hash) = match find_range() {
-			Some(x) => x,
-			None => return Ok(0),
-		};
-
-		let mut batch = DBTransaction::new();
-		let mut parent_hash = start_hash;
-		while parent_hash != target_hash {
-			// Early return if restoration is aborted
-			if !self.restoring_snapshot.load(Ordering::SeqCst) {
-				return Ok(count);
-			}
-
-			let block = self.client.block(BlockId::Hash(parent_hash)).ok_or(::snapshot::error::Error::UnlinkedAncientBlockChain)?;
-			parent_hash = block.parent_hash();
-
-			let block_number = block.number();
-			let block_receipts = self.client.block_receipts(&block.hash());
-			let parent_total_difficulty = self.client.block_total_difficulty(BlockId::Hash(parent_hash));
-
-			match (block_receipts, parent_total_difficulty) {
-				(Some(block_receipts), Some(parent_total_difficulty)) => {
-					let block_receipts = block_receipts.receipts;
-
-					next_chain.insert_unordered_block(&mut batch, block, block_receipts, Some(parent_total_difficulty), false, true);
-					count += 1;
-				},
-				_ => break,
-			}
-
-			// Writting changes to DB and logging every now and then
-			if block_number % 1_000 == 0 {
-				next_db.key_value().write_buffered(batch);
-				next_chain.commit();
-				next_db.key_value().flush().expect("DB flush failed.");
-				batch = DBTransaction::new();
-			}
-
-			if block_number % 10_000 == 0 {
-				trace!(target: "snapshot", "Block restoration at #{}", block_number);
-			}
-		}
-
-		// Final commit to the DB
-		next_db.key_value().write_buffered(batch);
-		next_chain.commit();
-		next_db.key_value().flush().expect("DB flush failed.");
-
-		// We couldn't reach the targeted hash
-		if parent_hash != target_hash {
-			return Err(::snapshot::error::Error::UnlinkedAncientBlockChain.into());
-		}
-
-		// Update best ancient block in the Next Chain
-		next_chain.update_best_ancient_block(&start_hash);
-		Ok(count)
 	}
 
 	/// Get a reference to the snapshot reader.
@@ -516,26 +399,9 @@ impl Service {
 	/// Initialize the restoration synchronously.
 	/// The recover flag indicates whether to recover the restored snapshot.
 	pub fn init_restore(&self, manifest: ManifestData, recover: bool) -> Result<(), Error> {
-		let mut res = self.restoration.lock();
-
 		let rest_dir = self.restoration_dir();
-		let rest_db = self.restoration_db();
-		let recovery_temp = self.temp_recovery_dir();
-		let prev_chunks = self.prev_chunks_dir();
 
-		// delete and restore the restoration dir.
-		if let Err(e) = fs::remove_dir_all(&prev_chunks) {
-			match e.kind() {
-				ErrorKind::NotFound => {},
-				_ => return Err(e.into()),
-			}
-		}
-
-		// Move the previous recovery temp directory
-		// to `prev_chunks` to be able to restart restoring
-		// with previously downloaded blocks
-		// This step is optional, so don't fail on error
-		fs::rename(&recovery_temp, &prev_chunks).ok();
+		let mut res = self.restoration.lock();
 
 		self.state_chunks.store(0, Ordering::SeqCst);
 		self.block_chunks.store(0, Ordering::SeqCst);
@@ -551,106 +417,39 @@ impl Service {
 			}
 		}
 
-		*self.status.lock() = RestorationStatus::Initializing {
-			chunks_done: 0,
-		};
-
 		fs::create_dir_all(&rest_dir)?;
 
 		// make new restoration.
 		let writer = match recover {
-			true => Some(LooseWriter::new(recovery_temp)?),
+			true => Some(LooseWriter::new(self.temp_recovery_dir())?),
 			false => None
 		};
 
 		let params = RestorationParams {
-			manifest: manifest.clone(),
+			manifest: manifest,
 			pruning: self.pruning,
-			db: self.restoration_db_handler.open(&rest_db)?,
+			db_path: self.restoration_db(),
+			db_config: &self.db_config,
 			writer: writer,
 			genesis: &self.genesis_block,
-			guard: Guard::new(rest_db),
+			guard: Guard::new(rest_dir),
 			engine: &*self.engine,
 		};
 
-		let state_chunks = manifest.state_hashes.len();
-		let block_chunks = manifest.block_hashes.len();
+		let state_chunks = params.manifest.state_hashes.len();
+		let block_chunks = params.manifest.block_hashes.len();
 
 		*res = Some(Restoration::new(params)?);
 
-		self.restoring_snapshot.store(true, Ordering::SeqCst);
-
-		// Import previous chunks, continue if it fails
-		self.import_prev_chunks(&mut res, manifest).ok();
-
-		// It could be that the restoration failed or completed in the meanwhile
-		let mut restoration_status = self.status.lock();
-		if let RestorationStatus::Initializing { .. } = *restoration_status {
-			*restoration_status = RestorationStatus::Ongoing {
-				state_chunks: state_chunks as u32,
-				block_chunks: block_chunks as u32,
-				state_chunks_done: self.state_chunks.load(Ordering::SeqCst) as u32,
-				block_chunks_done: self.block_chunks.load(Ordering::SeqCst) as u32,
-			};
-		}
-
-		Ok(())
-	}
-
-	/// Import the previous chunks into the current restoration
-	fn import_prev_chunks(&self, restoration: &mut Option<Restoration>, manifest: ManifestData) -> Result<(), Error> {
-		let prev_chunks = self.prev_chunks_dir();
-
-		// Restore previous snapshot chunks
-		let files = fs::read_dir(prev_chunks.as_path())?;
-		let mut num_temp_chunks = 0;
-
-		for prev_chunk_file in files {
-			// Don't go over all the files if the restoration has been aborted
-			if !self.restoring_snapshot.load(Ordering::SeqCst) {
-				trace!(target:"snapshot", "Aborting importing previous chunks");
-				return Ok(());
-			}
-			// Import the chunk, don't fail and continue if one fails
-			match self.import_prev_chunk(restoration, &manifest, prev_chunk_file) {
-				Ok(true) => num_temp_chunks += 1,
-				Err(e) => trace!(target: "snapshot", "Error importing chunk: {:?}", e),
-				_ => (),
-			}
-		}
-
-		trace!(target:"snapshot", "Imported {} previous chunks", num_temp_chunks);
-
-		// Remove the prev temp directory
-		fs::remove_dir_all(&prev_chunks)?;
-
-		Ok(())
-	}
-
-	/// Import a previous chunk at the given path. Returns whether the block was imported or not
-	fn import_prev_chunk(&self, restoration: &mut Option<Restoration>, manifest: &ManifestData, file: io::Result<fs::DirEntry>) -> Result<bool, Error> {
-		let file = file?;
-		let path = file.path();
-
-		let mut file = File::open(path.clone())?;
-		let mut buffer = Vec::new();
-		file.read_to_end(&mut buffer)?;
-
-		let hash = keccak(&buffer);
-
-		let is_state = if manifest.block_hashes.contains(&hash) {
-			false
-		} else if manifest.state_hashes.contains(&hash) {
-			true
-		} else {
-			return Ok(false);
+		*self.status.lock() = RestorationStatus::Ongoing {
+			state_chunks: state_chunks as u32,
+			block_chunks: block_chunks as u32,
+			state_chunks_done: self.state_chunks.load(Ordering::SeqCst) as u32,
+			block_chunks_done: self.block_chunks.load(Ordering::SeqCst) as u32,
 		};
 
-		self.feed_chunk_with_restoration(restoration, hash, &buffer, is_state)?;
-
-		trace!(target: "snapshot", "Fed chunk {:?}", hash);
-
-		Ok(true)
+		self.restoring_snapshot.store(true, Ordering::SeqCst);
+		Ok(())
 	}
 
 	// finalize the restoration. this accepts an already-locked
@@ -691,31 +490,15 @@ impl Service {
 		Ok(())
 	}
 
-	/// Feed a chunk of either kind (block or state). no-op if no restoration or status is wrong.
-	fn feed_chunk(&self, hash: H256, chunk: &[u8], is_state: bool) {
+	/// Feed a chunk of either kind. no-op if no restoration or status is wrong.
+	fn feed_chunk(&self, hash: H256, chunk: &[u8], is_state: bool) -> Result<(), Error> {
 		// TODO: be able to process block chunks and state chunks at same time?
-		let mut restoration = self.restoration.lock();
-		match self.feed_chunk_with_restoration(&mut restoration, hash, chunk, is_state) {
-			Ok(()) |
-			Err(Error(SnapshotErrorKind::Snapshot(SnapshotError::RestorationAborted), _)) => (),
-			Err(e) => {
-				warn!("Encountered error during snapshot restoration: {}", e);
-				*self.restoration.lock() = None;
-				*self.status.lock() = RestorationStatus::Failed;
-				let _ = fs::remove_dir_all(self.restoration_dir());
-			}
-		}
-	}
-
-	/// Feed a chunk with the Restoration
-	fn feed_chunk_with_restoration(&self, restoration: &mut Option<Restoration>, hash: H256, chunk: &[u8], is_state: bool) -> Result<(), Error> {
 		let (result, db) = {
+			let mut restoration = self.restoration.lock();
+
 			match self.status() {
-				RestorationStatus::Inactive | RestorationStatus::Failed => {
-					trace!(target: "snapshot", "Tried to restore chunk {:x} while inactive or failed", hash);
-					return Ok(());
-				},
-				RestorationStatus::Ongoing { .. } | RestorationStatus::Initializing { .. } => {
+				RestorationStatus::Inactive | RestorationStatus::Failed => return Ok(()),
+				RestorationStatus::Ongoing { .. } => {
 					let (res, db) = {
 						let rest = match *restoration {
 							Some(ref mut r) => r,
@@ -737,7 +520,7 @@ impl Service {
 
 							match is_done {
 								true => {
-									db.key_value().flush()?;
+									db.flush().map_err(UtilError::from)?;
 									drop(db);
 									return self.finalize_restoration(&mut *restoration);
 								},
@@ -750,20 +533,33 @@ impl Service {
 				}
 			}
 		};
-
-		result?;
-		db.key_value().flush()?;
-		Ok(())
+		result.and_then(|_| db.flush().map_err(|e| UtilError::from(e).into()))
 	}
 
 	/// Feed a state chunk to be processed synchronously.
 	pub fn feed_state_chunk(&self, hash: H256, chunk: &[u8]) {
-		self.feed_chunk(hash, chunk, true);
+		match self.feed_chunk(hash, chunk, true) {
+			Ok(()) => (),
+			Err(e) => {
+				warn!("Encountered error during state restoration: {}", e);
+				*self.restoration.lock() = None;
+				*self.status.lock() = RestorationStatus::Failed;
+				let _ = fs::remove_dir_all(self.restoration_dir());
+			}
+		}
 	}
 
 	/// Feed a block chunk to be processed synchronously.
 	pub fn feed_block_chunk(&self, hash: H256, chunk: &[u8]) {
-		self.feed_chunk(hash, chunk, false);
+		match self.feed_chunk(hash, chunk, false) {
+			Ok(()) => (),
+			Err(e) => {
+				warn!("Encountered error during block restoration: {}", e);
+				*self.restoration.lock() = None;
+				*self.status.lock() = RestorationStatus::Failed;
+				let _ = fs::remove_dir_all(self.restoration_dir());
+			}
+		}
 	}
 }
 
@@ -781,41 +577,11 @@ impl SnapshotService for Service {
 		self.reader.read().as_ref().and_then(|r| r.chunk(hash).ok())
 	}
 
-	fn completed_chunks(&self) -> Option<Vec<H256>> {
-		let restoration = self.restoration.lock();
-
-		match *restoration {
-			Some(ref restoration) => {
-				let completed_chunks = restoration.manifest.block_hashes
-					.iter()
-					.filter(|h| !restoration.block_chunks_left.contains(h))
-					.chain(
-						restoration.manifest.state_hashes
-							.iter()
-							.filter(|h| !restoration.state_chunks_left.contains(h))
-					)
-					.map(|h| *h)
-					.collect();
-
-				Some(completed_chunks)
-			},
-			None => None,
-		}
-	}
-
 	fn status(&self) -> RestorationStatus {
 		let mut cur_status = self.status.lock();
-
-		match *cur_status {
-			RestorationStatus::Initializing { ref mut chunks_done } => {
-				*chunks_done = self.state_chunks.load(Ordering::SeqCst) as u32 +
-					self.block_chunks.load(Ordering::SeqCst) as u32;
-			}
-			RestorationStatus::Ongoing { ref mut state_chunks_done, ref mut block_chunks_done, .. } => {
-				*state_chunks_done = self.state_chunks.load(Ordering::SeqCst) as u32;
-				*block_chunks_done = self.block_chunks.load(Ordering::SeqCst) as u32;
-			},
-			_ => (),
+		if let RestorationStatus::Ongoing { ref mut state_chunks_done, ref mut block_chunks_done, .. } = *cur_status {
+			*state_chunks_done = self.state_chunks.load(Ordering::SeqCst) as u32;
+			*block_chunks_done = self.block_chunks.load(Ordering::SeqCst) as u32;
 		}
 
 		cur_status.clone()
@@ -828,7 +594,6 @@ impl SnapshotService for Service {
 	}
 
 	fn abort_restore(&self) {
-		trace!(target: "snapshot", "Aborting restore");
 		self.restoring_snapshot.store(false, Ordering::SeqCst);
 		*self.restoration.lock() = None;
 		*self.status.lock() = RestorationStatus::Inactive;
@@ -845,10 +610,6 @@ impl SnapshotService for Service {
 			trace!("Error sending snapshot service message: {:?}", e);
 		}
 	}
-
-	fn shutdown(&self) {
-		self.abort_restore();
-	}
 }
 
 impl Drop for Service {
@@ -859,33 +620,42 @@ impl Drop for Service {
 
 #[cfg(test)]
 mod tests {
-	use client::ClientIoMessage;
+	use std::sync::Arc;
+	use service::ClientIoMessage;
 	use io::{IoService};
-	use spec::Spec;
-	use journaldb::Algorithm;
+	use devtools::RandomTempPath;
+	use tests::helpers::get_test_spec;
+	use util::journaldb::Algorithm;
+	use error::Error;
 	use snapshot::{ManifestData, RestorationStatus, SnapshotService};
 	use super::*;
-	use tempdir::TempDir;
-	use test_helpers::{generate_dummy_client_with_spec_and_data, restoration_db_handler};
+
+	struct NoopDBRestore;
+	impl DatabaseRestore for NoopDBRestore {
+		fn restore_db(&self, _new_db: &str) -> Result<(), Error> {
+			Ok(())
+		}
+	}
 
 	#[test]
 	fn sends_async_messages() {
-		let gas_prices = vec![1.into(), 2.into(), 3.into(), 999.into()];
-		let client = generate_dummy_client_with_spec_and_data(Spec::new_null, 400, 5, &gas_prices);
 		let service = IoService::<ClientIoMessage>::start().unwrap();
-		let spec = Spec::new_test();
+		let spec = get_test_spec();
 
-		let tempdir = TempDir::new("").unwrap();
-		let dir = tempdir.path().join("snapshot");
+		let dir = RandomTempPath::new();
+		let mut dir = dir.as_path().to_owned();
+		let mut client_db = dir.clone();
+		dir.push("snapshot");
+		client_db.push("client");
 
 		let snapshot_params = ServiceParams {
 			engine: spec.engine.clone(),
 			genesis_block: spec.genesis_block(),
-			restoration_db_handler: restoration_db_handler(Default::default()),
+			db_config: Default::default(),
 			pruning: Algorithm::Archive,
 			channel: service.channel(),
 			snapshot_root: dir,
-			client: client,
+			db_restore: Arc::new(NoopDBRestore),
 		};
 
 		let service = Service::new(snapshot_params).unwrap();
@@ -911,11 +681,11 @@ mod tests {
 
 	#[test]
 	fn cannot_finish_with_invalid_chunks() {
-		use ethereum_types::H256;
-		use kvdb_rocksdb::DatabaseConfig;
+		use bigint::hash::H256;
+		use util::kvdb::DatabaseConfig;
 
-		let spec = Spec::new_test();
-		let tempdir = TempDir::new("").unwrap();
+		let spec = get_test_spec();
+		let dir = RandomTempPath::new();
 
 		let state_hashes: Vec<_> = (0..5).map(|_| H256::random()).collect();
 		let block_hashes: Vec<_> = (0..5).map(|_| H256::random()).collect();
@@ -933,7 +703,8 @@ mod tests {
 				block_hash: H256::default(),
 			},
 			pruning: Algorithm::Archive,
-			db: restoration_db_handler(db_config).open(&tempdir.path().to_owned()).unwrap(),
+			db_path: dir.as_path().to_owned(),
+			db_config: &db_config,
 			writer: None,
 			genesis: &gb,
 			guard: Guard::benign(),

@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 pub use self::inner::*;
 
@@ -39,11 +39,11 @@ mod inner {
 	use std::collections::HashMap;
 	use std::time::{Instant, Duration};
 
-	use ethereum_types::U256;
+	use evm::interpreter::stack::Stack;
+	use evm::instructions::{Instruction, InstructionInfo, INSTRUCTIONS};
+	use evm::{CostType};
 
-	use interpreter::stack::Stack;
-	use instructions::{Instruction, InstructionInfo};
-	use CostType;
+	use bigint::prelude::U256;
 
 	macro_rules! evm_debug {
 		($x: expr) => {
@@ -97,7 +97,7 @@ mod inner {
 				&self.spacing,
 				pc,
 				Self::color(instruction, info.name),
-				instruction as u8,
+				instruction,
 				current_gas,
 				Self::as_micro(&time),
 			));
@@ -110,23 +110,25 @@ mod inner {
 		}
 
 		pub fn after_instruction(&mut self, instruction: Instruction) {
-			let stats = self.stats.entry(instruction).or_insert_with(|| Stats::default());
+			let mut stats = self.stats.entry(instruction).or_insert_with(|| Stats::default());
 			let took = self.last_instruction.elapsed();
 			stats.note(took);
 		}
 
 		pub fn done(&mut self) {
 			// Print out stats
+			let infos = &*INSTRUCTIONS;
+
 			let mut stats: Vec<(_,_)> = self.stats.drain().collect();
 			stats.sort_by(|ref a, ref b| b.1.avg().cmp(&a.1.avg()));
 
 			print(format!("\n{}-------OPCODE STATS:", self.spacing));
 			for (instruction, stats) in stats.into_iter() {
-				let info = instruction.info();
+				let info = infos[instruction as usize];
 				print(format!("{}-------{:>19}(0x{:<2x}) count: {:4}, avg: {:10}μs",
 					self.spacing,
 					Self::color(instruction, info.name),
-					instruction as u8,
+					instruction,
 					stats.count,
 					stats.avg(),
 				));

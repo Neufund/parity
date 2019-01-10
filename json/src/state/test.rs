@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! General test deserialization.
 
@@ -21,7 +21,6 @@ use std::collections::BTreeMap;
 use uint::Uint;
 use bytes::Bytes;
 use hash::{Address, H256};
-use spec::ForkSpec;
 use state::{Env, AccountState, Transaction};
 use maybe::MaybeEmpty;
 use serde_json::{self, Error};
@@ -52,10 +51,10 @@ pub struct State {
 	/// Environment.
 	pub env: Env,
 	/// Pre state.
-	#[serde(rename = "pre")]
+	#[serde(rename="pre")]
 	pub pre_state: AccountState,
 	/// Post state.
-	#[serde(rename = "post")]
+	#[serde(rename="post")]
 	pub post_states: BTreeMap<ForkSpec, Vec<PostStateResult>>,
 	/// Transaction.
 	pub transaction: MultiTransaction,
@@ -63,18 +62,19 @@ pub struct State {
 
 /// State test transaction deserialization.
 #[derive(Debug, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MultiTransaction {
 	/// Transaction data set.
 	pub data: Vec<Bytes>,
 	/// Gas limit set.
+	#[serde(rename="gasLimit")]
 	pub gas_limit: Vec<Uint>,
 	/// Gas price.
+	#[serde(rename="gasPrice")]
 	pub gas_price: Uint,
 	/// Nonce.
 	pub nonce: Uint,
 	/// Secret key.
-	#[serde(rename = "secretKey")]
+	#[serde(rename="secretKey")]
 	pub secret: Option<H256>,
 	/// To.
 	pub to: MaybeEmpty<Address>,
@@ -95,6 +95,21 @@ impl MultiTransaction {
 			value: self.value[indexes.value as usize].clone(),
 		}
 	}
+}
+
+/// State test transaction deserialization.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+pub enum ForkSpec {
+	EIP150,
+	EIP158,
+	Frontier,
+	Homestead,
+	Byzantium,
+	Constantinople,
+	EIP158ToByzantiumAt5,
+	FrontierToHomesteadAt5,
+	HomesteadToDaoAt5,
+	HomesteadToEIP150At5,
 }
 
 /// State test indexes deserialization.

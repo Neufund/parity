@@ -1,58 +1,46 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Updater for Parity executables
 
-#![warn(missing_docs)]
-
-extern crate common_types;
-extern crate ethabi;
-extern crate ethcore;
-extern crate ethcore_sync as sync;
-extern crate ethereum_types;
-extern crate keccak_hash as hash;
-extern crate parity_bytes as bytes;
-extern crate parity_hash_fetch as hash_fetch;
-extern crate parity_path;
-extern crate parity_version as version;
+#[macro_use] extern crate log;
+extern crate ethcore_util as util;
+extern crate ethcore_bigint as bigint;
+extern crate ethcore_bytes as bytes;
+extern crate ipc_common_types;
 extern crate parking_lot;
-extern crate rand;
-extern crate semver;
+extern crate parity_hash_fetch as hash_fetch;
+extern crate ethcore;
+extern crate ethabi;
+extern crate ethsync;
+extern crate ethcore_ipc as ipc;
+extern crate futures;
 extern crate target_info;
-
-#[macro_use]
-extern crate ethabi_contract;
-#[macro_use]
-extern crate ethabi_derive;
-#[macro_use]
-extern crate lazy_static;
-#[macro_use]
-extern crate log;
-
-#[cfg(test)]
-extern crate tempdir;
-
-#[cfg(test)]
-#[macro_use]
-extern crate matches;
+extern crate parity_reactor;
+extern crate path;
 
 mod updater;
+mod operations;
 mod types;
-mod service;
 
-pub use service::Service;
-pub use types::{ReleaseInfo, OperationsInfo, CapState, VersionInfo, ReleaseTrack};
+mod service {
+	#![allow(dead_code, unused_assignments, unused_variables, missing_docs)] // codegen issues
+	include!(concat!(env!("OUT_DIR"), "/service.rs"));
+}
+
+pub use service::{Service};
+pub use types::all::{ReleaseInfo, OperationsInfo, CapState, VersionInfo, ReleaseTrack};
 pub use updater::{Updater, UpdateFilter, UpdatePolicy};

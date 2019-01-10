@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Unsafe Signing RPC implementation.
 
@@ -20,10 +20,11 @@ use std::sync::Arc;
 
 use ethcore::account_provider::AccountProvider;
 
-use jsonrpc_core::{BoxFuture, Result};
-use jsonrpc_core::futures::{future, Future};
+use futures::{future, BoxFuture, Future};
+use jsonrpc_core::Error;
 use v1::helpers::{errors, DefaultAccount};
 use v1::helpers::dispatch::{self, Dispatcher};
+use v1::helpers::accounts::unwrap_provider;
 use v1::metadata::Metadata;
 use v1::traits::{EthSigning, ParitySigning};
 use v1::types::{
@@ -38,31 +39,37 @@ use v1::types::{
 
 /// Implementation of functions that require signing when no trusted signer is used.
 pub struct SigningUnsafeClient<D> {
-	accounts: Arc<AccountProvider>,
+	accounts: Option<Arc<AccountProvider>>,
 	dispatcher: D,
 }
 
 impl<D: Dispatcher + 'static> SigningUnsafeClient<D> {
 	/// Creates new SigningUnsafeClient.
-	pub fn new(accounts: &Arc<AccountProvider>, dispatcher: D) -> Self {
+	pub fn new(accounts: &Option<Arc<AccountProvider>>, dispatcher: D) -> Self {
 		SigningUnsafeClient {
 			accounts: accounts.clone(),
 			dispatcher: dispatcher,
 		}
 	}
 
-	fn handle(&self, payload: RpcConfirmationPayload, account: DefaultAccount) -> BoxFuture<RpcConfirmationResponse> {
-		let accounts = self.accounts.clone();
+	fn account_provider(&self) -> Result<Arc<AccountProvider>, Error> {
+		unwrap_provider(&self.accounts)
+	}
+
+	fn handle(&self, payload: RpcConfirmationPayload, account: DefaultAccount) -> BoxFuture<RpcConfirmationResponse, Error> {
+		let accounts = try_bf!(self.account_provider());
 		let default = match account {
 			DefaultAccount::Provided(acc) => acc,
+			DefaultAccount::ForDapp(dapp) => accounts.dapp_default_address(dapp).ok().unwrap_or_default(),
 		};
 
 		let dis = self.dispatcher.clone();
-		Box::new(dispatch::from_rpc(payload, default, &dis)
+		dispatch::from_rpc(payload, default, &dis)
 			.and_then(move |payload| {
 				dispatch::execute(dis, accounts, payload, dispatch::SignWith::Nothing)
 			})
-			.map(|v| v.into_value()))
+			.map(|v| v.into_value())
+			.boxed()
 	}
 }
 
@@ -70,63 +77,67 @@ impl<D: Dispatcher + 'static> EthSigning for SigningUnsafeClient<D>
 {
 	type Metadata = Metadata;
 
-	fn sign(&self, _: Metadata, address: RpcH160, data: RpcBytes) -> BoxFuture<RpcH520> {
-		Box::new(self.handle(RpcConfirmationPayload::EthSignMessage((address.clone(), data).into()), address.into())
+	fn sign(&self, _: Metadata, address: RpcH160, data: RpcBytes) -> BoxFuture<RpcH520, Error> {
+		self.handle(RpcConfirmationPayload::EthSignMessage((address.clone(), data).into()), address.into())
 			.then(|res| match res {
 				Ok(RpcConfirmationResponse::Signature(signature)) => Ok(signature),
 				Err(e) => Err(e),
 				e => Err(errors::internal("Unexpected result", e)),
-			}))
+			})
+			.boxed()
 	}
 
-	fn send_transaction(&self, _meta: Metadata, request: RpcTransactionRequest) -> BoxFuture<RpcH256> {
-		Box::new(self.handle(RpcConfirmationPayload::SendTransaction(request), DefaultAccount::Provided(self.accounts.default_account().ok().unwrap_or_default()))
+	fn send_transaction(&self, meta: Metadata, request: RpcTransactionRequest) -> BoxFuture<RpcH256, Error> {
+		self.handle(RpcConfirmationPayload::SendTransaction(request), meta.dapp_id().into())
 			.then(|res| match res {
 				Ok(RpcConfirmationResponse::SendTransaction(hash)) => Ok(hash),
 				Err(e) => Err(e),
 				e => Err(errors::internal("Unexpected result", e)),
-			}))
+			})
+			.boxed()
 	}
 
-	fn sign_transaction(&self, _meta: Metadata, request: RpcTransactionRequest) -> BoxFuture<RpcRichRawTransaction> {
-		Box::new(self.handle(RpcConfirmationPayload::SignTransaction(request), DefaultAccount::Provided(self.accounts.default_account().ok().unwrap_or_default()))
+	fn sign_transaction(&self, meta: Metadata, request: RpcTransactionRequest) -> BoxFuture<RpcRichRawTransaction, Error> {
+		self.handle(RpcConfirmationPayload::SignTransaction(request), meta.dapp_id().into())
 			.then(|res| match res {
 				Ok(RpcConfirmationResponse::SignTransaction(tx)) => Ok(tx),
 				Err(e) => Err(e),
 				e => Err(errors::internal("Unexpected result", e)),
-			}))
+			})
+			.boxed()
 	}
 }
 
 impl<D: Dispatcher + 'static> ParitySigning for SigningUnsafeClient<D> {
 	type Metadata = Metadata;
 
-	fn compose_transaction(&self, _meta: Metadata, transaction: RpcTransactionRequest) -> BoxFuture<RpcTransactionRequest> {
-		let accounts = self.accounts.clone();
-		let default_account = accounts.default_account().ok().unwrap_or_default();
-		Box::new(self.dispatcher.fill_optional_fields(transaction.into(), default_account, true).map(Into::into))
+	fn compose_transaction(&self, meta: Metadata, transaction: RpcTransactionRequest) -> BoxFuture<RpcTransactionRequest, Error> {
+		let accounts = try_bf!(self.account_provider());
+		let default_account = accounts.dapp_default_address(meta.dapp_id().into()).ok().unwrap_or_default();
+		self.dispatcher.fill_optional_fields(transaction.into(), default_account, true).map(Into::into).boxed()
 	}
 
-	fn decrypt_message(&self, _: Metadata, address: RpcH160, data: RpcBytes) -> BoxFuture<RpcBytes> {
-		Box::new(self.handle(RpcConfirmationPayload::Decrypt((address.clone(), data).into()), address.into())
+	fn decrypt_message(&self, _: Metadata, address: RpcH160, data: RpcBytes) -> BoxFuture<RpcBytes, Error> {
+		self.handle(RpcConfirmationPayload::Decrypt((address.clone(), data).into()), address.into())
 			.then(|res| match res {
 				Ok(RpcConfirmationResponse::Decrypt(data)) => Ok(data),
 				Err(e) => Err(e),
 				e => Err(errors::internal("Unexpected result", e)),
-			}))
+			})
+			.boxed()
 	}
 
-	fn post_sign(&self, _: Metadata,  _: RpcH160, _: RpcBytes) -> BoxFuture<RpcEither<RpcU256, RpcConfirmationResponse>> {
+	fn post_sign(&self, _: Metadata,  _: RpcH160, _: RpcBytes) -> BoxFuture<RpcEither<RpcU256, RpcConfirmationResponse>, Error> {
 		// We don't support this in non-signer mode.
-		Box::new(future::err(errors::signer_disabled()))
+		future::err(errors::signer_disabled()).boxed()
 	}
 
-	fn post_transaction(&self, _: Metadata, _: RpcTransactionRequest) -> BoxFuture<RpcEither<RpcU256, RpcConfirmationResponse>> {
+	fn post_transaction(&self, _: Metadata, _: RpcTransactionRequest) -> BoxFuture<RpcEither<RpcU256, RpcConfirmationResponse>, Error> {
 		// We don't support this in non-signer mode.
-		Box::new(future::err(errors::signer_disabled()))
+		future::err((errors::signer_disabled())).boxed()
 	}
 
-	fn check_request(&self, _: RpcU256) -> Result<Option<RpcConfirmationResponse>> {
+	fn check_request(&self, _: RpcU256) -> Result<Option<RpcConfirmationResponse>, Error> {
 		// We don't support this in non-signer mode.
 		Err(errors::signer_disabled())
 	}

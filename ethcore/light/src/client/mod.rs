@@ -1,44 +1,45 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Light client implementation. Stores data from light sync
 
 use std::sync::{Weak, Arc};
 
-use ethcore::client::{ClientReport, EnvInfo, ClientIoMessage};
+use ethcore::block_status::BlockStatus;
+use ethcore::client::{ClientReport, EnvInfo};
 use ethcore::engines::{epoch, EthEngine, EpochChange, EpochTransition, Proof};
 use ethcore::machine::EthereumMachine;
-use ethcore::error::{Error, EthcoreResult};
+use ethcore::error::BlockImportError;
+use ethcore::ids::BlockId;
+use ethcore::header::{BlockNumber, Header};
 use ethcore::verification::queue::{self, HeaderQueue};
-use ethcore::spec::{Spec, SpecHardcodedSync};
+use ethcore::blockchain_info::BlockChainInfo;
+use ethcore::spec::Spec;
+use ethcore::service::ClientIoMessage;
+use ethcore::encoded;
 use io::IoChannel;
 use parking_lot::{Mutex, RwLock};
-use ethereum_types::{H256, U256};
+use bigint::prelude::U256;
+use bigint::hash::H256;
 use futures::{IntoFuture, Future};
-use common_types::BlockNumber;
-use common_types::block_status::BlockStatus;
-use common_types::blockchain_info::BlockChainInfo;
-use common_types::encoded;
-use common_types::header::Header;
-use common_types::ids::BlockId;
 
-use kvdb::KeyValueDB;
+use util::kvdb::{KeyValueDB, CompactionProfile};
 
 use self::fetch::ChainDataFetcher;
-use self::header_chain::{AncestryIter, HeaderChain, HardcodedSync};
+use self::header_chain::{AncestryIter, HeaderChain};
 
 use cache::Cache;
 
@@ -56,12 +57,16 @@ pub struct Config {
 	pub queue: queue::Config,
 	/// Chain column in database.
 	pub chain_column: Option<u32>,
+	/// Database cache size. `None` => rocksdb default.
+	pub db_cache_size: Option<usize>,
+	/// State db compaction profile
+	pub db_compaction: CompactionProfile,
+	/// Should db have WAL enabled?
+	pub db_wal: bool,
 	/// Should it do full verification of blocks?
 	pub verify_full: bool,
 	/// Should it check the seal of blocks?
 	pub check_seal: bool,
-	/// Disable hardcoded sync.
-	pub no_hardcoded_sync: bool,
 }
 
 impl Default for Config {
@@ -69,9 +74,11 @@ impl Default for Config {
 		Config {
 			queue: Default::default(),
 			chain_column: None,
+			db_cache_size: None,
+			db_compaction: CompactionProfile::default(),
+			db_wal: true,
 			verify_full: true,
 			check_seal: true,
-			no_hardcoded_sync: false,
 		}
 	}
 }
@@ -86,7 +93,7 @@ pub trait LightChainClient: Send + Sync {
 
 	/// Queue header to be verified. Required that all headers queued have their
 	/// parent queued prior.
-	fn queue_header(&self, header: Header) -> EthcoreResult<H256>;
+	fn queue_header(&self, header: Header) -> Result<H256, BlockImportError>;
 
 	/// Attempt to get a block hash by block id.
 	fn block_hash(&self, id: BlockId) -> Option<H256>;
@@ -127,6 +134,9 @@ pub trait LightChainClient: Send + Sync {
 
 	/// Get the `i`th CHT root.
 	fn cht_root(&self, i: usize) -> Option<H256>;
+
+	/// Get the EIP-86 transition block number.
+	fn eip86_transition(&self) -> BlockNumber;
 
 	/// Get a report of import activity since the last call.
 	fn report(&self) -> ClientReport;
@@ -176,29 +186,18 @@ impl<T: ChainDataFetcher> Client<T> {
 		fetcher: T,
 		io_channel: IoChannel<ClientIoMessage>,
 		cache: Arc<Mutex<Cache>>
-	) -> Result<Self, Error> {
-		Ok(Self {
+	) -> Result<Self, String> {
+		Ok(Client {
 			queue: HeaderQueue::new(config.queue, spec.engine.clone(), io_channel, config.check_seal),
 			engine: spec.engine.clone(),
-			chain: {
-				let hs_cfg = if config.no_hardcoded_sync { HardcodedSync::Deny } else { HardcodedSync::Allow };
-				HeaderChain::new(db.clone(), chain_col, &spec, cache, hs_cfg)?
-			},
+			chain: HeaderChain::new(db.clone(), chain_col, &spec, cache)?,
 			report: RwLock::new(ClientReport::default()),
 			import_lock: Mutex::new(()),
-			db,
+			db: db,
 			listeners: RwLock::new(vec![]),
-			fetcher,
+			fetcher: fetcher,
 			verify_full: config.verify_full,
 		})
-	}
-
-	/// Generates the specifications for hardcoded sync. This is typically only called manually
-	/// from time to time by a Parity developer in order to update the chain specifications.
-	///
-	/// Returns `None` if we are at the genesis block.
-	pub fn read_hardcoded_sync(&self) -> Result<Option<SpecHardcodedSync>, Error> {
-		self.chain.read_hardcoded_sync()
 	}
 
 	/// Adds a new `LightChainNotify` listener.
@@ -206,9 +205,31 @@ impl<T: ChainDataFetcher> Client<T> {
 		self.listeners.write().push(listener);
 	}
 
+	/// Create a new `Client` backed purely in-memory.
+	/// This will ignore all database options in the configuration.
+	pub fn in_memory(
+		config: Config,
+		spec: &Spec,
+		fetcher: T,
+		io_channel: IoChannel<ClientIoMessage>,
+		cache: Arc<Mutex<Cache>>
+	) -> Self {
+		let db = ::util::kvdb::in_memory(0);
+
+		Client::new(
+			config,
+			Arc::new(db),
+			None,
+			spec,
+			fetcher,
+			io_channel,
+			cache
+		).expect("New DB creation infallible; qed")
+	}
+
 	/// Import a header to the queue for additional verification.
-	pub fn import_header(&self, header: Header) -> EthcoreResult<H256> {
-		self.queue.import(header).map_err(|(_, e)| e)
+	pub fn import_header(&self, header: Header) -> Result<H256, BlockImportError> {
+		self.queue.import(header).map_err(Into::into)
 	}
 
 	/// Inquire about the status of a given header.
@@ -230,7 +251,7 @@ impl<T: ChainDataFetcher> Client<T> {
 		BlockChainInfo {
 			total_difficulty: best_td,
 			pending_total_difficulty: best_td + self.queue.total_difficulty(),
-			genesis_hash,
+			genesis_hash: genesis_hash,
 			best_block_hash: best_hdr.hash(),
 			best_block_number: best_hdr.number(),
 			best_block_timestamp: best_hdr.timestamp(),
@@ -314,14 +335,14 @@ impl<T: ChainDataFetcher> Client<T> {
 					The node may not be able to synchronize further.", e);
 			}
 
-			let epoch_proof = self.engine.is_epoch_end_light(
+			let epoch_proof =  self.engine.is_epoch_end(
 				&verified_header,
-				&|h| self.chain.block_header(BlockId::Hash(h)).and_then(|hdr| hdr.decode().ok()),
+				&|h| self.chain.block_header(BlockId::Hash(h)).map(|hdr| hdr.decode()),
 				&|h| self.chain.pending_transition(h),
 			);
 
 			let mut tx = self.db.transaction();
-			let pending = match self.chain.insert(&mut tx, &verified_header, epoch_proof) {
+			let pending = match self.chain.insert(&mut tx, verified_header, epoch_proof) {
 				Ok(pending) => {
 					good.push(hash);
 					self.report.write().blocks_imported += 1;
@@ -424,15 +445,7 @@ impl<T: ChainDataFetcher> Client<T> {
 		};
 
 		// Verify Block Family
-
-		let verify_family_result = {
-			parent_header.decode()
-				.map_err(|dec_err| dec_err.into())
-				.and_then(|decoded| {
-					self.engine.verify_block_family(&verified_header, &decoded)
-				})
-
-		};
+		let verify_family_result = self.engine.verify_block_family(&verified_header, &parent_header.decode());
 		if let Err(e) = verify_family_result {
 			warn!(target: "client", "Stage 3 block verification failed for #{} ({})\nError: {:?}",
 				verified_header.number(), verified_header.hash(), e);
@@ -460,6 +473,7 @@ impl<T: ChainDataFetcher> Client<T> {
 		let mut receipts: Option<Vec<_>> = None;
 
 		loop {
+
 
 			let is_signal = {
 				let auxiliary = AuxiliaryData {
@@ -512,8 +526,8 @@ impl<T: ChainDataFetcher> Client<T> {
 		};
 
 		let mut batch = self.db.transaction();
-		self.chain.insert_pending_transition(&mut batch, header.hash(), &epoch::PendingTransition {
-			proof,
+		self.chain.insert_pending_transition(&mut batch, header.hash(), epoch::PendingTransition {
+			proof: proof,
 		});
 		self.db.write_buffered(batch);
 		Ok(())
@@ -527,7 +541,7 @@ impl<T: ChainDataFetcher> LightChainClient for Client<T> {
 
 	fn chain_info(&self) -> BlockChainInfo { Client::chain_info(self) }
 
-	fn queue_header(&self, header: Header) -> EthcoreResult<H256> {
+	fn queue_header(&self, header: Header) -> Result<H256, BlockImportError> {
 		self.import_header(header)
 	}
 
@@ -583,14 +597,12 @@ impl<T: ChainDataFetcher> LightChainClient for Client<T> {
 		Client::cht_root(self, i)
 	}
 
+	fn eip86_transition(&self) -> BlockNumber {
+		self.engine().params().eip86_transition
+	}
+
 	fn report(&self) -> ClientReport {
 		Client::report(self)
-	}
-}
-
-impl<T: ChainDataFetcher> ::ethcore::client::ChainInfo for Client<T> {
-	fn chain_info(&self) -> BlockChainInfo {
-		Client::chain_info(self)
 	}
 }
 
@@ -603,8 +615,12 @@ impl<T: ChainDataFetcher> ::ethcore::client::EngineClient for Client<T> {
 		self.chain.epoch_transition_for(parent_hash).map(|(hdr, proof)| EpochTransition {
 			block_hash: hdr.hash(),
 			block_number: hdr.number(),
-			proof,
+			proof: proof,
 		})
+	}
+
+	fn chain_info(&self) -> BlockChainInfo {
+		Client::chain_info(self)
 	}
 
 	fn as_full_client(&self) -> Option<&::ethcore::client::BlockChainClient> {
@@ -613,9 +629,5 @@ impl<T: ChainDataFetcher> ::ethcore::client::EngineClient for Client<T> {
 
 	fn block_number(&self, id: BlockId) -> Option<BlockNumber> {
 		self.block_header(id).map(|hdr| hdr.number())
-	}
-
-	fn block_header(&self, id: BlockId) -> Option<encoded::Header> {
-		Client::block_header(self, id)
 	}
 }

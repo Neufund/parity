@@ -1,27 +1,27 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 /// Preconfigured validator list.
 
 use heapsize::HeapSizeOf;
-use ethereum_types::{H256, Address};
+use bigint::hash::H256;
+use util::Address;
 
 use machine::{AuxiliaryData, Call, EthereumMachine};
-use types::BlockNumber;
-use types::header::Header;
+use header::{BlockNumber, Header};
 use super::ValidatorSet;
 
 /// Validator set containing a known set of addresses.
@@ -65,7 +65,7 @@ impl HeapSizeOf for SimpleList {
 }
 
 impl ValidatorSet for SimpleList {
-	fn default_caller(&self, _block_id: ::types::ids::BlockId) -> Box<Call> {
+	fn default_caller(&self, _block_id: ::ids::BlockId) -> Box<Call> {
 		Box::new(|_, _| Err("Simple list doesn't require calls.".into()))
 	}
 
@@ -105,16 +105,10 @@ impl ValidatorSet for SimpleList {
 	}
 }
 
-impl AsRef<ValidatorSet> for SimpleList {
-    fn as_ref(&self) -> &ValidatorSet {
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
 	use std::str::FromStr;
-	use ethereum_types::Address;
+	use util::Address;
 	use super::super::ValidatorSet;
 	use super::SimpleList;
 

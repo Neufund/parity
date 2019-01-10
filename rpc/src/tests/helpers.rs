@@ -1,24 +1,23 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::ops::{Deref, DerefMut};
-use std::path::PathBuf;
-use tempdir::TempDir;
 
-use parity_runtime::{Runtime, TaskExecutor};
+use devtools::RandomTempPath;
+use parity_reactor::{EventLoop, TokioRemote};
 
 use authcodes::AuthCodes;
 
@@ -27,15 +26,15 @@ pub struct Server<T> {
 	/// Server
 	pub server: T,
 	/// RPC Event Loop
-	pub event_loop: Runtime,
+	pub event_loop: EventLoop,
 }
 
 impl<T> Server<T> {
 	pub fn new<F>(f: F) -> Server<T> where
-		F: FnOnce(TaskExecutor) -> T,
+		F: FnOnce(TokioRemote) -> T,
 	{
-		let event_loop = Runtime::with_thread_count(1);
-		let remote = event_loop.raw_executor();
+		let event_loop = EventLoop::spawn();
+		let remote = event_loop.raw_remote();
 
 		Server {
 			server: f(remote),
@@ -55,20 +54,18 @@ impl<T> Deref for Server<T> {
 /// Struct representing authcodes
 pub struct GuardedAuthCodes {
 	authcodes: AuthCodes,
-	_tempdir: TempDir,
 	/// The path to the mock authcodes
-	pub path: PathBuf,
+	pub path: RandomTempPath,
 }
 
 impl GuardedAuthCodes {
 	pub fn new() -> Self {
-		let tempdir = TempDir::new("").unwrap();
-		let path = tempdir.path().join("file");
+		let mut path = RandomTempPath::new();
+		path.panic_on_drop_failure = false;
 
 		GuardedAuthCodes {
 			authcodes: AuthCodes::from_file(&path).unwrap(),
-			_tempdir: tempdir,
-			path,
+			path: path,
 		}
 	}
 }

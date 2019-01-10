@@ -1,23 +1,23 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Light protocol request types.
 
-use rlp::{Encodable, Decodable, DecoderError, RlpStream, Rlp};
-use ethereum_types::H256;
+use rlp::{Encodable, Decodable, DecoderError, RlpStream, UntrustedRlp};
+use bigint::hash::H256;
 
 mod batch;
 
@@ -124,6 +124,8 @@ impl<T> Field<T> {
 		}
 	}
 
+
+
 	// attempt conversion into scalar value.
 	fn into_scalar(self) -> Result<T, NoSuchOutput> {
 		match self {
@@ -146,7 +148,7 @@ impl<T> From<T> for Field<T> {
 }
 
 impl<T: Decodable> Decodable for Field<T> {
-	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 		match rlp.val_at::<u8>(0)? {
 			0 => Ok(Field::Scalar(rlp.val_at::<T>(1)?)),
 			1 => Ok({
@@ -202,6 +204,7 @@ pub enum OutputKind {
 
 /// Either a hash or a number.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ipc", binary)]
 pub enum HashOrNumber {
 	/// Block hash variant.
 	Hash(H256),
@@ -222,7 +225,7 @@ impl From<u64> for HashOrNumber {
 }
 
 impl Decodable for HashOrNumber {
-	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 		rlp.as_val::<H256>().map(HashOrNumber::Hash)
 			.or_else(|_| rlp.as_val().map(HashOrNumber::Number))
 	}
@@ -329,7 +332,7 @@ impl Request {
 }
 
 impl Decodable for Request {
-	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 		match rlp.val_at::<Kind>(0)? {
 			Kind::Headers => Ok(Request::Headers(rlp.val_at(1)?)),
 			Kind::HeaderProof => Ok(Request::HeaderProof(rlp.val_at(1)?)),
@@ -349,7 +352,7 @@ impl Encodable for Request {
 	fn rlp_append(&self, s: &mut RlpStream) {
 		s.begin_list(2);
 
-		// hack around https://github.com/paritytech/parity-ethereum/issues/4356
+		// hack around https://github.com/paritytech/parity/issues/4356
 		Encodable::rlp_append(&self.kind(), s);
 
 		match *self {
@@ -491,7 +494,7 @@ pub enum Kind {
 }
 
 impl Decodable for Kind {
-	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 		match rlp.as_val::<u8>()? {
 			0 => Ok(Kind::Headers),
 			1 => Ok(Kind::HeaderProof),
@@ -576,7 +579,7 @@ impl Response {
 }
 
 impl Decodable for Response {
-	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 		match rlp.val_at::<Kind>(0)? {
 			Kind::Headers => Ok(Response::Headers(rlp.val_at(1)?)),
 			Kind::HeaderProof => Ok(Response::HeaderProof(rlp.val_at(1)?)),
@@ -596,7 +599,7 @@ impl Encodable for Response {
 	fn rlp_append(&self, s: &mut RlpStream) {
 		s.begin_list(2);
 
-		// hack around https://github.com/paritytech/parity-ethereum/issues/4356
+		// hack around https://github.com/paritytech/parity/issues/4356
 		Encodable::rlp_append(&self.kind(), s);
 
 		match *self {
@@ -670,8 +673,8 @@ pub trait ResponseLike {
 /// Header request.
 pub mod header {
 	use super::{Field, HashOrNumber, NoSuchOutput, OutputKind, Output};
-	use common_types::encoded;
-	use rlp::{Encodable, Decodable, DecoderError, RlpStream, Rlp};
+	use ethcore::encoded;
+	use rlp::{Encodable, Decodable, DecoderError, RlpStream, UntrustedRlp};
 
 	/// Potentially incomplete headers request.
 	#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
@@ -752,8 +755,8 @@ pub mod header {
 	}
 
 	impl Decodable for Response {
-		fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-			use common_types::header::Header as FullHeader;
+		fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
+			use ethcore::header::Header as FullHeader;
 
 			let mut headers = Vec::new();
 
@@ -764,7 +767,9 @@ pub mod header {
 				headers.push(encoded::Header::new(item.as_raw().to_owned()));
 			}
 
-			Ok(Response { headers })
+			Ok(Response {
+				headers: headers,
+			})
 		}
 	}
 
@@ -781,8 +786,9 @@ pub mod header {
 /// Request and response for header proofs.
 pub mod header_proof {
 	use super::{Field, NoSuchOutput, OutputKind, Output};
-	use rlp::{Encodable, Decodable, DecoderError, RlpStream, Rlp};
-	use ethereum_types::{H256, U256};
+	use rlp::{Encodable, Decodable, DecoderError, RlpStream, UntrustedRlp};
+	use bigint::prelude::U256;
+	use bigint::hash::H256;
 	use bytes::Bytes;
 
 	/// Potentially incomplete header proof request.
@@ -812,7 +818,7 @@ pub mod header_proof {
 		fn fill<F>(&mut self, oracle: F) where F: Fn(usize, usize) -> Result<Output, NoSuchOutput> {
 			if let Field::BackReference(req, idx) = self.num {
 				self.num = match oracle(req, idx) {
-					Ok(Output::Number(num)) => Field::Scalar(num),
+					Ok(Output::Number(num)) => Field::Scalar(num.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
@@ -855,7 +861,7 @@ pub mod header_proof {
 	}
 
 	impl Decodable for Response {
-		fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+		fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 			Ok(Response {
 				proof: rlp.list_at(0)?,
 				hash: rlp.val_at(1)?,
@@ -877,7 +883,7 @@ pub mod header_proof {
 /// Request and response for transaction index.
 pub mod transaction_index {
 	use super::{Field, NoSuchOutput, OutputKind, Output};
-	use ethereum_types::H256;
+	use bigint::hash::H256;
 
 	/// Potentially incomplete transaction index request.
 	#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
@@ -954,8 +960,8 @@ pub mod transaction_index {
 /// Request and response for block receipts
 pub mod block_receipts {
 	use super::{Field, NoSuchOutput, OutputKind, Output};
-	use common_types::receipt::Receipt;
-	use ethereum_types::H256;
+	use ethcore::receipt::Receipt;
+	use bigint::hash::H256;
 
 	/// Potentially incomplete block receipts request.
 	#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
@@ -1022,9 +1028,9 @@ pub mod block_receipts {
 /// Request and response for a block body
 pub mod block_body {
 	use super::{Field, NoSuchOutput, OutputKind, Output};
-	use common_types::encoded;
-	use rlp::{Encodable, Decodable, DecoderError, RlpStream, Rlp};
-	use ethereum_types::H256;
+	use ethcore::encoded;
+	use rlp::{Encodable, Decodable, DecoderError, RlpStream, UntrustedRlp};
+	use bigint::hash::H256;
 
 	/// Potentially incomplete block body request.
 	#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
@@ -1051,7 +1057,7 @@ pub mod block_body {
 		fn fill<F>(&mut self, oracle: F) where F: Fn(usize, usize) -> Result<Output, NoSuchOutput> {
 			if let Field::BackReference(req, idx) = self.hash {
 				self.hash = match oracle(req, idx) {
-					Ok(Output::Hash(hash)) => Field::Scalar(hash),
+					Ok(Output::Hash(hash)) => Field::Scalar(hash.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
@@ -1088,9 +1094,9 @@ pub mod block_body {
 	}
 
 	impl Decodable for Response {
-		fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-			use common_types::header::Header as FullHeader;
-			use common_types::transaction::UnverifiedTransaction;
+		fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
+			use ethcore::header::Header as FullHeader;
+			use ethcore::transaction::UnverifiedTransaction;
 
 			// check body validity.
 			let _: Vec<UnverifiedTransaction> = rlp.list_at(0)?;
@@ -1112,7 +1118,8 @@ pub mod block_body {
 /// A request for an account proof.
 pub mod account {
 	use super::{Field, NoSuchOutput, OutputKind, Output};
-	use ethereum_types::{H256, U256};
+	use bigint::prelude::U256;
+	use bigint::hash::H256;
 	use bytes::Bytes;
 
 	/// Potentially incomplete request for an account proof.
@@ -1150,14 +1157,14 @@ pub mod account {
 		fn fill<F>(&mut self, oracle: F) where F: Fn(usize, usize) -> Result<Output, NoSuchOutput> {
 			if let Field::BackReference(req, idx) = self.block_hash {
 				self.block_hash = match oracle(req, idx) {
-					Ok(Output::Hash(block_hash)) => Field::Scalar(block_hash),
+					Ok(Output::Hash(block_hash)) => Field::Scalar(block_hash.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
 
 			if let Field::BackReference(req, idx) = self.address_hash {
 				self.address_hash = match oracle(req, idx) {
-					Ok(Output::Hash(address_hash)) => Field::Scalar(address_hash),
+					Ok(Output::Hash(address_hash)) => Field::Scalar(address_hash.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
@@ -1212,7 +1219,7 @@ pub mod account {
 /// A request for a storage proof.
 pub mod storage {
 	use super::{Field, NoSuchOutput, OutputKind, Output};
-	use ethereum_types::H256;
+	use bigint::hash::H256;
 	use bytes::Bytes;
 
 	/// Potentially incomplete request for an storage proof.
@@ -1255,21 +1262,21 @@ pub mod storage {
 		fn fill<F>(&mut self, oracle: F) where F: Fn(usize, usize) -> Result<Output, NoSuchOutput> {
 			if let Field::BackReference(req, idx) = self.block_hash {
 				self.block_hash = match oracle(req, idx) {
-					Ok(Output::Hash(block_hash)) => Field::Scalar(block_hash),
+					Ok(Output::Hash(block_hash)) => Field::Scalar(block_hash.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
 
 			if let Field::BackReference(req, idx) = self.address_hash {
 				self.address_hash = match oracle(req, idx) {
-					Ok(Output::Hash(address_hash)) => Field::Scalar(address_hash),
+					Ok(Output::Hash(address_hash)) => Field::Scalar(address_hash.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
 
 			if let Field::BackReference(req, idx) = self.key_hash {
 				self.key_hash = match oracle(req, idx) {
-					Ok(Output::Hash(key_hash)) => Field::Scalar(key_hash),
+					Ok(Output::Hash(key_hash)) => Field::Scalar(key_hash.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
@@ -1321,7 +1328,7 @@ pub mod storage {
 /// A request for contract code.
 pub mod contract_code {
 	use super::{Field, NoSuchOutput, OutputKind, Output};
-	use ethereum_types::H256;
+	use bigint::hash::H256;
 	use bytes::Bytes;
 
 	/// Potentially incomplete contract code request.
@@ -1355,14 +1362,14 @@ pub mod contract_code {
 		fn fill<F>(&mut self, oracle: F) where F: Fn(usize, usize) -> Result<Output, NoSuchOutput> {
 			if let Field::BackReference(req, idx) = self.block_hash {
 				self.block_hash = match oracle(req, idx) {
-					Ok(Output::Hash(block_hash)) => Field::Scalar(block_hash),
+					Ok(Output::Hash(block_hash)) => Field::Scalar(block_hash.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
 
 			if let Field::BackReference(req, idx) = self.code_hash {
 				self.code_hash = match oracle(req, idx) {
-					Ok(Output::Hash(code_hash)) => Field::Scalar(code_hash),
+					Ok(Output::Hash(code_hash)) => Field::Scalar(code_hash.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
@@ -1406,10 +1413,11 @@ pub mod contract_code {
 /// A request for proof of execution.
 pub mod execution {
 	use super::{Field, NoSuchOutput, OutputKind, Output};
-	use common_types::transaction::Action;
-	use rlp::{Encodable, Decodable, DecoderError, RlpStream, Rlp};
-	use ethereum_types::{H256, U256, Address};
-	use kvdb::DBValue;
+	use ethcore::transaction::Action;
+	use rlp::{Encodable, Decodable, DecoderError, RlpStream, UntrustedRlp};
+	use bigint::prelude::U256;
+	use bigint::hash::H256;
+	use util::{Address, DBValue};
 	use bytes::Bytes;
 
 	/// Potentially incomplete execution proof request.
@@ -1450,7 +1458,7 @@ pub mod execution {
 		fn fill<F>(&mut self, oracle: F) where F: Fn(usize, usize) -> Result<Output, NoSuchOutput> {
 			if let Field::BackReference(req, idx) = self.block_hash {
 				self.block_hash = match oracle(req, idx) {
-					Ok(Output::Hash(block_hash)) => Field::Scalar(block_hash),
+					Ok(Output::Hash(block_hash)) => Field::Scalar(block_hash.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
@@ -1504,7 +1512,7 @@ pub mod execution {
 	}
 
 	impl Decodable for Response {
-		fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+		fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 			let mut items = Vec::new();
 			for raw_item in rlp.iter() {
 				let mut item = DBValue::new();
@@ -1512,7 +1520,9 @@ pub mod execution {
 				items.push(item);
 			}
 
-			Ok(Response { items })
+			Ok(Response {
+				items: items,
+			})
 		}
 	}
 
@@ -1530,8 +1540,8 @@ pub mod execution {
 /// A request for epoch signal data.
 pub mod epoch_signal {
 	use super::{Field, NoSuchOutput, OutputKind, Output};
-	use rlp::{Encodable, Decodable, DecoderError, RlpStream, Rlp};
-	use ethereum_types::H256;
+	use rlp::{Encodable, Decodable, DecoderError, RlpStream, UntrustedRlp};
+	use bigint::hash::H256;
 	use bytes::Bytes;
 
 	/// Potentially incomplete epoch signal request.
@@ -1542,7 +1552,7 @@ pub mod epoch_signal {
 	}
 
 	impl Decodable for Incomplete {
-		fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+		fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 			Ok(Incomplete {
 				block_hash: rlp.val_at(0)?,
 			})
@@ -1574,7 +1584,7 @@ pub mod epoch_signal {
 		fn fill<F>(&mut self, oracle: F) where F: Fn(usize, usize) -> Result<Output, NoSuchOutput> {
 			if let Field::BackReference(req, idx) = self.block_hash {
 				self.block_hash = match oracle(req, idx) {
-					Ok(Output::Hash(block_hash)) => Field::Scalar(block_hash),
+					Ok(Output::Hash(block_hash)) => Field::Scalar(block_hash.into()),
 					_ => Field::BackReference(req, idx),
 				}
 			}
@@ -1611,7 +1621,7 @@ pub mod epoch_signal {
 	}
 
 	impl Decodable for Response {
-		fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+		fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
 
 			Ok(Response {
 				signal: rlp.as_val()?,
@@ -1629,14 +1639,14 @@ pub mod epoch_signal {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use common_types::header::Header;
+	use ethcore::header::Header;
 
 	fn check_roundtrip<T>(val: T)
 		where T: ::rlp::Encodable + ::rlp::Decodable + PartialEq + ::std::fmt::Debug
 	{
 		// check as single value.
 		let bytes = ::rlp::encode(&val);
-		let new_val: T = ::rlp::decode(&bytes).unwrap();
+		let new_val: T = ::rlp::decode(&bytes);
 		assert_eq!(val, new_val);
 
 		// check as list containing single value.
@@ -1676,7 +1686,7 @@ mod tests {
 		let full_req = Request::Headers(req.clone());
 		let res = HeadersResponse {
 			headers: vec![
-				::common_types::encoded::Header::new(::rlp::encode(&Header::default()))
+				::ethcore::encoded::Header::new(::rlp::encode(&Header::default()).into_vec())
 			]
 		};
 		let full_res = Response::Headers(res.clone());
@@ -1716,7 +1726,7 @@ mod tests {
 		let full_req = Request::TransactionIndex(req.clone());
 		let res = TransactionIndexResponse {
 			num: 1000,
-			hash: ::ethereum_types::H256::random(),
+			hash: ::bigint::hash::H256::random(),
 			index: 4,
 		};
 		let full_res = Response::TransactionIndex(res.clone());
@@ -1729,7 +1739,7 @@ mod tests {
 
 	#[test]
 	fn receipts_roundtrip() {
-		use common_types::receipt::{Receipt, TransactionOutcome};
+		use ethcore::receipt::{Receipt, TransactionOutcome};
 		let req = IncompleteReceiptsRequest {
 			hash: Field::Scalar(Default::default()),
 		};
@@ -1749,7 +1759,7 @@ mod tests {
 
 	#[test]
 	fn body_roundtrip() {
-		use common_types::transaction::{Transaction, UnverifiedTransaction};
+		use ethcore::transaction::{Transaction, UnverifiedTransaction};
 		let req = IncompleteBodyRequest {
 			hash: Field::Scalar(Default::default()),
 		};
@@ -1757,13 +1767,13 @@ mod tests {
 		let full_req = Request::Body(req.clone());
 		let res = BodyResponse {
 			body: {
-				let header = ::common_types::header::Header::default();
+				let header = ::ethcore::header::Header::default();
 				let tx = UnverifiedTransaction::from(Transaction::default().fake_sign(Default::default()));
 				let mut stream = RlpStream::new_list(2);
 				stream.begin_list(2).append(&tx).append(&tx)
 					.begin_list(1).append(&header);
 
-				::common_types::encoded::Body::new(stream.out())
+				::ethcore::encoded::Body::new(stream.out())
 			},
 		};
 		let full_res = Response::Body(res.clone());
@@ -1839,12 +1849,12 @@ mod tests {
 
 	#[test]
 	fn execution_roundtrip() {
-		use kvdb::DBValue;
+		use util::DBValue;
 
 		let req = IncompleteExecutionRequest {
 			block_hash: Field::Scalar(Default::default()),
 			from: Default::default(),
-			action: ::common_types::transaction::Action::Create,
+			action: ::ethcore::transaction::Action::Create,
 			gas: 100_000.into(),
 			gas_price: 0.into(),
 			value: 100_000_001.into(),
@@ -1874,7 +1884,7 @@ mod tests {
 		let reqs: Vec<_> = (0..10).map(|_| IncompleteExecutionRequest {
 			block_hash: Field::Scalar(Default::default()),
 			from: Default::default(),
-			action: ::common_types::transaction::Action::Create,
+			action: ::ethcore::transaction::Action::Create,
 			gas: 100_000.into(),
 			gas_price: 0.into(),
 			value: 100_000_001.into(),
@@ -1885,18 +1895,18 @@ mod tests {
 		stream.append(&100usize).append_list(&reqs);
 		let out = stream.out();
 
-		let rlp = Rlp::new(&out);
+		let rlp = UntrustedRlp::new(&out);
 		assert_eq!(rlp.val_at::<usize>(0).unwrap(), 100usize);
 		assert_eq!(rlp.list_at::<Request>(1).unwrap(), reqs);
 	}
 
 	#[test]
 	fn responses_vec() {
-		use common_types::receipt::{Receipt, TransactionOutcome};
+		use ethcore::receipt::{Receipt, TransactionOutcome};
 		let mut stream = RlpStream::new_list(2);
 				stream.begin_list(0).begin_list(0);
 
-		let body = ::common_types::encoded::Body::new(stream.out());
+		let body = ::ethcore::encoded::Body::new(stream.out());
 		let reqs = vec![
 			Response::Headers(HeadersResponse { headers: vec![] }),
 			Response::HeaderProof(HeaderProofResponse { proof: vec![], hash: Default::default(), td: 100.into()}),

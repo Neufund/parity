@@ -1,55 +1,57 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Client tests of tracing
 
 use ethkey::KeyPair;
 use hash::keccak;
 use block::*;
-use ethereum_types::{U256, Address};
+use bigint::prelude::U256;
+use util::*;
 use io::*;
 use spec::*;
 use client::*;
-use test_helpers::get_temp_state_db;
+use tests::helpers::*;
+use devtools::RandomTempPath;
 use client::{BlockChainClient, Client, ClientConfig};
+use util::kvdb::{Database, DatabaseConfig};
 use std::sync::Arc;
+use header::Header;
 use miner::Miner;
-use types::transaction::{Action, Transaction};
+use transaction::{Action, Transaction};
+use views::BlockView;
 use trace::{RewardType, LocalizedTrace};
 use trace::trace::Action::Reward;
-use test_helpers;
-use verification::queue::kind::blocks::Unverified;
-use types::header::Header;
-use types::view;
-use types::views::BlockView;
 
 #[test]
 fn can_trace_block_and_uncle_reward() {
-	let db = test_helpers::new_db();
+	let dir = RandomTempPath::new();
 	let spec = Spec::new_test_with_reward();
 	let engine = &*spec.engine;
 
 	// Create client
+	let db_config = DatabaseConfig::with_columns(::db::NUM_COLUMNS);
 	let mut client_config = ClientConfig::default();
 	client_config.tracing.enabled = true;
+	let client_db = Arc::new(Database::open(&db_config, dir.as_path().to_str().unwrap()).unwrap());
 	let client = Client::new(
 		client_config,
 		&spec,
-		db,
-		Arc::new(Miner::new_for_tests(&spec, None)),
+		client_db,
+		Arc::new(Miner::with_spec(&spec)),
 		IoChannel::disconnected(),
 	).unwrap();
 
@@ -86,20 +88,20 @@ fn can_trace_block_and_uncle_reward() {
 		(3141562.into(), 31415620.into()),
 		vec![],
 		false,
-		&mut Vec::new().into_iter(),
 	).unwrap();
+	root_block.set_difficulty(U256::from(0x20000));
 	rolling_timestamp += 10;
 	root_block.set_timestamp(rolling_timestamp);
 
-	let root_block = root_block.close_and_lock().unwrap().seal(engine, vec![]).unwrap();
+	let root_block = root_block.close_and_lock().seal(engine, vec![]).unwrap();
 
-	if let Err(e) = client.import_block(Unverified::from_rlp(root_block.rlp_bytes()).unwrap()) {
+	if let Err(e) = client.import_block(root_block.rlp_bytes()) {
 		panic!("error importing block which is valid by definition: {:?}", e);
 	}
 
-	last_header = view!(BlockView, &root_block.rlp_bytes()).header();
+	last_header = BlockView::new(&root_block.rlp_bytes()).header();
 	let root_header = last_header.clone();
-	db = root_block.drain().state.drop().1;
+	db = root_block.drain();
 
 	last_hashes.push(last_header.hash());
 
@@ -115,19 +117,19 @@ fn can_trace_block_and_uncle_reward() {
 		(3141562.into(), 31415620.into()),
 		vec![],
 		false,
-		&mut Vec::new().into_iter(),
 	).unwrap();
+	parent_block.set_difficulty(U256::from(0x20000));
 	rolling_timestamp += 10;
 	parent_block.set_timestamp(rolling_timestamp);
 
-	let parent_block = parent_block.close_and_lock().unwrap().seal(engine, vec![]).unwrap();
+	let parent_block = parent_block.close_and_lock().seal(engine, vec![]).unwrap();
 
-	if let Err(e) = client.import_block(Unverified::from_rlp(parent_block.rlp_bytes()).unwrap()) {
+	if let Err(e) = client.import_block(parent_block.rlp_bytes()) {
 		panic!("error importing block which is valid by definition: {:?}", e);
 	}
 
-	last_header = view!(BlockView,&parent_block.rlp_bytes()).header();
-	db = parent_block.drain().state.drop().1;
+	last_header = BlockView::new(&parent_block.rlp_bytes()).header();
+	db = parent_block.drain();
 
 	last_hashes.push(last_header.hash());
 
@@ -142,9 +144,9 @@ fn can_trace_block_and_uncle_reward() {
 		author.clone(),
 		(3141562.into(), 31415620.into()),
 		vec![],
-		false,
-		&mut Vec::new().into_iter(),
+		false
 		).unwrap();
+	block.set_difficulty(U256::from(0x20000));
 	rolling_timestamp += 10;
 	block.set_timestamp(rolling_timestamp);
 
@@ -170,9 +172,9 @@ fn can_trace_block_and_uncle_reward() {
 	uncle.set_timestamp(rolling_timestamp);
 	block.push_uncle(uncle).unwrap();
 
-	let block = block.close_and_lock().unwrap().seal(engine, vec![]).unwrap();
+	let block = block.close_and_lock().seal(engine, vec![]).unwrap();
 
-	let res = client.import_block(Unverified::from_rlp(block.rlp_bytes()).unwrap());
+	let res = client.import_block(block.rlp_bytes());
 	if res.is_err() {
 		panic!("error importing block: {:#?}", res.err().unwrap());
 	}

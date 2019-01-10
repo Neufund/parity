@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Parity-specific metadata extractors.
 
@@ -23,10 +23,9 @@ use authcodes;
 use http_common::HttpMetaExtractor;
 use ipc;
 use jsonrpc_core as core;
-use jsonrpc_core::futures::future::Either;
 use jsonrpc_pubsub::Session;
 use ws;
-use ethereum_types::H256;
+use bigint::hash::H256;
 
 use v1::{Metadata, Origin};
 use v1::informant::RpcStats;
@@ -37,24 +36,26 @@ pub struct RpcExtractor;
 impl HttpMetaExtractor for RpcExtractor {
 	type Metadata = Metadata;
 
-	fn read_metadata(&self, origin: Option<String>, user_agent: Option<String>) -> Metadata {
-		Metadata {
-			origin: Origin::Rpc(
-				format!("{} / {}",
-						origin.unwrap_or("unknown origin".to_string()),
-						user_agent.unwrap_or("unknown agent".to_string()))
-			),
-			session: None,
-		}
+	fn read_metadata(&self, origin: Option<String>, user_agent: Option<String>, dapps_origin: Option<String>) -> Metadata {
+		let mut metadata = Metadata::default();
+
+		metadata.origin = match (origin.as_ref().map(|s| s.as_str()), user_agent, dapps_origin) {
+			(Some("null"), _, Some(dapp)) => Origin::Dapps(dapp.into()),
+			(Some(dapp), _, _) => Origin::Dapps(dapp.to_owned().into()),
+			(None, Some(service), _) => Origin::Rpc(service.into()),
+			(None, _, _) => Origin::Rpc("unknown".into()),
+		};
+
+		metadata
 	}
 }
 
 impl ipc::MetaExtractor<Metadata> for RpcExtractor {
 	fn extract(&self, req: &ipc::RequestContext) -> Metadata {
-		Metadata {
-			origin: Origin::Ipc(req.session_id.into()),
-			session: Some(Arc::new(Session::new(req.sender.clone()))),
-		}
+		let mut metadata = Metadata::default();
+		metadata.origin = Origin::Ipc(req.session_id.into());
+		metadata.session = Some(Arc::new(Session::new(req.sender.clone())));
+		metadata
 	}
 }
 
@@ -74,23 +75,22 @@ impl WsExtractor {
 
 impl ws::MetaExtractor<Metadata> for WsExtractor {
 	fn extract(&self, req: &ws::RequestContext) -> Metadata {
+		let mut metadata = Metadata::default();
 		let id = req.session_id as u64;
 
-		let origin = match self.authcodes_path {
+		let dapp = req.origin.as_ref().map(|origin| (&**origin).into()).unwrap_or_default();
+		metadata.origin = match self.authcodes_path {
 			Some(ref path) => {
 				let authorization = req.protocols.get(0).and_then(|p| auth_token_hash(&path, p, true));
 				match authorization {
-					Some(id) => Origin::Signer { session: id.into() },
-					None => Origin::Ws { session: id.into() },
+					Some(id) => Origin::Signer { session: id.into(), dapp: dapp },
+					None => Origin::Ws { session: id.into(), dapp: dapp },
 				}
 			},
-			None => Origin::Ws { session: id.into() },
+			None => Origin::Ws { session: id.into(), dapp: dapp },
 		};
-		let session = Some(Arc::new(Session::new(req.sender())));
-		Metadata {
-			origin,
-			session,
-		}
+		metadata.session = Some(Arc::new(Session::new(req.sender())));
+		metadata
 	}
 }
 
@@ -136,7 +136,7 @@ impl ws::RequestMiddleware for WsExtractor {
 }
 
 fn add_security_headers(res: &mut ws::ws::Response) {
-	let headers = res.headers_mut();
+	let mut headers = res.headers_mut();
 	headers.push(("X-Frame-Options".into(), b"SAMEORIGIN".to_vec()));
 	headers.push(("X-XSS-Protection".into(), b"1; mode=block".to_vec()));
 	headers.push(("X-Content-Type-Options".into(), b"nosniff".to_vec()));
@@ -217,27 +217,26 @@ impl<M: core::Middleware<Metadata>> WsDispatcher<M> {
 }
 
 impl<M: core::Middleware<Metadata>> core::Middleware<Metadata> for WsDispatcher<M> {
-	type Future = Either<
-		core::FutureRpcResult<M::Future, M::CallFuture>,
+	type Future = core::futures::future::Either<
+		M::Future,
 		core::FutureResponse,
 	>;
-	type CallFuture = core::middleware::NoopCallFuture;
 
-	fn on_request<F, X>(&self, request: core::Request, meta: Metadata, process: F)
-		-> Either<Self::Future, X>
-	where
+	fn on_request<F, X>(&self, request: core::Request, meta: Metadata, process: F) -> Self::Future where
 		F: FnOnce(core::Request, Metadata) -> X,
 		X: core::futures::Future<Item=Option<core::Response>, Error=()> + Send + 'static,
 	{
+		use self::core::futures::future::Either::{A, B};
+
 		let use_full = match &meta.origin {
 			&Origin::Signer { .. } => true,
 			_ => false,
 		};
 
 		if use_full {
-			Either::A(Either::A(self.full_handler.handle_rpc_request(request, meta)))
+			A(self.full_handler.handle_rpc_request(request, meta))
 		} else {
-			Either::B(process(request, meta))
+			B(process(request, meta).boxed())
 		}
 	}
 }
@@ -253,13 +252,26 @@ mod tests {
 		let extractor = RpcExtractor;
 
 		// when
-		let meta1 = extractor.read_metadata(None, None);
-		let meta2 = extractor.read_metadata(None, Some("http://parity.io".to_owned()));
-		let meta3 = extractor.read_metadata(None, Some("http://parity.io".to_owned()));
+		let meta1 = extractor.read_metadata(None, None, None);
+		let meta2 = extractor.read_metadata(None, Some("http://parity.io".to_owned()), None);
+		let meta3 = extractor.read_metadata(None, Some("http://parity.io".to_owned()), Some("ignored".into()));
 
 		// then
-		assert_eq!(meta1.origin, Origin::Rpc("unknown origin / unknown agent".into()));
-		assert_eq!(meta2.origin, Origin::Rpc("unknown origin / http://parity.io".into()));
-		assert_eq!(meta3.origin, Origin::Rpc("unknown origin / http://parity.io".into()));
+		assert_eq!(meta1.origin, Origin::Rpc("unknown".into()));
+		assert_eq!(meta2.origin, Origin::Rpc("http://parity.io".into()));
+		assert_eq!(meta3.origin, Origin::Rpc("http://parity.io".into()));
+	}
+
+	#[test]
+	fn should_dapps_origin() {
+		// given
+		let extractor = RpcExtractor;
+		let dapp = "https://wallet.ethereum.org".to_owned();
+
+		// when
+		let meta = extractor.read_metadata(Some("null".into()), None, Some(dapp.clone()));
+
+		// then
+		assert_eq!(meta.origin, Origin::Dapps(dapp.into()));
 	}
 }

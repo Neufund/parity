@@ -15,7 +15,6 @@
 
 # vim stuff
 *.swp
-*.swo
 
 # mac stuff
 .DS_Store
@@ -23,9 +22,6 @@
 # npm stuff
 npm-debug.log
 node_modules
-
-# js build artifacts
-.git-release.log
 
 # gdb files
 .gdb_history
@@ -38,8 +34,7 @@ node_modules
 
 # Build artifacts
 out/
-parity-clib-examples/cpp/build/
 
 .vscode
-rls/
+
 /parity.*

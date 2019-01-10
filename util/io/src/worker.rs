@@ -1,39 +1,44 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
-use futures::future::{self, Loop};
 use std::sync::Arc;
 use std::thread::{JoinHandle, self};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use deque;
-use service_mio::{HandlerId, IoChannel, IoContext};
-use tokio::{self};
+use crossbeam::sync::chase_lev;
+use service::{HandlerId, IoChannel, IoContext};
 use IoHandler;
-use LOCAL_STACK_SIZE;
+use std::cell::Cell;
 
-use parking_lot::{Condvar, Mutex};
+use std::sync::{Condvar as SCondvar, Mutex as SMutex};
 
 const STACK_SIZE: usize = 16*1024*1024;
+
+thread_local! {
+	/// Stack size
+	/// Should be modified if it is changed in Rust since it is no way
+	/// to know or get it
+	pub static LOCAL_STACK_SIZE: Cell<usize> = Cell::new(::std::env::var("RUST_MIN_STACK").ok().and_then(|s| s.parse().ok()).unwrap_or(2 * 1024 * 1024));
+}
 
 pub enum WorkType<Message> {
 	Readable,
 	Writable,
 	Hup,
 	Timeout,
-	Message(Arc<Message>)
+	Message(Message)
 }
 
 pub struct Work<Message> {
@@ -47,20 +52,20 @@ pub struct Work<Message> {
 /// Sorts them ready for blockchain insertion.
 pub struct Worker {
 	thread: Option<JoinHandle<()>>,
-	wait: Arc<Condvar>,
+	wait: Arc<SCondvar>,
 	deleting: Arc<AtomicBool>,
-	wait_mutex: Arc<Mutex<()>>,
+	wait_mutex: Arc<SMutex<()>>,
 }
 
 impl Worker {
 	/// Creates a new worker instance.
 	pub fn new<Message>(index: usize,
-						stealer: deque::Stealer<Work<Message>>,
+						stealer: chase_lev::Stealer<Work<Message>>,
 						channel: IoChannel<Message>,
-						wait: Arc<Condvar>,
-						wait_mutex: Arc<Mutex<()>>,
+						wait: Arc<SCondvar>,
+						wait_mutex: Arc<SMutex<()>>,
 					   ) -> Worker
-					where Message: Send + Sync + 'static {
+					where Message: Send + Sync + Clone + 'static {
 		let deleting = Arc::new(AtomicBool::new(false));
 		let mut worker = Worker {
 			thread: None,
@@ -71,34 +76,36 @@ impl Worker {
 		worker.thread = Some(thread::Builder::new().stack_size(STACK_SIZE).name(format!("IO Worker #{}", index)).spawn(
 			move || {
 				LOCAL_STACK_SIZE.with(|val| val.set(STACK_SIZE));
-				let ini = (stealer, channel.clone(), wait, wait_mutex.clone(), deleting);
-				let future = future::loop_fn(ini, |(stealer, channel, wait, wait_mutex, deleting)| {
-					{
-						let mut lock = wait_mutex.lock();
-						if deleting.load(AtomicOrdering::Acquire) {
-							return Ok(Loop::Break(()));
-						}
-						wait.wait(&mut lock);
-					}
-
-					while !deleting.load(AtomicOrdering::Acquire) {
-						match stealer.steal() {
-							deque::Steal::Data(work) => Worker::do_work(work, channel.clone()),
-							deque::Steal::Retry => {},
-							deque::Steal::Empty => break,
-						}
-					}
-					Ok(Loop::Continue((stealer, channel, wait, wait_mutex, deleting)))
-				});
-				if let Err(()) = tokio::runtime::current_thread::block_on_all(future) {
-					error!(target: "ioworker", "error while executing future")
-				}
+				Worker::work_loop(stealer, channel.clone(), wait, wait_mutex.clone(), deleting)
 			})
 			.expect("Error creating worker thread"));
 		worker
 	}
 
-	fn do_work<Message>(work: Work<Message>, channel: IoChannel<Message>) where Message: Send + Sync + 'static {
+	fn work_loop<Message>(stealer: chase_lev::Stealer<Work<Message>>,
+						channel: IoChannel<Message>, wait: Arc<SCondvar>,
+						wait_mutex: Arc<SMutex<()>>,
+						deleting: Arc<AtomicBool>)
+						where Message: Send + Sync + Clone + 'static {
+		loop {
+			{
+				let lock = wait_mutex.lock().expect("Poisoned work_loop mutex");
+				if deleting.load(AtomicOrdering::Acquire) {
+					return;
+				}
+				let _ = wait.wait(lock);
+			}
+
+			while !deleting.load(AtomicOrdering::Acquire) {
+				match stealer.steal() {
+					chase_lev::Steal::Data(work) => Worker::do_work(work, channel.clone()),
+					_ => break,
+				}
+			}
+		}
+	}
+
+	fn do_work<Message>(work: Work<Message>, channel: IoChannel<Message>) where Message: Send + Sync + Clone + 'static {
 		match work.work_type {
 			WorkType::Readable => {
 				work.handler.stream_readable(&IoContext::new(channel, work.handler_id), work.token);
@@ -113,7 +120,7 @@ impl Worker {
 				work.handler.timeout(&IoContext::new(channel, work.handler_id), work.token);
 			}
 			WorkType::Message(message) => {
-				work.handler.message(&IoContext::new(channel, work.handler_id), &*message);
+				work.handler.message(&IoContext::new(channel, work.handler_id), &message);
 			}
 		}
 	}
@@ -122,7 +129,7 @@ impl Worker {
 impl Drop for Worker {
 	fn drop(&mut self) {
 		trace!(target: "shutdown", "[IoWorker] Closing...");
-		let _ = self.wait_mutex.lock();
+		let _ = self.wait_mutex.lock().expect("Poisoned work_loop mutex");
 		self.deleting.store(true, AtomicOrdering::Release);
 		self.wait.notify_all();
 		if let Some(thread) = self.thread.take() {

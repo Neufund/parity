@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::fmt;
 use instructions;
@@ -66,7 +66,11 @@ impl<S : fmt::Display> Stack<S> for VecStack<S> {
 	}
 
 	fn pop_back(&mut self) -> S {
-		self.stack.pop().expect("instruction validation prevents from popping too many items; qed")
+		let val = self.stack.pop();
+		match val {
+			Some(x) => x,
+			None => panic!("Tried to pop from empty stack.")
+		}
 	}
 
 	fn pop_n(&mut self, no_of_elems: usize) -> &[S] {
@@ -91,3 +95,4 @@ impl<S : fmt::Display> Stack<S> for VecStack<S> {
 		&self.stack[self.stack.len() - no_from_top .. self.stack.len()]
 	}
 }
+

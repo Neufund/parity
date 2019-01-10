@@ -1,48 +1,49 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! WebSockets server tests.
 
 use std::sync::Arc;
 
+use devtools::http_client;
 use jsonrpc_core::MetaIoHandler;
+use rand;
 use ws;
 
 use v1::{extractors, informant};
 use tests::helpers::{GuardedAuthCodes, Server};
-use tests::http_client;
 
 /// Setup a mock signer for tests
 pub fn serve() -> (Server<ws::Server>, usize, GuardedAuthCodes) {
-	let address = "127.0.0.1:0".parse().unwrap();
+	let port = 35000 + rand::random::<usize>() % 10000;
+	let address = format!("127.0.0.1:{}", port).parse().unwrap();
 	let io = MetaIoHandler::default();
 	let authcodes = GuardedAuthCodes::new();
 	let stats = Arc::new(informant::RpcStats::default());
 
-	let res = Server::new(|_| ::start_ws(
+	let res = Server::new(|remote| ::start_ws(
 		&address,
 		io,
+		remote,
 		ws::DomainsValidation::Disabled,
 		ws::DomainsValidation::Disabled,
-		5,
 		extractors::WsExtractor::new(Some(&authcodes.path)),
 		extractors::WsExtractor::new(Some(&authcodes.path)),
 		extractors::WsStats::new(stats),
 	).unwrap());
-	let port = res.addr().port() as usize;
 
 	(res, port, authcodes)
 }
@@ -56,7 +57,8 @@ pub fn request(server: Server<ws::Server>, request: &str) -> http_client::Respon
 mod testing {
 	use std::time;
 	use hash::keccak;
-	use super::{serve, request, http_client};
+	use devtools::http_client;
+	use super::{serve, request};
 
 	#[test]
 	fn should_not_redirect_to_parity_host() {
@@ -102,7 +104,6 @@ mod testing {
 		http_client::assert_security_headers_present(&response.headers, None);
 	}
 
-	#[cfg(not(target_os = "windows"))]
 	#[test]
 	fn should_allow_if_authorization_is_correct() {
 		// given
@@ -118,7 +119,7 @@ mod testing {
 				Host: 127.0.0.1:{}\r\n\
 				Connection: Close\r\n\
 				Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==\r\n\
-				Sec-WebSocket-Protocol: {:x}_{}\r\n\
+				Sec-WebSocket-Protocol: {:?}_{}\r\n\
 				Sec-WebSocket-Version: 13\r\n\
 				\r\n\
 				{{}}
@@ -134,7 +135,7 @@ mod testing {
 	}
 
 	#[test]
-	fn should_not_allow_initial_connection_even_once() {
+	fn should_allow_initial_connection_but_only_once() {
 		// given
 		let (server, port, authcodes) = serve();
 		let code = "initial";
@@ -148,7 +149,23 @@ mod testing {
 				Host: 127.0.0.1:{}\r\n\
 				Connection: Close\r\n\
 				Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==\r\n\
-				Sec-WebSocket-Protocol:{:x}_{}\r\n\
+				Sec-WebSocket-Protocol:{:?}_{}\r\n\
+				Sec-WebSocket-Version: 13\r\n\
+				\r\n\
+				{{}}
+			",
+			port,
+			keccak(format!("{}:{}", code, timestamp)),
+			timestamp,
+			)
+		);
+		let response2 = http_client::request(server.addr(),
+			&format!("\
+				GET / HTTP/1.1\r\n\
+				Host: 127.0.0.1:{}\r\n\
+				Connection: Close\r\n\
+				Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==\r\n\
+				Sec-WebSocket-Protocol:{:?}_{}\r\n\
 				Sec-WebSocket-Version: 13\r\n\
 				\r\n\
 				{{}}
@@ -159,8 +176,10 @@ mod testing {
 			)
 		);
 
+
 		// then
-		assert_eq!(response1.status, "HTTP/1.1 403 Forbidden".to_owned());
-		http_client::assert_security_headers_present(&response1.headers, None);
+		assert_eq!(response1.status, "HTTP/1.1 101 Switching Protocols".to_owned());
+		assert_eq!(response2.status, "HTTP/1.1 403 Forbidden".to_owned());
+		http_client::assert_security_headers_present(&response2.headers, None);
 	}
 }

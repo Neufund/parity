@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 
 ERR=0
 cargo build --release -p chainspec
@@ -12,3 +12,4 @@ for spec in ethcore/res/ethereum/*.json; do
 done
 
 exit $ERR
+

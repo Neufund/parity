@@ -5,24 +5,24 @@ authors = ["Parity Technologies <admin@parity.io>"]
 
 [dependencies]
 bit-set = "0.4"
-parity-bytes = "0.1"
-ethereum-types = "0.4"
+byteorder = "1.0"
+common-types = { path = "../types" }
+ethcore-util = { path = "../../util" }
+ethcore-bigint = { path = "../../util/bigint" }
+evmjit = { path = "../../evmjit", optional = true }
+ethjson = { path = "../../json" }
 heapsize = "0.4"
-lazy_static = "1.0"
-log = "0.4"
+lazy_static = "0.2"
+log = "0.3"
+rlp = { path = "../../util/rlp" }
 vm = { path = "../vm" }
-keccak-hash = "0.1"
-parking_lot = "0.7"
-memory-cache = { path = "../../util/memory-cache" }
+ethcore-logger = { path = "../../logger" }
+wasm-utils = { git = "https://github.com/paritytech/wasm-utils" }
+hash = { path = "../../util/hash" }
+parking_lot = "0.4"
 
 [dev-dependencies]
 rustc-hex = "1.0"
-criterion = "0.2"
 
 [features]
-evm-debug = []
-evm-debug-tests = ["evm-debug"]
-
-[[bench]]
-name = "basic"
-harness = false
+jit = ["evmjit"]

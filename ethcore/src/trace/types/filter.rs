@@ -1,23 +1,27 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Trace filters type definitions
 
 use std::ops::Range;
-use ethereum_types::{Address, Bloom, BloomInput};
+use bloomchain::{Filter as BloomFilter, Bloom, Number};
+use hash::keccak;
+use util::Address;
+use bloomable::Bloomable;
+use basic_types::LogBloom;
 use trace::flat::FlatTrace;
 use super::trace::{Action, Res};
 
@@ -47,27 +51,23 @@ impl AddressesFilter {
 	}
 
 	/// Returns blooms of this addresses filter.
-	pub fn blooms(&self) -> Vec<Bloom> {
+	pub fn blooms(&self) -> Vec<LogBloom> {
 		match self.list.is_empty() {
-			true => vec![Bloom::default()],
+			true => vec![LogBloom::default()],
 			false => self.list.iter()
-				.map(|address| Bloom::from(BloomInput::Raw(address)))
+				.map(|address| LogBloom::from_bloomed(&keccak(address)))
 				.collect(),
 		}
 	}
 
 	/// Returns vector of blooms zipped with blooms of this addresses filter.
-	pub fn with_blooms(&self, blooms: Vec<Bloom>) -> Vec<Bloom> {
+	pub fn with_blooms(&self, blooms: Vec<LogBloom>) -> Vec<LogBloom> {
 		match self.list.is_empty() {
 			true => blooms,
 			false => blooms
 				.into_iter()
 				.flat_map(|bloom| self.list.iter()
-					.map(|address| {
-						let mut bloom = bloom.clone();
-						bloom.accrue(BloomInput::Raw(address));
-						bloom
-					})
+					.map(|address| bloom.with_bloomed(&keccak(address)))
 					.collect::<Vec<_>>())
 				.collect(),
 		}
@@ -87,9 +87,22 @@ pub struct Filter {
 	pub to_address: AddressesFilter,
 }
 
+impl BloomFilter for Filter {
+	fn bloom_possibilities(&self) -> Vec<Bloom> {
+		self.bloom_possibilities()
+			.into_iter()
+			.map(|b| Bloom::from(b.0))
+			.collect()
+	}
+
+	fn range(&self) -> Range<Number> {
+		self.range.clone()
+	}
+}
+
 impl Filter {
 	/// Returns combinations of each address.
-	pub fn bloom_possibilities(&self) -> Vec<Bloom> {
+	fn bloom_possibilities(&self) -> Vec<LogBloom> {
 		self.to_address.with_blooms(self.from_address.blooms())
 	}
 
@@ -117,7 +130,7 @@ impl Filter {
 				from_matches && to_matches
 			},
 			Action::Reward(ref reward) => {
-				self.from_address.matches_all() && self.to_address.matches(&reward.author)
+				self.to_address.matches(&reward.author)
 			},
 		}
 	}
@@ -125,7 +138,9 @@ impl Filter {
 
 #[cfg(test)]
 mod tests {
-	use ethereum_types::{Address, Bloom, BloomInput};
+	use util::Address;
+	use hash::keccak;
+	use bloomable::Bloomable;
 	use trace::trace::{Action, Call, Res, Create, CreateResult, Suicide, Reward};
 	use trace::flat::FlatTrace;
 	use trace::{Filter, AddressesFilter, TraceError, RewardType};
@@ -140,7 +155,7 @@ mod tests {
 		};
 
 		let blooms = filter.bloom_possibilities();
-		assert_eq!(blooms, vec![Bloom::default()]);
+		assert_eq!(blooms, vec![Default::default()]);
 	}
 
 	#[test]
@@ -154,9 +169,9 @@ mod tests {
 		let blooms = filter.bloom_possibilities();
 		assert_eq!(blooms.len(), 1);
 
-		assert!(blooms[0].contains_input(BloomInput::Raw(&Address::from(1))));
-		assert!(blooms[0].contains_input(BloomInput::Raw(&Address::from(2))));
-		assert!(!blooms[0].contains_input(BloomInput::Raw(&Address::from(3))));
+		assert!(blooms[0].contains_bloomed(&keccak(Address::from(1))));
+		assert!(blooms[0].contains_bloomed(&keccak(Address::from(2))));
+		assert!(!blooms[0].contains_bloomed(&keccak(Address::from(3))));
 	}
 
 	#[test]
@@ -170,8 +185,8 @@ mod tests {
 		let blooms = filter.bloom_possibilities();
 		assert_eq!(blooms.len(), 1);
 
-		assert!(blooms[0].contains_input(BloomInput::Raw(&Address::from(1))));
-		assert!(!blooms[0].contains_input(BloomInput::Raw(&Address::from(2))));
+		assert!(blooms[0].contains_bloomed(&keccak(Address::from(1))));
+		assert!(!blooms[0].contains_bloomed(&keccak(Address::from(2))));
 	}
 
 	#[test]
@@ -185,8 +200,8 @@ mod tests {
 		let blooms = filter.bloom_possibilities();
 		assert_eq!(blooms.len(), 1);
 
-		assert!(blooms[0].contains_input(BloomInput::Raw(&Address::from(1))));
-		assert!(!blooms[0].contains_input(BloomInput::Raw(&Address::from(2))));
+		assert!(blooms[0].contains_bloomed(&keccak(Address::from(1))));
+		assert!(!blooms[0].contains_bloomed(&keccak(Address::from(2))));
 	}
 
 	#[test]
@@ -200,25 +215,25 @@ mod tests {
 		let blooms = filter.bloom_possibilities();
 		assert_eq!(blooms.len(), 4);
 
-		assert!(blooms[0].contains_input(BloomInput::Raw(&Address::from(1))));
-		assert!(blooms[0].contains_input(BloomInput::Raw(&Address::from(2))));
-		assert!(!blooms[0].contains_input(BloomInput::Raw(&Address::from(3))));
-		assert!(!blooms[0].contains_input(BloomInput::Raw(&Address::from(4))));
+		assert!(blooms[0].contains_bloomed(&keccak(Address::from(1))));
+		assert!(blooms[0].contains_bloomed(&keccak(Address::from(2))));
+		assert!(!blooms[0].contains_bloomed(&keccak(Address::from(3))));
+		assert!(!blooms[0].contains_bloomed(&keccak(Address::from(4))));
 
-		assert!(blooms[1].contains_input(BloomInput::Raw(&Address::from(1))));
-		assert!(blooms[1].contains_input(BloomInput::Raw(&Address::from(4))));
-		assert!(!blooms[1].contains_input(BloomInput::Raw(&Address::from(2))));
-		assert!(!blooms[1].contains_input(BloomInput::Raw(&Address::from(3))));
+		assert!(blooms[1].contains_bloomed(&keccak(Address::from(1))));
+		assert!(blooms[1].contains_bloomed(&keccak(Address::from(4))));
+		assert!(!blooms[1].contains_bloomed(&keccak(Address::from(2))));
+		assert!(!blooms[1].contains_bloomed(&keccak(Address::from(3))));
 
-		assert!(blooms[2].contains_input(BloomInput::Raw(&Address::from(2))));
-		assert!(blooms[2].contains_input(BloomInput::Raw(&Address::from(3))));
-		assert!(!blooms[2].contains_input(BloomInput::Raw(&Address::from(1))));
-		assert!(!blooms[2].contains_input(BloomInput::Raw(&Address::from(4))));
+		assert!(blooms[2].contains_bloomed(&keccak(Address::from(2))));
+		assert!(blooms[2].contains_bloomed(&keccak(Address::from(3))));
+		assert!(!blooms[2].contains_bloomed(&keccak(Address::from(1))));
+		assert!(!blooms[2].contains_bloomed(&keccak(Address::from(4))));
 
-		assert!(blooms[3].contains_input(BloomInput::Raw(&Address::from(3))));
-		assert!(blooms[3].contains_input(BloomInput::Raw(&Address::from(4))));
-		assert!(!blooms[3].contains_input(BloomInput::Raw(&Address::from(1))));
-		assert!(!blooms[3].contains_input(BloomInput::Raw(&Address::from(2))));
+		assert!(blooms[3].contains_bloomed(&keccak(Address::from(3))));
+		assert!(blooms[3].contains_bloomed(&keccak(Address::from(4))));
+		assert!(!blooms[3].contains_bloomed(&keccak(Address::from(1))));
+		assert!(!blooms[3].contains_bloomed(&keccak(Address::from(2))));
 	}
 
 	#[test]
@@ -341,48 +356,12 @@ mod tests {
 			subtraces: 0
 		};
 
-		assert!(!f0.matches(&trace));
-		assert!(!f1.matches(&trace));
+		assert!(f0.matches(&trace));
+		assert!(f1.matches(&trace));
 		assert!(f2.matches(&trace));
 		assert!(f3.matches(&trace));
 		assert!(f4.matches(&trace));
-		assert!(!f5.matches(&trace));
+		assert!(f5.matches(&trace));
 		assert!(!f6.matches(&trace));
-	}
-
-	#[test]
-	fn filter_match_block_reward_fix_8070() {
-		let f0 = Filter {
-			range: (0..0),
-			from_address: vec![1.into()].into(),
-			to_address: vec![].into(),
-		};
-
-		let f1 = Filter {
-			range: (0..0),
-			from_address: vec![].into(),
-			to_address: vec![].into(),
-		};
-
-		let f2 = Filter {
-			range: (0..0),
-			from_address: vec![].into(),
-			to_address: vec![2.into()].into(),
-		};
-
-		let trace = FlatTrace {
-			action: Action::Reward(Reward {
-				author: 2.into(),
-				value: 10.into(),
-				reward_type: RewardType::Block,
-			}),
-			result: Res::None,
-			trace_address: vec![0].into_iter().collect(),
-			subtraces: 0,
-		};
-
-		assert!(!f0.matches(&trace));
-		assert!(f1.matches(&trace));
-		assert!(f2.matches(&trace));
 	}
 }

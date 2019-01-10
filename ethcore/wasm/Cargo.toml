@@ -5,13 +5,10 @@ authors = ["Parity Technologies <admin@parity.io>"]
 
 [dependencies]
 byteorder = "1.0"
-ethereum-types = "0.4"
-log = "0.4"
-parity-wasm = "0.31"
-libc = "0.2"
-pwasm-utils = "0.6.1"
+ethcore-util = { path = "../../util" }
+ethcore-bigint = { path = "../../util/bigint" }
+log = "0.3"
+parity-wasm = "0.14"
+wasm-utils = { git = "https://github.com/paritytech/wasm-utils" }
 vm = { path = "../vm" }
-wasmi = "0.3.0"
-
-[dev-dependencies]
-env_logger = "0.5"
+ethcore-logger = { path = "../../logger" }

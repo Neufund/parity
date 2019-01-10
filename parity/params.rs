@@ -1,51 +1,40 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{str, fs, fmt};
 use std::time::Duration;
-
-use ethcore::client::Mode;
-use ethcore::ethereum;
+use bigint::prelude::U256;
+use util::{Address, version_data};
+use util::journaldb::Algorithm;
 use ethcore::spec::{Spec, SpecParams};
-use ethereum_types::{U256, Address};
-use parity_runtime::Executor;
+use ethcore::ethereum;
+use ethcore::client::Mode;
+use ethcore::miner::{GasPricer, GasPriceCalibratorOptions};
 use hash_fetch::fetch::Client as FetchClient;
-use journaldb::Algorithm;
-use miner::gas_pricer::GasPricer;
-use miner::gas_price_calibrator::{GasPriceCalibratorOptions, GasPriceCalibrator};
-use parity_version::version_data;
 use user_defaults::UserDefaults;
 
 #[derive(Debug, PartialEq)]
 pub enum SpecType {
 	Foundation,
-	Classic,
-	Poanet,
-	Tobalaba,
-	Expanse,
-	Musicoin,
-	Ellaism,
-	Easthub,
-	Social,
-	Mix,
-	Callisto,
 	Morden,
 	Ropsten,
 	Kovan,
-	Sokol,
+	Olympic,
+	Classic,
+	Expanse,
 	Dev,
 	Custom(String),
 }
@@ -61,21 +50,13 @@ impl str::FromStr for SpecType {
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		let spec = match s {
-			"ethereum" | "frontier" | "homestead" | "byzantium" | "foundation" | "mainnet" => SpecType::Foundation,
-			"classic" | "frontier-dogmatic" | "homestead-dogmatic" => SpecType::Classic,
-			"poanet" | "poacore" => SpecType::Poanet,
-			"tobalaba" => SpecType::Tobalaba,
-			"expanse" => SpecType::Expanse,
-			"musicoin" => SpecType::Musicoin,
-			"ellaism" => SpecType::Ellaism,
-			"easthub" => SpecType::Easthub,
-			"social" => SpecType::Social,
-			"mix" => SpecType::Mix,
-			"callisto" => SpecType::Callisto,
+			"foundation" | "frontier" | "homestead" | "mainnet" => SpecType::Foundation,
+			"frontier-dogmatic" | "homestead-dogmatic" | "classic" => SpecType::Classic,
 			"morden" | "classic-testnet" => SpecType::Morden,
 			"ropsten" => SpecType::Ropsten,
 			"kovan" | "testnet" => SpecType::Kovan,
-			"sokol" | "poasokol" => SpecType::Sokol,
+			"olympic" => SpecType::Olympic,
+			"expanse" => SpecType::Expanse,
 			"dev" => SpecType::Dev,
 			other => SpecType::Custom(other.into()),
 		};
@@ -87,20 +68,12 @@ impl fmt::Display for SpecType {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.write_str(match *self {
 			SpecType::Foundation => "foundation",
-			SpecType::Classic => "classic",
-			SpecType::Poanet => "poanet",
-			SpecType::Tobalaba => "tobalaba",
-			SpecType::Expanse => "expanse",
-			SpecType::Musicoin => "musicoin",
-			SpecType::Ellaism => "ellaism",
-			SpecType::Easthub => "easthub",
-			SpecType::Social => "social",
-			SpecType::Mix => "mix",
-			SpecType::Callisto => "callisto",
 			SpecType::Morden => "morden",
 			SpecType::Ropsten => "ropsten",
+			SpecType::Olympic => "olympic",
+			SpecType::Classic => "classic",
+			SpecType::Expanse => "expanse",
 			SpecType::Kovan => "kovan",
-			SpecType::Sokol => "sokol",
 			SpecType::Dev => "dev",
 			SpecType::Custom(ref custom) => custom,
 		})
@@ -112,20 +85,12 @@ impl SpecType {
 		let params = params.into();
 		match *self {
 			SpecType::Foundation => Ok(ethereum::new_foundation(params)),
-			SpecType::Classic => Ok(ethereum::new_classic(params)),
-			SpecType::Poanet => Ok(ethereum::new_poanet(params)),
-			SpecType::Tobalaba => Ok(ethereum::new_tobalaba(params)),
-			SpecType::Expanse => Ok(ethereum::new_expanse(params)),
-			SpecType::Musicoin => Ok(ethereum::new_musicoin(params)),
-			SpecType::Ellaism => Ok(ethereum::new_ellaism(params)),
-			SpecType::Easthub => Ok(ethereum::new_easthub(params)),
-			SpecType::Social => Ok(ethereum::new_social(params)),
-			SpecType::Mix => Ok(ethereum::new_mix(params)),
-			SpecType::Callisto => Ok(ethereum::new_callisto(params)),
 			SpecType::Morden => Ok(ethereum::new_morden(params)),
 			SpecType::Ropsten => Ok(ethereum::new_ropsten(params)),
+			SpecType::Olympic => Ok(ethereum::new_olympic(params)),
+			SpecType::Classic => Ok(ethereum::new_classic(params)),
+			SpecType::Expanse => Ok(ethereum::new_expanse(params)),
 			SpecType::Kovan => Ok(ethereum::new_kovan(params)),
-			SpecType::Sokol => Ok(ethereum::new_sokol(params)),
 			SpecType::Dev => Ok(Spec::new_instant()),
 			SpecType::Custom(ref filename) => {
 				let file = fs::File::open(filename).map_err(|e| format!("Could not load specification file at {}: {}", filename, e))?;
@@ -138,7 +103,6 @@ impl SpecType {
 		match *self {
 			SpecType::Classic => Some("classic".to_owned()),
 			SpecType::Expanse => Some("expanse".to_owned()),
-			SpecType::Musicoin => Some("musicoin".to_owned()),
 			_ => None,
 		}
 	}
@@ -215,7 +179,6 @@ impl str::FromStr for ResealPolicy {
 #[derive(Debug, PartialEq)]
 pub struct AccountsConfig {
 	pub iterations: u32,
-	pub refresh_time: u64,
 	pub testnet: bool,
 	pub password_files: Vec<String>,
 	pub unlocked_accounts: Vec<Address>,
@@ -227,7 +190,6 @@ impl Default for AccountsConfig {
 	fn default() -> Self {
 		AccountsConfig {
 			iterations: 10240,
-			refresh_time: 5,
 			testnet: false,
 			password_files: Vec::new(),
 			unlocked_accounts: Vec::new(),
@@ -241,34 +203,42 @@ impl Default for AccountsConfig {
 pub enum GasPricerConfig {
 	Fixed(U256),
 	Calibrated {
+		initial_minimum: U256,
 		usd_per_tx: f32,
 		recalibration_period: Duration,
+	}
+}
+
+impl GasPricerConfig {
+	pub fn initial_min(&self) -> U256 {
+		match *self {
+			GasPricerConfig::Fixed(ref min) => min.clone(),
+			GasPricerConfig::Calibrated { ref initial_minimum, .. } => initial_minimum.clone(),
+		}
 	}
 }
 
 impl Default for GasPricerConfig {
 	fn default() -> Self {
 		GasPricerConfig::Calibrated {
-			usd_per_tx: 0.0001f32,
+			initial_minimum: 11904761856u64.into(),
+			usd_per_tx: 0.0025f32,
 			recalibration_period: Duration::from_secs(3600),
 		}
 	}
 }
 
 impl GasPricerConfig {
-	pub fn to_gas_pricer(&self, fetch: FetchClient, p: Executor) -> GasPricer {
+	pub fn to_gas_pricer(&self, fetch: FetchClient) -> GasPricer {
 		match *self {
 			GasPricerConfig::Fixed(u) => GasPricer::Fixed(u),
 			GasPricerConfig::Calibrated { usd_per_tx, recalibration_period, .. } => {
 				GasPricer::new_calibrated(
-					GasPriceCalibrator::new(
-						GasPriceCalibratorOptions {
-							usd_per_tx: usd_per_tx,
-							recalibration_period: recalibration_period,
-						},
-						fetch,
-						p,
-					)
+					GasPriceCalibratorOptions {
+						usd_per_tx: usd_per_tx,
+						recalibration_period: recalibration_period,
+					},
+					fetch
 				)
 			}
 		}
@@ -278,20 +248,20 @@ impl GasPricerConfig {
 #[derive(Debug, PartialEq)]
 pub struct MinerExtras {
 	pub author: Address,
-	pub engine_signer: Address,
 	pub extra_data: Vec<u8>,
-	pub gas_range_target: (U256, U256),
-	pub work_notify: Vec<String>,
+	pub gas_floor_target: U256,
+	pub gas_ceil_target: U256,
+	pub engine_signer: Address,
 }
 
 impl Default for MinerExtras {
 	fn default() -> Self {
 		MinerExtras {
 			author: Default::default(),
-			engine_signer: Default::default(),
 			extra_data: version_data(),
-			gas_range_target: (8_000_000.into(), 10_000_000.into()),
-			work_notify: Default::default(),
+			gas_floor_target: U256::from(4_700_000),
+			gas_ceil_target: U256::from(6_283_184),
+			engine_signer: Default::default(),
 		}
 	}
 }
@@ -346,43 +316,28 @@ pub fn fatdb_switch_to_bool(switch: Switch, user_defaults: &UserDefaults, _algor
 }
 
 pub fn mode_switch_to_bool(switch: Option<Mode>, user_defaults: &UserDefaults) -> Result<Mode, String> {
-	Ok(switch.unwrap_or(user_defaults.mode().clone()))
+	Ok(switch.unwrap_or(user_defaults.mode.clone()))
 }
 
 #[cfg(test)]
 mod tests {
-	use journaldb::Algorithm;
+	use util::journaldb::Algorithm;
 	use user_defaults::UserDefaults;
 	use super::{SpecType, Pruning, ResealPolicy, Switch, tracing_switch_to_bool};
 
 	#[test]
 	fn test_spec_type_parsing() {
-		assert_eq!(SpecType::Foundation, "foundation".parse().unwrap());
 		assert_eq!(SpecType::Foundation, "frontier".parse().unwrap());
 		assert_eq!(SpecType::Foundation, "homestead".parse().unwrap());
-		assert_eq!(SpecType::Foundation, "byzantium".parse().unwrap());
 		assert_eq!(SpecType::Foundation, "mainnet".parse().unwrap());
-		assert_eq!(SpecType::Foundation, "ethereum".parse().unwrap());
-		assert_eq!(SpecType::Classic, "classic".parse().unwrap());
-		assert_eq!(SpecType::Classic, "frontier-dogmatic".parse().unwrap());
-		assert_eq!(SpecType::Classic, "homestead-dogmatic".parse().unwrap());
-		assert_eq!(SpecType::Poanet, "poanet".parse().unwrap());
-		assert_eq!(SpecType::Poanet, "poacore".parse().unwrap());
-		assert_eq!(SpecType::Tobalaba, "tobalaba".parse().unwrap());
-		assert_eq!(SpecType::Expanse, "expanse".parse().unwrap());
-		assert_eq!(SpecType::Musicoin, "musicoin".parse().unwrap());
-		assert_eq!(SpecType::Ellaism, "ellaism".parse().unwrap());
-		assert_eq!(SpecType::Easthub, "easthub".parse().unwrap());
-		assert_eq!(SpecType::Social, "social".parse().unwrap());
-		assert_eq!(SpecType::Mix, "mix".parse().unwrap());
-		assert_eq!(SpecType::Callisto, "callisto".parse().unwrap());
-		assert_eq!(SpecType::Morden, "morden".parse().unwrap());
-		assert_eq!(SpecType::Morden, "classic-testnet".parse().unwrap());
-		assert_eq!(SpecType::Ropsten, "ropsten".parse().unwrap());
-		assert_eq!(SpecType::Kovan, "kovan".parse().unwrap());
+		assert_eq!(SpecType::Foundation, "foundation".parse().unwrap());
 		assert_eq!(SpecType::Kovan, "testnet".parse().unwrap());
-		assert_eq!(SpecType::Sokol, "sokol".parse().unwrap());
-		assert_eq!(SpecType::Sokol, "poasokol".parse().unwrap());
+		assert_eq!(SpecType::Kovan, "kovan".parse().unwrap());
+		assert_eq!(SpecType::Morden, "morden".parse().unwrap());
+		assert_eq!(SpecType::Ropsten, "ropsten".parse().unwrap());
+		assert_eq!(SpecType::Olympic, "olympic".parse().unwrap());
+		assert_eq!(SpecType::Classic, "classic".parse().unwrap());
+		assert_eq!(SpecType::Morden, "classic-testnet".parse().unwrap());
 	}
 
 	#[test]
@@ -393,20 +348,12 @@ mod tests {
 	#[test]
 	fn test_spec_type_display() {
 		assert_eq!(format!("{}", SpecType::Foundation), "foundation");
-		assert_eq!(format!("{}", SpecType::Classic), "classic");
-		assert_eq!(format!("{}", SpecType::Poanet), "poanet");
-		assert_eq!(format!("{}", SpecType::Tobalaba), "tobalaba");
-		assert_eq!(format!("{}", SpecType::Expanse), "expanse");
-		assert_eq!(format!("{}", SpecType::Musicoin), "musicoin");
-		assert_eq!(format!("{}", SpecType::Ellaism), "ellaism");
-		assert_eq!(format!("{}", SpecType::Easthub), "easthub");
-		assert_eq!(format!("{}", SpecType::Social), "social");
-		assert_eq!(format!("{}", SpecType::Mix), "mix");
-		assert_eq!(format!("{}", SpecType::Callisto), "callisto");
-		assert_eq!(format!("{}", SpecType::Morden), "morden");
 		assert_eq!(format!("{}", SpecType::Ropsten), "ropsten");
+		assert_eq!(format!("{}", SpecType::Morden), "morden");
+		assert_eq!(format!("{}", SpecType::Olympic), "olympic");
+		assert_eq!(format!("{}", SpecType::Classic), "classic");
+		assert_eq!(format!("{}", SpecType::Expanse), "expanse");
 		assert_eq!(format!("{}", SpecType::Kovan), "kovan");
-		assert_eq!(format!("{}", SpecType::Sokol), "sokol");
 		assert_eq!(format!("{}", SpecType::Dev), "dev");
 		assert_eq!(format!("{}", SpecType::Custom("foo/bar".into())), "foo/bar");
 	}

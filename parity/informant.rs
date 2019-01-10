@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 extern crate ansi_term;
 use self::ansi_term::Colour::{White, Yellow, Green, Cyan, Blue};
@@ -22,22 +22,21 @@ use std::sync::{Arc};
 use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Instant, Duration};
 
-use atty;
-use ethcore::client::{
-	BlockId, BlockChainClient, ChainInfo, BlockInfo, BlockChainInfo,
-	BlockQueueInfo, ChainNotify, NewBlocks, ClientReport, Client, ClientIoMessage
-};
-use types::BlockNumber;
+use ethcore::client::{BlockId, BlockChainClient, BlockChainInfo, BlockQueueInfo, ChainNotify, ClientReport, Client};
+use ethcore::header::BlockNumber;
+use ethcore::service::ClientIoMessage;
 use ethcore::snapshot::{RestorationStatus, SnapshotService as SS};
 use ethcore::snapshot::service::Service as SnapshotService;
-use sync::{LightSyncProvider, LightSync, SyncProvider, ManageNetwork};
+use ethsync::{LightSyncProvider, LightSync, SyncProvider, ManageNetwork};
 use io::{TimerToken, IoContext, IoHandler};
+use isatty::{stdout_isatty};
 use light::Cache as LightDataCache;
-use light::client::{LightChainClient, LightChainNotify};
+use light::client::LightChainClient;
 use number_prefix::{binary_prefix, Standalone, Prefixed};
-use parity_rpc::is_major_importing_or_waiting;
+use parity_rpc::{is_major_importing};
 use parity_rpc::informant::RpcStats;
-use ethereum_types::H256;
+use bigint::hash::H256;
+use bytes::Bytes;
 use parking_lot::{RwLock, Mutex};
 
 /// Format byte counts to standard denominations.
@@ -127,7 +126,7 @@ impl InformantData for FullNodeInformantData {
 
 	fn is_major_importing(&self) -> bool {
 		let state = self.sync.as_ref().map(|sync| sync.status().state);
-		is_major_importing_or_waiting(state, self.client.queue_info(), false)
+		is_major_importing(state, self.client.queue_info())
 	}
 
 	fn report(&self) -> Report {
@@ -141,24 +140,23 @@ impl InformantData for FullNodeInformantData {
 		cache_sizes.insert("queue", queue_info.mem_used);
 		cache_sizes.insert("chain", blockchain_cache_info.total());
 
-		let importing = self.is_major_importing();
-		let sync_info = match (self.sync.as_ref(), self.net.as_ref()) {
+		let (importing, sync_info) = match (self.sync.as_ref(), self.net.as_ref()) {
 			(Some(sync), Some(net)) => {
 				let status = sync.status();
-				let num_peers_range = net.num_peers_range();
-				debug_assert!(num_peers_range.end > num_peers_range.start);
+				let net_config = net.network_config();
 
 				cache_sizes.insert("sync", status.mem_used);
 
-				Some(SyncInfo {
+				let importing = is_major_importing(Some(status.state), queue_info.clone());
+				(importing, Some(SyncInfo {
 					last_imported_block_number: status.last_imported_block_number.unwrap_or(chain_info.best_block_number),
 					last_imported_old_block_number: status.last_imported_old_block_number,
 					num_peers: status.num_peers,
-					max_peers: status.current_max_peers(num_peers_range.start, num_peers_range.end - 1),
+					max_peers: status.current_max_peers(net_config.min_peers, net_config.max_peers),
 					snapshot_sync: status.is_snapshot_syncing(),
-				})
+				}))
 			}
-			_ => None
+			_ => (is_major_importing(self.sync.as_ref().map(|s| s.status().state), queue_info.clone()), None),
 		};
 
 		Report {
@@ -254,14 +252,18 @@ impl<T: InformantData> Informant<T> {
 		self.in_shutdown.store(true, ::std::sync::atomic::Ordering::SeqCst);
 	}
 
+	#[cfg_attr(feature="dev", allow(match_bool))]
 	pub fn tick(&self) {
-		let now = Instant::now();
-		let elapsed = now.duration_since(*self.last_tick.read());
+		let elapsed = self.last_tick.read().elapsed();
+		if elapsed < Duration::from_secs(5) {
+			return;
+		}
 
 		let (client_report, full_report) = {
 			let mut last_report = self.last_report.lock();
 			let full_report = self.target.report();
 			let diffed = full_report.client_report.clone() - &*last_report;
+			*last_report = full_report.client_report.clone();
 			(diffed, full_report)
 		};
 
@@ -275,20 +277,22 @@ impl<T: InformantData> Informant<T> {
 		} = full_report;
 
 		let rpc_stats = self.rpc_stats.as_ref();
-		let snapshot_sync = sync_info.as_ref().map_or(false, |s| s.snapshot_sync) && self.snapshot.as_ref().map_or(false, |s|
+
+		let (snapshot_sync, snapshot_current, snapshot_total) = self.snapshot.as_ref().map_or((false, 0, 0), |s|
 			match s.status() {
-				RestorationStatus::Ongoing { .. } | RestorationStatus::Initializing { .. } => true,
-				_ => false,
+				RestorationStatus::Ongoing { state_chunks, block_chunks, state_chunks_done, block_chunks_done } =>
+					(true, state_chunks_done + block_chunks_done, state_chunks + block_chunks),
+				_ => (false, 0, 0),
 			}
 		);
+		let snapshot_sync = snapshot_sync && sync_info.as_ref().map_or(false, |s| s.snapshot_sync);
 		if !importing && !snapshot_sync && elapsed < Duration::from_secs(30) {
 			return;
 		}
 
-		*self.last_tick.write() = now;
-		*self.last_report.lock() = full_report.client_report.clone();
+		*self.last_tick.write() = Instant::now();
 
-		let paint = |c: Style, t: String| match self.with_color && atty::is(atty::Stream::Stdout) {
+		let paint = |c: Style, t: String| match self.with_color && stdout_isatty() {
 			true => format!("{}", c.paint(t)),
 			false => t,
 		};
@@ -301,44 +305,26 @@ impl<T: InformantData> Informant<T> {
 						paint(White.bold(), format!("{}", chain_info.best_block_hash)),
 						if self.target.executes_transactions() {
 							format!("{} blk/s {} tx/s {} Mgas/s",
-								paint(Yellow.bold(), format!("{:7.2}", (client_report.blocks_imported * 1000) as f64 / elapsed.as_milliseconds() as f64)),
-								paint(Yellow.bold(), format!("{:6.1}", (client_report.transactions_applied * 1000) as f64 / elapsed.as_milliseconds() as f64)),
-								paint(Yellow.bold(), format!("{:6.1}", (client_report.gas_processed / 1000).low_u64() as f64 / elapsed.as_milliseconds() as f64))
+								paint(Yellow.bold(), format!("{:4}", (client_report.blocks_imported * 1000) as u64 / elapsed.as_milliseconds())),
+								paint(Yellow.bold(), format!("{:4}", (client_report.transactions_applied * 1000) as u64 / elapsed.as_milliseconds())),
+								paint(Yellow.bold(), format!("{:3}", (client_report.gas_processed / From::from(elapsed.as_milliseconds() * 1000)).low_u64()))
 							)
 						} else {
 							format!("{} hdr/s",
-								paint(Yellow.bold(), format!("{:6.1}", (client_report.blocks_imported * 1000) as f64 / elapsed.as_milliseconds() as f64))
+								paint(Yellow.bold(), format!("{:4}", (client_report.blocks_imported * 1000) as u64 / elapsed.as_milliseconds()))
 							)
 						},
 						paint(Green.bold(), format!("{:5}", queue_info.unverified_queue_size)),
 						paint(Green.bold(), format!("{:5}", queue_info.verified_queue_size))
 					),
-					true => {
-						self.snapshot.as_ref().map_or(String::new(), |s|
-							match s.status() {
-								RestorationStatus::Ongoing { state_chunks, block_chunks, state_chunks_done, block_chunks_done } => {
-									format!("Syncing snapshot {}/{}", state_chunks_done + block_chunks_done, state_chunks + block_chunks)
-								},
-								RestorationStatus::Initializing { chunks_done } => {
-									format!("Snapshot initializing ({} chunks restored)", chunks_done)
-								},
-								_ => String::new(),
-							}
-						)
-					},
+					true => format!("Syncing snapshot {}/{}", snapshot_current, snapshot_total),
 				},
 				false => String::new(),
 			},
 			match sync_info.as_ref() {
 				Some(ref sync_info) => format!("{}{}/{} peers",
 					match importing {
-						true => format!("{}",
-							if self.target.executes_transactions() {
-								paint(Green.bold(), format!("{:>8}   ", format!("#{}", sync_info.last_imported_block_number)))
-							} else {
-								String::new()
-							}
-						),
+						true => format!("{}   ", paint(Green.bold(), format!("{:>8}", format!("#{}", sync_info.last_imported_block_number)))),
 						false => match sync_info.last_imported_old_block_number {
 							Some(number) => format!("{}   ", paint(Yellow.bold(), format!("{:>8}", format!("#{}", number)))),
 							None => String::new(),
@@ -354,8 +340,8 @@ impl<T: InformantData> Informant<T> {
 				Some(ref rpc_stats) => format!(
 					"RPC: {} conn, {} req/s, {} µs",
 					paint(Blue.bold(), format!("{:2}", rpc_stats.sessions())),
-					paint(Blue.bold(), format!("{:4}", rpc_stats.requests_rate())),
-					paint(Blue.bold(), format!("{:4}", rpc_stats.approximated_roundtrip())),
+					paint(Blue.bold(), format!("{:2}", rpc_stats.requests_rate())),
+					paint(Blue.bold(), format!("{:3}", rpc_stats.approximated_roundtrip())),
 				),
 				_ => String::new(),
 			},
@@ -364,30 +350,29 @@ impl<T: InformantData> Informant<T> {
 }
 
 impl ChainNotify for Informant<FullNodeInformantData> {
-	fn new_blocks(&self, new_blocks: NewBlocks) {
-		if new_blocks.has_more_blocks_to_import { return }
+	fn new_blocks(&self, imported: Vec<H256>, _invalid: Vec<H256>, _enacted: Vec<H256>, _retracted: Vec<H256>, _sealed: Vec<H256>, _proposed: Vec<Bytes>, duration: u64) {
 		let mut last_import = self.last_import.lock();
 		let client = &self.target.client;
 
 		let importing = self.target.is_major_importing();
 		let ripe = Instant::now() > *last_import + Duration::from_secs(1) && !importing;
-		let txs_imported = new_blocks.imported.iter()
-			.take(new_blocks.imported.len().saturating_sub(if ripe { 1 } else { 0 }))
+		let txs_imported = imported.iter()
+			.take(imported.len().saturating_sub(if ripe { 1 } else { 0 }))
 			.filter_map(|h| client.block(BlockId::Hash(*h)))
 			.map(|b| b.transactions_count())
 			.sum();
 
 		if ripe {
-			if let Some(block) = new_blocks.imported.last().and_then(|h| client.block(BlockId::Hash(*h))) {
+			if let Some(block) = imported.last().and_then(|h| client.block(BlockId::Hash(*h))) {
 				let header_view = block.header_view();
 				let size = block.rlp().as_raw().len();
-				let (skipped, skipped_txs) = (self.skipped.load(AtomicOrdering::Relaxed) + new_blocks.imported.len() - 1, self.skipped_txs.load(AtomicOrdering::Relaxed) + txs_imported);
+				let (skipped, skipped_txs) = (self.skipped.load(AtomicOrdering::Relaxed) + imported.len() - 1, self.skipped_txs.load(AtomicOrdering::Relaxed) + txs_imported);
 				info!(target: "import", "Imported {} {} ({} txs, {} Mgas, {} ms, {} KiB){}",
 					Colour::White.bold().paint(format!("#{}", header_view.number())),
 					Colour::White.bold().paint(format!("{}", header_view.hash())),
 					Colour::Yellow.bold().paint(format!("{}", block.transactions_count())),
 					Colour::Yellow.bold().paint(format!("{:.2}", header_view.gas_used().low_u64() as f32 / 1000000f32)),
-					Colour::Purple.bold().paint(format!("{}", new_blocks.duration.as_milliseconds())),
+					Colour::Purple.bold().paint(format!("{:.2}", duration as f32 / 1000000f32)),
 					Colour::Blue.bold().paint(format!("{:.2}", size as f32 / 1024f32)),
 					if skipped > 0 {
 						format!(" + another {} block(s) containing {} tx(s)",
@@ -403,35 +388,8 @@ impl ChainNotify for Informant<FullNodeInformantData> {
 				*last_import = Instant::now();
 			}
 		} else {
-			self.skipped.fetch_add(new_blocks.imported.len(), AtomicOrdering::Relaxed);
+			self.skipped.fetch_add(imported.len(), AtomicOrdering::Relaxed);
 			self.skipped_txs.fetch_add(txs_imported, AtomicOrdering::Relaxed);
-		}
-	}
-}
-
-impl LightChainNotify for Informant<LightNodeInformantData> {
-	fn new_headers(&self, good: &[H256]) {
-		let mut last_import = self.last_import.lock();
-		let client = &self.target.client;
-
-		let importing = self.target.is_major_importing();
-		let ripe = Instant::now() > *last_import + Duration::from_secs(1) && !importing;
-
-		if ripe {
-			if let Some(header) = good.last().and_then(|h| client.block_header(BlockId::Hash(*h))) {
-				info!(target: "import", "Imported {} {} ({} Mgas){}",
-					Colour::White.bold().paint(format!("#{}", header.number())),
-					Colour::White.bold().paint(format!("{}", header.hash())),
-					Colour::Yellow.bold().paint(format!("{:.2}", header.gas_used().low_u64() as f32 / 1000000f32)),
-					if good.len() > 1 {
-						format!(" + another {} header(s)",
-								Colour::Red.bold().paint(format!("{}", good.len() - 1)))
-					} else {
-						String::new()
-					}
-				);
-				*last_import = Instant::now();
-			}
 		}
 	}
 }
@@ -440,7 +398,7 @@ const INFO_TIMER: TimerToken = 0;
 
 impl<T: InformantData> IoHandler<ClientIoMessage> for Informant<T> {
 	fn initialize(&self, io: &IoContext<ClientIoMessage>) {
-		io.register_timer(INFO_TIMER, Duration::from_secs(5)).expect("Error registering timer");
+		io.register_timer(INFO_TIMER, 5000).expect("Error registering timer");
 	}
 
 	fn timeout(&self, _io: &IoContext<ClientIoMessage>, timer: TimerToken) {

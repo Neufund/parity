@@ -1,27 +1,29 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Watcher for snapshot-related chain events.
 
 use parking_lot::Mutex;
-use client::{BlockInfo, Client, ChainNotify, NewBlocks, ClientIoMessage};
-use types::ids::BlockId;
+use client::{BlockChainClient, Client, ChainNotify};
+use ids::BlockId;
+use service::ClientIoMessage;
 
 use io::IoChannel;
-use ethereum_types::H256;
+use bigint::hash::H256;
+use bytes::Bytes;
 
 use std::sync::Arc;
 
@@ -98,12 +100,21 @@ impl Watcher {
 }
 
 impl ChainNotify for Watcher {
-	fn new_blocks(&self, new_blocks: NewBlocks) {
-		if self.oracle.is_major_importing() || new_blocks.has_more_blocks_to_import { return }
+	fn new_blocks(
+		&self,
+		imported: Vec<H256>,
+		_: Vec<H256>,
+		_: Vec<H256>,
+		_: Vec<H256>,
+		_: Vec<H256>,
+		_: Vec<Bytes>,
+		_duration: u64)
+	{
+		if self.oracle.is_major_importing() { return }
 
-		trace!(target: "snapshot_watcher", "{} imported", new_blocks.imported.len());
+		trace!(target: "snapshot_watcher", "{} imported", imported.len());
 
-		let highest = new_blocks.imported.into_iter()
+		let highest = imported.into_iter()
 			.filter_map(|h| self.oracle.to_number(h))
 			.filter(|&num| num >= self.period + self.history)
 			.map(|num| num - self.history)
@@ -121,12 +132,12 @@ impl ChainNotify for Watcher {
 mod tests {
 	use super::{Broadcast, Oracle, Watcher};
 
-	use client::{ChainNotify, NewBlocks, ChainRoute};
+	use client::ChainNotify;
 
-	use ethereum_types::{H256, U256};
+	use bigint::prelude::U256;
+	use bigint::hash::H256;
 
 	use std::collections::HashMap;
-	use std::time::Duration;
 
 	struct TestOracle(HashMap<H256, u64>);
 
@@ -149,8 +160,6 @@ mod tests {
 
 	// helper harness for tests which expect a notification.
 	fn harness(numbers: Vec<u64>, period: u64, history: u64, expected: Option<u64>) {
-		const DURATION_ZERO: Duration = Duration::from_millis(0);
-
 		let hashes: Vec<_> = numbers.clone().into_iter().map(|x| H256::from(U256::from(x))).collect();
 		let map = hashes.clone().into_iter().zip(numbers).collect();
 
@@ -161,15 +170,15 @@ mod tests {
 			history: history,
 		};
 
-		watcher.new_blocks(NewBlocks::new(
+		watcher.new_blocks(
 			hashes,
 			vec![],
-			ChainRoute::default(),
 			vec![],
 			vec![],
-			DURATION_ZERO,
-			false
-		));
+			vec![],
+			vec![],
+			0,
+		);
 	}
 
 	// helper

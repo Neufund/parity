@@ -3,8 +3,6 @@ mode = "last"
 mode_timeout = 300
 mode_alarm = 3600
 auto_update = "none"
-auto_update_delay = 200
-auto_update_check_frequency = 50
 release_track = "current"
 public_node = false
 no_download = false
@@ -17,21 +15,11 @@ db_path = "$HOME/.parity/chains"
 keys_path = "$HOME/.parity/keys"
 identity = ""
 light = false
-no_hardcoded_sync = false
 
 [account]
 unlock = ["0xdeadbeefcafe0000000000000000000000000000"]
 password = ["~/.safe/password.file"]
 keys_iterations = 10240
-
-[private_tx]
-enabled = true
-signer = "0xdeadbeefcafe0000000000000000000000000000"
-validators = ["0xdeadbeefcafe0000000000000000000000000000"]
-passwords = "~/.safe/password.file"
-account = "0xdeadbeefcafe0000000000000000000000000000"
-sstore_url = "http://localhost:8082"
-sstore_threshold = 0
 
 [ui]
 force = false
@@ -61,10 +49,9 @@ reserved_peers = "./path_to_file"
 disable = false
 port = 8545
 interface = "local"
-cors = ["null"]
+cors = "null"
 apis = ["web3", "eth", "net", "parity", "traces", "rpc", "secretstore"]
 hosts = ["none"]
-allow_missing_blocks = false
 
 [websockets]
 disable = false
@@ -89,16 +76,10 @@ path = "$HOME/.parity/dapps"
 user = "test_user"
 pass = "test_pass"
 
-[secretstore]
+[secretstore]	
 disable = false
 disable_http = false
-acl_contract = "registry"
-service_contract = "none"
-service_contract_srv_gen = "none"
-service_contract_srv_retr = "none"
-service_contract_doc_store = "none"
-service_contract_doc_sretr = "none"
-server_set_contract = "registry"
+disable_acl_check = false
 nodes = []
 http_interface = "local"
 http_port = 8082
@@ -110,7 +91,7 @@ path = "$HOME/.parity/secretstore"
 enable = false
 port = 5001
 interface = "local"
-cors = ["null"]
+cors = "null"
 hosts = ["none"]
 
 [mining]
@@ -123,19 +104,18 @@ reseal_max_period = 60000
 work_queue_size = 20
 relay_set = "cheap"
 min_gas_price = 0
-usd_per_tx = "0.0001"
+usd_per_tx = "0.0025"
 usd_per_eth = "auto"
 price_update_period = "hourly"
-gas_floor_target = "8000000"
-gas_cap = "10000000"
+gas_floor_target = "4700000"
+gas_cap = "6283184"
 tx_queue_size = 8192
+tx_queue_gas = "off"
 tx_queue_strategy = "gas_factor"
 tx_queue_ban_count = 1
 tx_queue_ban_time = 180 #s
-tx_gas_limit = "10000000"
+tx_gas_limit = "6283184"
 tx_time_limit = 100 #ms
-tx_queue_no_unfamiliar_locals = false
-tx_queue_no_early_reject = false
 extra_data = "Parity"
 remove_solved = false
 notify_work = ["http://localhost:3001"]
@@ -151,20 +131,17 @@ cache_size_blocks = 8
 cache_size_queue = 50
 cache_size_state = 25
 cache_size = 128 # Overrides above caches with total size
+fast_and_loose = false
 db_compaction = "ssd"
 fat_db = "auto"
 scale_verifiers = true
 num_verifiers = 6
 
-[light]
-on_demand_response_time_window = 2
-on_demand_request_backoff_start = 9
-on_demand_request_backoff_max = 15
-on_demand_request_backoff_rounds_max = 100
-on_demand_request_consecutive_failures = 1
-
 [snapshots]
 disable_periodic = false
+
+[vm]
+jit = false
 
 [misc]
 logging = "own_tx=trace"

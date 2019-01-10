@@ -1,18 +1,18 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Request load timer and distribution manager.
 //!
@@ -27,11 +27,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use request::{CompleteRequest, Kind};
 
 use bincode;
+use time;
 use parking_lot::{RwLock, Mutex};
 
 /// Number of time periods samples should be kept for.
@@ -48,11 +48,11 @@ pub trait SampleStore: Send + Sync {
 }
 
 // get a hardcoded, arbitrarily determined (but intended overestimate)
-// of the time it takes to serve a request of the given kind.
+// of the time in nanoseconds to serve a request of the given kind.
 //
 // TODO: seed this with empirical data.
-fn hardcoded_serve_time(kind: Kind) -> Duration {
-	Duration::new(0, match kind {
+fn hardcoded_serve_time(kind: Kind) -> u64 {
+	match kind {
 		Kind::Headers => 500_000,
 		Kind::HeaderProof => 500_000,
 		Kind::TransactionIndex => 500_000,
@@ -63,7 +63,7 @@ fn hardcoded_serve_time(kind: Kind) -> Duration {
 		Kind::Code => 1_500_000,
 		Kind::Execution => 250, // per gas.
 		Kind::Signal => 500_000,
-	})
+	}
 }
 
 /// A no-op store.
@@ -107,28 +107,28 @@ impl LoadDistribution {
 		};
 
 		LoadTimer {
-			start: Instant::now(),
-			n,
+			start: time::precise_time_ns(),
+			n: n,
 			dist: self,
-			kind,
+			kind: kind,
 		}
 	}
 
-	/// Calculate EMA of load for a specific request kind.
+	/// Calculate EMA of load in nanoseconds for a specific request kind.
 	/// If there is no data for the given request kind, no EMA will be calculated,
 	/// but a hardcoded time will be returned.
-	pub fn expected_time(&self, kind: Kind) -> Duration {
+	pub fn expected_time_ns(&self, kind: Kind) -> u64 {
 		let samples = self.samples.read();
 		samples.get(&kind).and_then(|s| {
-			if s.is_empty() { return None }
+			if s.len() == 0 { return None }
 
-			let alpha: f64 = 1_f64 / s.len() as f64;
-			let start = *s.front().expect("length known to be non-zero; qed") as f64;
-			let ema = s.iter().skip(1).fold(start, |a, &c| {
+			let alpha: f64 = 1f64 / s.len() as f64;
+			let start = s.front().expect("length known to be non-zero; qed").clone();
+			let ema = s.iter().skip(1).fold(start as f64, |a, &c| {
 				(alpha * c as f64) + ((1.0 - alpha) * a)
 			});
 
-			Some(Duration::from_nanos(ema as u64))
+			Some(ema as u64)
 		}).unwrap_or_else(move || hardcoded_serve_time(kind))
 	}
 
@@ -151,10 +151,10 @@ impl LoadDistribution {
 		store.store(&*samples);
 	}
 
-	fn update(&self, kind: Kind, elapsed: Duration, n: u64) {
+	fn update(&self, kind: Kind, elapsed: u64, n: u64) {
 		macro_rules! update_counters {
 			($counters: expr) => {
-				$counters.0 = $counters.0.saturating_add({ elapsed.as_secs() * 1_000_000_000 + elapsed.subsec_nanos() as u64 });
+				$counters.0 = $counters.0.saturating_add(elapsed);
 				$counters.1 = $counters.1.saturating_add(n);
 			}
 		};
@@ -180,7 +180,7 @@ impl LoadDistribution {
 /// A timer for a single request.
 /// On drop, this will update the distribution.
 pub struct LoadTimer<'a> {
-	start: Instant,
+	start: u64,
 	n: u64,
 	dist: &'a LoadDistribution,
 	kind: Kind,
@@ -188,7 +188,7 @@ pub struct LoadTimer<'a> {
 
 impl<'a> Drop for LoadTimer<'a> {
 	fn drop(&mut self) {
-		let elapsed = self.start.elapsed();
+		let elapsed = time::precise_time_ns() - self.start;
 		self.dist.update(self.kind, elapsed, self.n);
 	}
 }
@@ -223,12 +223,12 @@ mod tests {
 	#[test]
 	fn hardcoded_before_data() {
 		let dist = LoadDistribution::load(&NullStore);
-		assert_eq!(dist.expected_time(Kind::Headers), hardcoded_serve_time(Kind::Headers));
+		assert_eq!(dist.expected_time_ns(Kind::Headers), hardcoded_serve_time(Kind::Headers));
 
-		dist.update(Kind::Headers, Duration::new(0, 100_000), 100);
+		dist.update(Kind::Headers, 100_000, 100);
 		dist.end_period(&NullStore);
 
-		assert_eq!(dist.expected_time(Kind::Headers), Duration::new(0, 1000));
+		assert_eq!(dist.expected_time_ns(Kind::Headers), 1000);
 	}
 
 	#[test]
@@ -238,35 +238,34 @@ mod tests {
 		let mut sum = 0;
 
 		for (i, x) in (0..10).map(|x| x * 10_000).enumerate() {
-			dist.update(Kind::Headers, Duration::new(0, x), 1);
+			dist.update(Kind::Headers, x, 1);
 			dist.end_period(&NullStore);
 
 			sum += x;
 			if i == 0 { continue }
 
-			let moving_average = dist.expected_time(Kind::Headers);
+			let moving_average = dist.expected_time_ns(Kind::Headers);
 
 			// should be weighted below the maximum entry.
-			let arith_average = (sum as f64 / (i + 1) as f64) as u32;
-			assert!(moving_average < Duration::new(0, x));
+			let arith_average = (sum as f64 / (i + 1) as f64) as u64;
+			assert!(moving_average < x);
 
 			// when there are only 2 entries, they should be equal due to choice of
 			// ALPHA = 1/N.
 			// otherwise, the weight should be below the arithmetic mean because the much
 			// smaller previous values are discounted less.
 			if i == 1 {
-				assert_eq!(moving_average, Duration::new(0, arith_average));
+				assert_eq!(moving_average, arith_average);
 			} else {
-				assert!(moving_average < Duration::new(0, arith_average))
+				assert!(moving_average < arith_average)
 			}
 		}
 	}
 
 	#[test]
 	fn file_store() {
-		let tempdir = ::tempdir::TempDir::new("").unwrap();
-		let path = tempdir.path().join("file");
-		let store = FileStore(path);
+		let path = ::devtools::RandomTempPath::new();
+		let store = FileStore(path.as_path().clone());
 
 		let mut samples = store.load();
 		assert!(samples.is_empty());

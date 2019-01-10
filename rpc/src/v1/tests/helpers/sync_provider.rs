@@ -1,25 +1,25 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Test implementation of SyncProvider.
 
 use std::collections::BTreeMap;
-use ethereum_types::H256;
+use bigint::hash::H256;
 use parking_lot::RwLock;
-use sync::{SyncProvider, EthProtocolInfo, SyncStatus, SyncState, PeerInfo, TransactionStats};
+use ethsync::{SyncProvider, EthProtocolInfo, SyncStatus, SyncState, PeerInfo, TransactionStats};
 
 /// TestSyncProvider config.
 pub struct Config {
@@ -75,9 +75,9 @@ impl SyncProvider for TestSyncProvider {
 		vec![
 			PeerInfo {
 				id: Some("node1".to_owned()),
-				client_version: "Parity-Ethereum/1".to_owned(),
+    			client_version: "Parity/1".to_owned(),
 				capabilities: vec!["eth/62".to_owned(), "eth/63".to_owned()],
-				remote_address: "127.0.0.1:7777".to_owned(),
+    			remote_address: "127.0.0.1:7777".to_owned(),
 				local_address: "127.0.0.1:8888".to_owned(),
 				eth_info: Some(EthProtocolInfo {
 					version: 62,
@@ -88,9 +88,9 @@ impl SyncProvider for TestSyncProvider {
 			},
 			PeerInfo {
 				id: None,
-				client_version: "Parity-Ethereum/2".to_owned(),
+    			client_version: "Parity/2".to_owned(),
 				capabilities: vec!["eth/63".to_owned(), "eth/64".to_owned()],
-				remote_address: "Handshake".to_owned(),
+    			remote_address: "Handshake".to_owned(),
 				local_address: "127.0.0.1:3333".to_owned(),
 				eth_info: Some(EthProtocolInfo {
 					version: 64,
@@ -123,3 +123,4 @@ impl SyncProvider for TestSyncProvider {
 		]
 	}
 }
+

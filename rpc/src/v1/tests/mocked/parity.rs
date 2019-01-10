@@ -1,28 +1,29 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::sync::Arc;
 use ethcore::account_provider::AccountProvider;
-use ethcore::client::{TestBlockChainClient, Executed, TransactionId};
+use ethcore::client::{TestBlockChainClient, Executed};
+use ethcore::miner::LocalTransactionStatus;
 use ethcore_logger::RotatingLogger;
-use ethereum_types::{Address, U256, H256};
 use ethstore::ethkey::{Generator, Random};
-use miner::pool::local_transactions::Status as LocalTransactionStatus;
-use sync::ManageNetwork;
-use types::receipt::{LocalizedReceipt, TransactionOutcome};
+use ethsync::ManageNetwork;
+use node_health::{self, NodeHealth};
+use parity_reactor;
+use util::Address;
 
 use jsonrpc_core::IoHandler;
 use v1::{Parity, ParityClient};
@@ -39,10 +40,12 @@ pub struct Dependencies {
 	pub client: Arc<TestBlockChainClient>,
 	pub sync: Arc<TestSyncProvider>,
 	pub updater: Arc<TestUpdater>,
+	pub health: NodeHealth,
 	pub logger: Arc<RotatingLogger>,
 	pub settings: Arc<NetworkSettings>,
 	pub network: Arc<ManageNetwork>,
 	pub accounts: Arc<AccountProvider>,
+	pub dapps_address: Option<Host>,
 	pub ws_address: Option<Host>,
 }
 
@@ -55,12 +58,16 @@ impl Dependencies {
 				network_id: 3,
 				num_peers: 120,
 			})),
+			health: NodeHealth::new(
+				Arc::new(FakeSync),
+				node_health::TimeChecker::new::<String>(&[], node_health::CpuPool::new(1)),
+				parity_reactor::Remote::new_sync(),
+			),
 			updater: Arc::new(TestUpdater::default()),
 			logger: Arc::new(RotatingLogger::new("rpc=trace".to_owned())),
 			settings: Arc::new(NetworkSettings {
 				name: "mynode".to_owned(),
 				chain: "testchain".to_owned(),
-				is_dev_chain: false,
 				network_port: 30303,
 				rpc_enabled: true,
 				rpc_interface: "all".to_owned(),
@@ -68,23 +75,27 @@ impl Dependencies {
 			}),
 			network: Arc::new(TestManageNetwork),
 			accounts: Arc::new(AccountProvider::transient_provider()),
+			dapps_address: Some("127.0.0.1:18080".into()),
 			ws_address: Some("127.0.0.1:18546".into()),
 		}
 	}
 
 	pub fn client(&self, signer: Option<Arc<SignerService>>) -> TestParityClient {
+		let opt_accounts = Some(self.accounts.clone());
+
 		ParityClient::new(
 			self.client.clone(),
 			self.miner.clone(),
 			self.sync.clone(),
 			self.updater.clone(),
 			self.network.clone(),
-			self.accounts.clone(),
+			self.health.clone(),
+			opt_accounts.clone(),
 			self.logger.clone(),
 			self.settings.clone(),
 			signer,
+			self.dapps_address.clone(),
 			self.ws_address.clone(),
-			None,
 		)
 	}
 
@@ -101,12 +112,19 @@ impl Dependencies {
 	}
 }
 
+#[derive(Debug)]
+struct FakeSync;
+impl node_health::SyncStatus for FakeSync {
+	fn is_major_importing(&self) -> bool { false }
+	fn peers(&self) -> (usize, usize) { (4, 25) }
+}
+
 #[test]
 fn rpc_parity_accounts_info() {
 	let deps = Dependencies::new();
 	let io = deps.default_client();
 
-	deps.accounts.new_account(&"".into()).unwrap();
+	deps.accounts.new_account("").unwrap();
 	let accounts = deps.accounts.accounts().unwrap();
 	assert_eq!(accounts.len(), 1);
 	let address = accounts[0];
@@ -116,7 +134,14 @@ fn rpc_parity_accounts_info() {
 	deps.accounts.set_account_meta(address.clone(), "{foo: 69}".into()).unwrap();
 
 	let request = r#"{"jsonrpc": "2.0", "method": "parity_accountsInfo", "params": [], "id": 1}"#;
-	let response = format!("{{\"jsonrpc\":\"2.0\",\"result\":{{\"0x{:x}\":{{\"name\":\"Test\"}}}},\"id\":1}}", address);
+	let response = format!("{{\"jsonrpc\":\"2.0\",\"result\":{{\"0x{}\":{{\"name\":\"Test\"}}}},\"id\":1}}", address.hex());
+	assert_eq!(io.handle_request_sync(request), Some(response));
+
+	// Change the whitelist
+	let address = Address::from(1);
+	deps.accounts.set_new_dapps_addresses(Some(vec![address.clone()])).unwrap();
+	let request = r#"{"jsonrpc": "2.0", "method": "parity_accountsInfo", "params": [], "id": 1}"#;
+	let response = format!("{{\"jsonrpc\":\"2.0\",\"result\":{{\"0x{}\":{{\"name\":\"XX\"}}}},\"id\":1}}", address.hex());
 	assert_eq!(io.handle_request_sync(request), Some(response));
 }
 
@@ -125,20 +150,21 @@ fn rpc_parity_default_account() {
 	let deps = Dependencies::new();
 	let io = deps.default_client();
 
+
 	// Check empty
 	let address = Address::default();
 	let request = r#"{"jsonrpc": "2.0", "method": "parity_defaultAccount", "params": [], "id": 1}"#;
-	let response = format!("{{\"jsonrpc\":\"2.0\",\"result\":\"0x{:x}\",\"id\":1}}", address);
+	let response = format!("{{\"jsonrpc\":\"2.0\",\"result\":\"0x{}\",\"id\":1}}", address.hex());
 	assert_eq!(io.handle_request_sync(request), Some(response));
 
 	// With account
-	deps.accounts.new_account(&"".into()).unwrap();
+	deps.accounts.new_account("").unwrap();
 	let accounts = deps.accounts.accounts().unwrap();
 	assert_eq!(accounts.len(), 1);
 	let address = accounts[0];
 
 	let request = r#"{"jsonrpc": "2.0", "method": "parity_defaultAccount", "params": [], "id": 1}"#;
-	let response = format!("{{\"jsonrpc\":\"2.0\",\"result\":\"0x{:x}\",\"id\":1}}", address);
+	let response = format!("{{\"jsonrpc\":\"2.0\",\"result\":\"0x{}\",\"id\":1}}", address.hex());
 	assert_eq!(io.handle_request_sync(request), Some(response));
 }
 
@@ -196,15 +222,26 @@ fn rpc_parity_extra_data() {
 }
 
 #[test]
+fn rpc_parity_chain_id() {
+	let deps = Dependencies::new();
+	let io = deps.default_client();
+
+	let request = r#"{"jsonrpc": "2.0", "method": "parity_chainId", "params": [], "id": 1}"#;
+	let response = r#"{"jsonrpc":"2.0","result":null,"id":1}"#;
+
+	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
+}
+
+#[test]
 fn rpc_parity_default_extra_data() {
-	use version::version_data;
+	use util::misc;
 	use bytes::ToPretty;
 
 	let deps = Dependencies::new();
 	let io = deps.default_client();
 
 	let request = r#"{"jsonrpc": "2.0", "method": "parity_defaultExtraData", "params": [], "id": 1}"#;
-	let response = format!(r#"{{"jsonrpc":"2.0","result":"0x{}","id":1}}"#, version_data().to_hex());
+	let response = format!(r#"{{"jsonrpc":"2.0","result":"0x{}","id":1}}"#, misc::version_data().to_hex());
 
 	assert_eq!(io.handle_request_sync(request), Some(response));
 }
@@ -295,7 +332,7 @@ fn rpc_parity_net_peers() {
 	let io = deps.default_client();
 
 	let request = r#"{"jsonrpc": "2.0", "method": "parity_netPeers", "params":[], "id": 1}"#;
-	let response = r#"{"jsonrpc":"2.0","result":{"active":0,"connected":120,"max":50,"peers":[{"caps":["eth/62","eth/63"],"id":"node1","name":"Parity-Ethereum/1","network":{"localAddress":"127.0.0.1:8888","remoteAddress":"127.0.0.1:7777"},"protocols":{"eth":{"difficulty":"0x28","head":"0000000000000000000000000000000000000000000000000000000000000032","version":62},"pip":null}},{"caps":["eth/63","eth/64"],"id":null,"name":"Parity-Ethereum/2","network":{"localAddress":"127.0.0.1:3333","remoteAddress":"Handshake"},"protocols":{"eth":{"difficulty":null,"head":"000000000000000000000000000000000000000000000000000000000000003c","version":64},"pip":null}}]},"id":1}"#;
+	let response = r#"{"jsonrpc":"2.0","result":{"active":0,"connected":120,"max":50,"peers":[{"caps":["eth/62","eth/63"],"id":"node1","name":"Parity/1","network":{"localAddress":"127.0.0.1:8888","remoteAddress":"127.0.0.1:7777"},"protocols":{"eth":{"difficulty":"0x28","head":"0000000000000000000000000000000000000000000000000000000000000032","version":62},"pip":null}},{"caps":["eth/63","eth/64"],"id":null,"name":"Parity/2","network":{"localAddress":"127.0.0.1:3333","remoteAddress":"Handshake"},"protocols":{"eth":{"difficulty":null,"head":"000000000000000000000000000000000000000000000000000000000000003c","version":64},"pip":null}}]},"id":1}"#;
 
 	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
 }
@@ -370,7 +407,7 @@ fn rpc_parity_pending_transactions() {
 fn rpc_parity_encrypt() {
 	let deps = Dependencies::new();
 	let io = deps.default_client();
-	let key = format!("{:x}", Random.generate().unwrap().public());
+	let key = format!("{:?}", Random.generate().unwrap().public());
 
 	let request = r#"{"jsonrpc": "2.0", "method": "parity_encryptMessage", "params":["0x"#.to_owned() + &key + r#"", "0x01"], "id": 1}"#;
 	assert!(io.handle_request_sync(&request).unwrap().contains("result"), "Should return success.");
@@ -395,20 +432,36 @@ fn rpc_parity_ws_address() {
 }
 
 #[test]
+fn rpc_parity_dapps_address() {
+	// given
+	let mut deps = Dependencies::new();
+	let io1 = deps.default_client();
+	deps.dapps_address = None;
+	let io2 = deps.default_client();
+
+	// when
+	let request = r#"{"jsonrpc": "2.0", "method": "parity_dappsUrl", "params": [], "id": 1}"#;
+	let response1 = r#"{"jsonrpc":"2.0","result":"127.0.0.1:18080","id":1}"#;
+	let response2 = r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"Dapps Server is disabled. This API is not available."},"id":1}"#;
+
+	// then
+	assert_eq!(io1.handle_request_sync(request), Some(response1.to_owned()));
+	assert_eq!(io2.handle_request_sync(request), Some(response2.to_owned()));
+}
+
+#[test]
 fn rpc_parity_next_nonce() {
 	let deps = Dependencies::new();
 	let address = Address::default();
 	let io1 = deps.default_client();
 	let deps = Dependencies::new();
-	deps.miner.increment_nonce(&address);
-	deps.miner.increment_nonce(&address);
-	deps.miner.increment_nonce(&address);
+	deps.miner.last_nonces.write().insert(address.clone(), 2.into());
 	let io2 = deps.default_client();
 
 	let request = r#"{
 		"jsonrpc": "2.0",
 		"method": "parity_nextNonce",
-		"params": [""#.to_owned() + &format!("0x{:x}", address) + r#""],
+		"params": [""#.to_owned() + &format!("0x{:?}", address) + r#""],
 		"id": 1
 	}"#;
 	let response1 = r#"{"jsonrpc":"2.0","result":"0x0","id":1}"#;
@@ -433,26 +486,20 @@ fn rpc_parity_transactions_stats() {
 fn rpc_parity_local_transactions() {
 	let deps = Dependencies::new();
 	let io = deps.default_client();
-	let tx = ::types::transaction::Transaction {
-		value: 5.into(),
-		gas: 3.into(),
-		gas_price: 2.into(),
-		action: ::types::transaction::Action::Create,
-		data: vec![1, 2, 3],
-		nonce: 0.into(),
-	}.fake_sign(3.into());
-	let tx = Arc::new(::miner::pool::VerifiedTransaction::from_pending_block_transaction(tx));
-	deps.miner.local_transactions.lock().insert(10.into(), LocalTransactionStatus::Pending(tx.clone()));
-	deps.miner.local_transactions.lock().insert(15.into(), LocalTransactionStatus::Pending(tx.clone()));
+	deps.miner.local_transactions.lock().insert(10.into(), LocalTransactionStatus::Pending);
+	deps.miner.local_transactions.lock().insert(15.into(), LocalTransactionStatus::Future);
 
 	let request = r#"{"jsonrpc": "2.0", "method": "parity_localTransactions", "params":[], "id": 1}"#;
-	let response = r#"{"jsonrpc":"2.0","result":{"0x000000000000000000000000000000000000000000000000000000000000000a":{"status":"pending"},"0x000000000000000000000000000000000000000000000000000000000000000f":{"status":"pending"}},"id":1}"#;
+	let response = r#"{"jsonrpc":"2.0","result":{"0x000000000000000000000000000000000000000000000000000000000000000a":{"status":"pending"},"0x000000000000000000000000000000000000000000000000000000000000000f":{"status":"future"}},"id":1}"#;
 
 	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
 }
 
 #[test]
 fn rpc_parity_chain_status() {
+	use bigint::prelude::U256;
+	use bigint::hash::H256;
+
 	let deps = Dependencies::new();
 	let io = deps.default_client();
 
@@ -489,6 +536,8 @@ fn rpc_parity_cid() {
 
 #[test]
 fn rpc_parity_call() {
+	use bigint::prelude::U256;
+
 	let deps = Dependencies::new();
 	deps.client.set_execution_result(Ok(Executed {
 		exception: None,
@@ -525,105 +574,12 @@ fn rpc_parity_call() {
 }
 
 #[test]
-fn rpc_parity_block_receipts() {
-	let deps = Dependencies::new();
-	deps.client.receipts.write()
-		.insert(TransactionId::Hash(1.into()), LocalizedReceipt {
-			transaction_hash: 1.into(),
-			transaction_index: 0,
-			block_hash: 3.into(),
-			block_number: 0,
-			cumulative_gas_used: 21_000.into(),
-			gas_used: 21_000.into(),
-			contract_address: None,
-			logs: vec![],
-			log_bloom: 1.into(),
-			outcome: TransactionOutcome::Unknown,
-			to: None,
-			from: 9.into(),
-		});
-	let io = deps.default_client();
-
-	let request = r#"{
-		"jsonrpc": "2.0",
-		"method": "parity_getBlockReceipts",
-		"params": [],
-		"id": 1
-	}"#;
-	let response = r#"{"jsonrpc":"2.0","result":[{"blockHash":"0x0000000000000000000000000000000000000000000000000000000000000003","blockNumber":"0x0","contractAddress":null,"cumulativeGasUsed":"0x5208","from":"0x0000000000000000000000000000000000000009","gasUsed":"0x5208","logs":[],"logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001","root":null,"status":null,"to":null,"transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000001","transactionIndex":"0x0"}],"id":1}"#;
-
-	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
-}
-
-#[test]
-fn rpc_status_ok() {
+fn rpc_parity_node_health() {
 	let deps = Dependencies::new();
 	let io = deps.default_client();
 
-	let request = r#"{
-		"jsonrpc": "2.0",
-		"method": "parity_nodeStatus",
-		"params": [],
-		"id": 1
-	}"#;
-	let response = r#"{"jsonrpc":"2.0","result":null,"id":1}"#;
-
-	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
-}
-
-#[test]
-fn rpc_status_error_peers() {
-	let deps = Dependencies::new();
-	deps.sync.status.write().num_peers = 0;
-	let io = deps.default_client();
-
-	let request = r#"{
-		"jsonrpc": "2.0",
-		"method": "parity_nodeStatus",
-		"params": [],
-		"id": 1
-	}"#;
-	let response = r#"{"jsonrpc":"2.0","error":{"code":-32066,"message":"Node is not connected to any peers."},"id":1}"#;
-
-	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
-}
-
-#[test]
-fn rpc_status_error_sync() {
-	let deps = Dependencies::new();
-	deps.sync.status.write().state = ::sync::SyncState::Blocks;
-	let io = deps.default_client();
-
-	let request = r#"{
-		"jsonrpc": "2.0",
-		"method": "parity_nodeStatus",
-		"params": [],
-		"id": 1
-	}"#;
-	let response = r#"{"jsonrpc":"2.0","error":{"code":-32001,"message":"Still syncing."},"id":1}"#;
-
-	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
-}
-
-#[test]
-fn rpc_parity_verify_signature() {
-	let deps = Dependencies::new();
-	let io = deps.default_client();
-
-	let request = r#"{
-		"jsonrpc": "2.0",
-		"method": "parity_verifySignature",
-		"params": [
-			false,
-			"0xe552acf4caabe9661893fd48c7b5e68af20bf007193442f8ca05ce836699d75e",
-			"0x2089e84151c3cdc45255c07557b349f5bf2ed3e68f6098723eaa90a0f8b2b3e5",
-			"0x5f70e8df7bd0c4417afb5f5a39d82e15d03adeff8796725d8b14889ed1d1aa8a",
-			"0x1"
-		],
-		"id": 0
-	}"#;
-
-	let response = r#"{"jsonrpc":"2.0","result":{"address":"0x9a2a08a1170f51208c2f3cede0d29ada94481eed","isValidForCurrentChain":true,"publicKey":"0xbeec94ea24444906fe247c47841a45220f07e5718d06157fe4502fac326dab617e973e221e45746721330c2db3f63202268686378cc28b9800c1daaf0bbafeb1"},"id":0}"#;
+	let request = r#"{"jsonrpc": "2.0", "method": "parity_nodeHealth", "params":[], "id": 1}"#;
+	let response = r#"{"jsonrpc":"2.0","result":{"peers":{"details":[4,25],"message":"","status":"ok"},"sync":{"details":false,"message":"","status":"ok"},"time":{"details":0,"message":"","status":"ok"}},"id":1}"#;
 
 	assert_eq!(io.handle_request_sync(request), Some(response.to_owned()));
 }

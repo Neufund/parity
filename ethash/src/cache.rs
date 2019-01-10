@@ -1,23 +1,23 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use compute::Light;
 use either::Either;
 use keccak::{H256, keccak_512};
-use memmap::MmapMut;
+use memmap::{Mmap, Protection};
 use parking_lot::Mutex;
 use seed_compute::SeedHashCompute;
 
@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::slice;
 use std::sync::Arc;
 
-type Cache = Either<Vec<Node>, MmapMut>;
+type Cache = Either<Vec<Node>, Mmap>;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum OptimizeFor {
@@ -91,7 +91,7 @@ impl NodeCacheBuilder {
 
 	pub fn new<T: Into<Option<OptimizeFor>>>(optimize_for: T) -> Self {
 		NodeCacheBuilder {
-			seedhash: Arc::new(Mutex::new(SeedHashCompute::default())),
+			seedhash: Arc::new(Mutex::new(SeedHashCompute::new())),
 			optimize_for: optimize_for.into().unwrap_or_default(),
 		}
 	}
@@ -181,7 +181,7 @@ impl NodeCache {
 	}
 }
 
-fn make_memmapped_cache(path: &Path, num_nodes: usize, ident: &H256) -> io::Result<MmapMut> {
+fn make_memmapped_cache(path: &Path, num_nodes: usize, ident: &H256) -> io::Result<Mmap> {
 	use std::fs::OpenOptions;
 
 	let file = OpenOptions::new()
@@ -191,9 +191,9 @@ fn make_memmapped_cache(path: &Path, num_nodes: usize, ident: &H256) -> io::Resu
 		.open(&path)?;
 	file.set_len((num_nodes * NODE_BYTES) as _)?;
 
-	let mut memmap = unsafe { MmapMut::map_mut(&file)? };
+	let mut memmap = Mmap::open(&file, Protection::ReadWrite)?;
 
-	unsafe { initialize_memory(memmap.as_mut_ptr() as *mut Node, num_nodes, ident) };
+	unsafe { initialize_memory(memmap.mut_ptr() as *mut Node, num_nodes, ident) };
 
 	Ok(memmap)
 }
@@ -241,10 +241,7 @@ fn consume_cache(cache: &mut Cache, path: &Path) -> io::Result<()> {
 fn cache_from_path(path: &Path, optimize_for: OptimizeFor) -> io::Result<Cache> {
 	let memmap = match optimize_for {
 		OptimizeFor::Cpu => None,
-		OptimizeFor::Memory => {
-			let file = fs::OpenOptions::new().read(true).write(true).create(true).open(path)?;
-			unsafe { MmapMut::map_mut(&file).ok() }
-		},
+		OptimizeFor::Memory => Mmap::open_path(path, Protection::ReadWrite).ok(),
 	};
 
 	memmap.map(Either::Right).ok_or(()).or_else(|_| {
@@ -290,7 +287,7 @@ impl AsRef<[Node]> for NodeCache {
 		match self.cache {
 			Either::Left(ref vec) => vec,
 			Either::Right(ref mmap) => unsafe {
-				let bytes = mmap.as_ptr();
+				let bytes = mmap.ptr();
 				// This isn't a safety issue, so we can keep this a debug lint. We don't care about
 				// people manually messing with the files unless it can cause unsafety, but if we're
 				// generating incorrect files then we want to catch that in CI.

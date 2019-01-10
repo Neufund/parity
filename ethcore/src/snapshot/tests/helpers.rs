@@ -1,46 +1,42 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Snapshot test helpers. These are used to build blockchains and state tries
 //! which can be queried before and after a full snapshot/restore cycle.
-
-extern crate trie_standardmap;
 
 use std::sync::Arc;
 use hash::{KECCAK_NULL_RLP};
 
 use account_db::AccountDBMut;
-use types::basic_account::BasicAccount;
-use blockchain::{BlockChain, BlockChainDB};
-use client::{Client, ChainInfo};
+use basic_account::BasicAccount;
+use blockchain::BlockChain;
+use client::{BlockChainClient, Client};
 use engines::EthEngine;
 use snapshot::{StateRebuilder};
 use snapshot::io::{SnapshotReader, PackedWriter, PackedReader};
 
-use tempdir::TempDir;
+use devtools::{RandomTempPath, GuardedTempResult};
 use rand::Rng;
 
-use kvdb::DBValue;
-use ethereum_types::H256;
+use util::{DBValue, KeyValueDB};
+use bigint::hash::H256;
 use hashdb::HashDB;
-use keccak_hasher::KeccakHasher;
-use journaldb;
-use trie::{TrieMut, Trie};
-use ethtrie::{SecTrieDBMut, TrieDB, TrieDBMut};
-use self::trie_standardmap::{Alphabet, StandardMap, ValueMode};
+use util::journaldb;
+use trie::{Alphabet, StandardMap, SecTrieDBMut, TrieMut, ValueMode};
+use trie::{TrieDB, TrieDBMut, Trie};
 
 // the proportion of accounts we will alter each tick.
 const ACCOUNT_CHURN: f32 = 0.01;
@@ -60,9 +56,10 @@ impl StateProducer {
 		}
 	}
 
+	#[cfg_attr(feature="dev", allow(let_and_return))]
 	/// Tick the state producer. This alters the state, writing new data into
 	/// the database.
-	pub fn tick<R: Rng>(&mut self, rng: &mut R, db: &mut HashDB<KeccakHasher, DBValue>) {
+	pub fn tick<R: Rng>(&mut self, rng: &mut R, db: &mut HashDB) {
 		// modify existing accounts.
 		let mut accounts_to_modify: Vec<_> = {
 			let trie = TrieDB::new(&*db, &self.state_root).unwrap();
@@ -77,10 +74,10 @@ impl StateProducer {
 
 		// sweep once to alter storage tries.
 		for &mut (ref mut address_hash, ref mut account_data) in &mut accounts_to_modify {
-			let mut account: BasicAccount = ::rlp::decode(&*account_data).expect("error decoding basic account");
+			let mut account: BasicAccount = ::rlp::decode(&*account_data);
 			let acct_db = AccountDBMut::from_hash(db, *address_hash);
 			fill_storage(acct_db, &mut account.storage_root, &mut self.storage_seed);
-			*account_data = DBValue::from_vec(::rlp::encode(&account));
+			*account_data = DBValue::from_vec(::rlp::encode(&account).into_vec());
 		}
 
 		// sweep again to alter account trie.
@@ -131,7 +128,7 @@ pub fn fill_storage(mut db: AccountDBMut, root: &mut H256, seed: &mut H256) {
 }
 
 /// Compare two state dbs.
-pub fn compare_dbs(one: &HashDB<KeccakHasher, DBValue>, two: &HashDB<KeccakHasher, DBValue>) {
+pub fn compare_dbs(one: &HashDB, two: &HashDB) {
 	let keys = one.keys();
 
 	for key in keys.keys() {
@@ -141,38 +138,40 @@ pub fn compare_dbs(one: &HashDB<KeccakHasher, DBValue>, two: &HashDB<KeccakHashe
 
 /// Take a snapshot from the given client into a temporary file.
 /// Return a snapshot reader for it.
-pub fn snap(client: &Client) -> (Box<SnapshotReader>, TempDir) {
-	use types::ids::BlockId;
+pub fn snap(client: &Client) -> GuardedTempResult<Box<SnapshotReader>> {
+	use ids::BlockId;
 
-	let tempdir = TempDir::new("").unwrap();
-	let path = tempdir.path().join("file");
-	let writer = PackedWriter::new(&path).unwrap();
+	let dir = RandomTempPath::new();
+	let writer = PackedWriter::new(dir.as_path()).unwrap();
 	let progress = Default::default();
 
 	let hash = client.chain_info().best_block_hash;
 	client.take_snapshot(writer, BlockId::Hash(hash), &progress).unwrap();
 
-	let reader = PackedReader::new(&path).unwrap().unwrap();
+	let reader = PackedReader::new(dir.as_path()).unwrap().unwrap();
 
-	(Box::new(reader), tempdir)
+	GuardedTempResult {
+		result: Some(Box::new(reader)),
+		_temp: dir,
+	}
 }
 
 /// Restore a snapshot into a given database. This will read chunks from the given reader
 /// write into the given database.
 pub fn restore(
-	db: Arc<BlockChainDB>,
+	db: Arc<KeyValueDB>,
 	engine: &EthEngine,
 	reader: &SnapshotReader,
 	genesis: &[u8],
 ) -> Result<(), ::error::Error> {
 	use std::sync::atomic::AtomicBool;
-	use snappy;
+	use util::snappy;
 
 	let flag = AtomicBool::new(true);
 	let components = engine.snapshot_components().unwrap();
 	let manifest = reader.manifest();
 
-	let mut state = StateRebuilder::new(db.key_value().clone(), journaldb::Algorithm::Archive);
+	let mut state = StateRebuilder::new(db.clone(), journaldb::Algorithm::Archive);
 	let mut secondary = {
 		let chain = BlockChain::new(Default::default(), genesis, db.clone());
 		components.rebuilder(chain, db, manifest).unwrap()

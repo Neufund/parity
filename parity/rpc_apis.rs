@@ -1,45 +1,45 @@
-// Copyright 2015-2019 Parity Technologies (UK) Ltd.
-// This file is part of Parity Ethereum.
+// Copyright 2015-2017 Parity Technologies (UK) Ltd.
+// This file is part of Parity.
 
-// Parity Ethereum is free software: you can redistribute it and/or modify
+// Parity is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity Ethereum is distributed in the hope that it will be useful,
+// Parity is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::cmp::PartialEq;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
 
 pub use parity_rpc::signer::SignerService;
+pub use parity_rpc::dapps::{DappsService, LocalDapp};
 
 use ethcore::account_provider::AccountProvider;
 use ethcore::client::Client;
-use ethcore::miner::Miner;
+use ethcore::miner::{Miner, ExternalMiner};
 use ethcore::snapshot::SnapshotService;
 use ethcore_logger::RotatingLogger;
-use ethcore_private_tx::Provider as PrivateTransactionManager;
-use ethcore_service::PrivateTxService;
+use ethsync::{ManageNetwork, SyncProvider, LightSync};
 use hash_fetch::fetch::Client as FetchClient;
 use jsonrpc_core::{self as core, MetaIoHandler};
+use light::{TransactionQueue as LightTransactionQueue, Cache as LightDataCache};
 use light::client::LightChainClient;
-use light::{Cache as LightDataCache, TransactionQueue as LightTransactionQueue};
-use miner::external::ExternalMiner;
+use node_health::NodeHealth;
+use parity_reactor;
 use parity_rpc::dispatch::{FullDispatcher, LightDispatcher};
 use parity_rpc::informant::{ActivityNotifier, ClientNotifier};
-use parity_rpc::{Host, Metadata, NetworkSettings};
-use parity_runtime::Executor;
-use parking_lot::{Mutex, RwLock};
-use sync::{LightSync, ManageNetwork, SyncProvider};
+use parity_rpc::{Metadata, NetworkSettings, Host};
 use updater::Updater;
+use parking_lot::{Mutex, RwLock};
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub enum Api {
@@ -57,29 +57,24 @@ pub enum Api {
 	Signer,
 	/// Parity - Custom extensions (Safe)
 	Parity,
-	/// Traces (Safe)
-	Traces,
-	/// Rpc (Safe)
-	Rpc,
-	/// Private transaction manager (Safe)
-	Private,
-	/// Whisper (Safe)
-	// TODO: _if_ someone guesses someone else's key or filter IDs they can remove
-	// BUT these are all ephemeral so it seems fine.
-	Whisper,
-	/// Whisper Pub-Sub (Safe but same concerns as above).
-	WhisperPubSub,
 	/// Parity PubSub - Generic Publish-Subscriber (Safety depends on other APIs exposed).
 	ParityPubSub,
 	/// Parity Accounts extensions (UNSAFE: Passwords, Side Effects (new account))
 	ParityAccounts,
 	/// Parity - Set methods (UNSAFE: Side Effects affecting node operation)
 	ParitySet,
-	/// SecretStore (UNSAFE: arbitrary hash signing)
+	/// Traces (Safe)
+	Traces,
+	/// Rpc (Safe)
+	Rpc,
+	/// SecretStore (Safe)
 	SecretStore,
-	/// Geth-compatible (best-effort) debug API (Potentially UNSAFE)
-	/// NOTE We don't aim to support all methods, only the ones that are useful.
-	Debug,
+	/// Whisper (Safe)
+	// TODO: _if_ someone guesses someone else's key or filter IDs they can remove
+	// BUT these are all ephemeral so it seems fine.
+	Whisper,
+	/// Whisper Pub-Sub (Safe but same concerns as above).
+	WhisperPubSub,
 }
 
 impl FromStr for Api {
@@ -89,24 +84,22 @@ impl FromStr for Api {
 		use self::Api::*;
 
 		match s {
-			"debug" => Ok(Debug),
-			"eth" => Ok(Eth),
+			"web3" => Ok(Web3),
 			"net" => Ok(Net),
-			"parity" => Ok(Parity),
-			"parity_accounts" => Ok(ParityAccounts),
-			"parity_pubsub" => Ok(ParityPubSub),
-			"parity_set" => Ok(ParitySet),
-			"personal" => Ok(Personal),
-			"private" => Ok(Private),
+			"eth" => Ok(Eth),
 			"pubsub" => Ok(EthPubSub),
+			"personal" => Ok(Personal),
+			"signer" => Ok(Signer),
+			"parity" => Ok(Parity),
+			"parity_pubsub" => Ok(ParityPubSub),
+			"parity_accounts" => Ok(ParityAccounts),
+			"parity_set" => Ok(ParitySet),
+			"traces" => Ok(Traces),
 			"rpc" => Ok(Rpc),
 			"secretstore" => Ok(SecretStore),
 			"shh" => Ok(Whisper),
 			"shh_pubsub" => Ok(WhisperPubSub),
-			"signer" => Ok(Signer),
-			"traces" => Ok(Traces),
-			"web3" => Ok(Web3),
-			api => Err(format!("Unknown api: {}", api)),
+			api => Err(format!("Unknown api: {}", api))
 		}
 	}
 }
@@ -117,6 +110,8 @@ pub enum ApiSet {
 	SafeContext,
 	// Unsafe context (like jsonrpc over http)
 	UnsafeContext,
+	// Public context (like public jsonrpc over http)
+	PublicContext,
 	// All possible APIs
 	All,
 	// Local "unsafe" context and accounts access
@@ -149,20 +144,20 @@ impl FromStr for ApiSet {
 			match api {
 				"all" => {
 					apis.extend(ApiSet::All.list_apis());
-				}
+				},
 				"safe" => {
 					// Safe APIs are those that are safe even in UnsafeContext.
 					apis.extend(ApiSet::UnsafeContext.list_apis());
-				}
+				},
 				// Remove the API
 				api if api.starts_with("-") => {
 					let api = api[1..].parse()?;
 					apis.remove(&api);
-				}
+				},
 				api => {
 					let api = api.parse()?;
 					apis.insert(api);
-				}
+				},
 			}
 		}
 
@@ -174,21 +169,19 @@ fn to_modules(apis: &HashSet<Api>) -> BTreeMap<String, String> {
 	let mut modules = BTreeMap::new();
 	for api in apis {
 		let (name, version) = match *api {
-			Api::Debug => ("debug", "1.0"),
+			Api::Web3 => ("web3", "1.0"),
+			Api::Net => ("net", "1.0"),
 			Api::Eth => ("eth", "1.0"),
 			Api::EthPubSub => ("pubsub", "1.0"),
-			Api::Net => ("net", "1.0"),
+			Api::Personal => ("personal", "1.0"),
+			Api::Signer => ("signer", "1.0"),
 			Api::Parity => ("parity", "1.0"),
 			Api::ParityAccounts => ("parity_accounts", "1.0"),
 			Api::ParityPubSub => ("parity_pubsub", "1.0"),
 			Api::ParitySet => ("parity_set", "1.0"),
-			Api::Personal => ("personal", "1.0"),
-			Api::Private => ("private", "1.0"),
+			Api::Traces => ("traces", "1.0"),
 			Api::Rpc => ("rpc", "1.0"),
 			Api::SecretStore => ("secretstore", "1.0"),
-			Api::Signer => ("signer", "1.0"),
-			Api::Traces => ("traces", "1.0"),
-			Api::Web3 => ("web3", "1.0"),
 			Api::Whisper => ("shh", "1.0"),
 			Api::WhisperPubSub => ("shh_pubsub", "1.0"),
 		};
@@ -205,9 +198,11 @@ pub trait Dependencies {
 	fn activity_notifier(&self) -> Self::Notifier;
 
 	/// Extend the given I/O handler with endpoints for each API.
-	fn extend_with_set<S>(&self, handler: &mut MetaIoHandler<Metadata, S>, apis: &HashSet<Api>)
-	where
-		S: core::Middleware<Metadata>;
+	fn extend_with_set<S>(
+		&self,
+		handler: &mut MetaIoHandler<Metadata, S>,
+		apis: &HashSet<Api>,
+	) where S: core::Middleware<Metadata>;
 }
 
 /// RPC dependencies for a full node.
@@ -217,23 +212,21 @@ pub struct FullDependencies {
 	pub snapshot: Arc<SnapshotService>,
 	pub sync: Arc<SyncProvider>,
 	pub net: Arc<ManageNetwork>,
-	pub secret_store: Arc<AccountProvider>,
-	pub private_tx_service: Option<Arc<PrivateTxService>>,
+	pub secret_store: Option<Arc<AccountProvider>>,
 	pub miner: Arc<Miner>,
 	pub external_miner: Arc<ExternalMiner>,
 	pub logger: Arc<RotatingLogger>,
 	pub settings: Arc<NetworkSettings>,
 	pub net_service: Arc<ManageNetwork>,
 	pub updater: Arc<Updater>,
+	pub health: NodeHealth,
 	pub geth_compatibility: bool,
-	pub experimental_rpcs: bool,
+	pub dapps_service: Option<Arc<DappsService>>,
+	pub dapps_address: Option<Host>,
 	pub ws_address: Option<Host>,
 	pub fetch: FetchClient,
-	pub executor: Executor,
+	pub remote: parity_reactor::Remote,
 	pub whisper_rpc: Option<::whisper::RpcFactory>,
-	pub gas_price_percentile: usize,
-	pub poll_lifetime: u32,
-	pub allow_missing_blocks: bool,
 }
 
 impl FullDependencies {
@@ -242,56 +235,32 @@ impl FullDependencies {
 		handler: &mut MetaIoHandler<Metadata, S>,
 		apis: &HashSet<Api>,
 		for_generic_pubsub: bool,
-	) where
-		S: core::Middleware<Metadata>,
-	{
+	) where S: core::Middleware<Metadata> {
 		use parity_rpc::v1::*;
 
 		macro_rules! add_signing_methods {
-			($namespace:ident, $handler:expr, $deps:expr, $nonces:expr) => {{
-				let deps = &$deps;
-				let dispatcher = FullDispatcher::new(
-					deps.client.clone(),
-					deps.miner.clone(),
-					$nonces,
-					deps.gas_price_percentile,
-				);
-				if deps.signer_service.is_enabled() {
-					$handler.extend_with($namespace::to_delegate(SigningQueueClient::new(
-						&deps.signer_service,
-						dispatcher,
-						deps.executor.clone(),
-						&deps.secret_store,
-					)))
-				} else {
-					$handler.extend_with($namespace::to_delegate(SigningUnsafeClient::new(
-						&deps.secret_store,
-						dispatcher,
-					)))
+			($namespace:ident, $handler:expr, $deps:expr) => {
+				{
+					let deps = &$deps;
+					let dispatcher = FullDispatcher::new(deps.client.clone(), deps.miner.clone());
+					if deps.signer_service.is_enabled() {
+						$handler.extend_with($namespace::to_delegate(SigningQueueClient::new(&deps.signer_service, dispatcher, &deps.secret_store)))
+					} else {
+						$handler.extend_with($namespace::to_delegate(SigningUnsafeClient::new(&deps.secret_store, dispatcher)))
+					}
 				}
-			}};
+			}
 		}
 
-		let nonces = Arc::new(Mutex::new(dispatch::Reservations::new(
-			self.executor.clone(),
-		)));
-		let dispatcher = FullDispatcher::new(
-			self.client.clone(),
-			self.miner.clone(),
-			nonces.clone(),
-			self.gas_price_percentile,
-		);
+		let dispatcher = FullDispatcher::new(self.client.clone(), self.miner.clone());
 		for api in apis {
 			match *api {
-				Api::Debug => {
-					handler.extend_with(DebugClient::new(self.client.clone()).to_delegate());
-				}
 				Api::Web3 => {
 					handler.extend_with(Web3Client::new().to_delegate());
-				}
+				},
 				Api::Net => {
 					handler.extend_with(NetClient::new(&self.sync).to_delegate());
-				}
+				},
 				Api::Eth => {
 					let client = EthClient::new(
 						&self.client,
@@ -304,120 +273,85 @@ impl FullDependencies {
 							pending_nonce_from_queue: self.geth_compatibility,
 							allow_pending_receipt_query: !self.geth_compatibility,
 							send_block_number_in_get_work: !self.geth_compatibility,
-							gas_price_percentile: self.gas_price_percentile,
-							allow_missing_blocks: self.allow_missing_blocks,
-							allow_experimental_rpcs: self.experimental_rpcs,
 						}
 					);
 					handler.extend_with(client.to_delegate());
 
 					if !for_generic_pubsub {
-						let filter_client = EthFilterClient::new(
-							self.client.clone(),
-							self.miner.clone(),
-							self.poll_lifetime,
-						);
+						let filter_client = EthFilterClient::new(self.client.clone(), self.miner.clone());
 						handler.extend_with(filter_client.to_delegate());
 
-						add_signing_methods!(EthSigning, handler, self, nonces.clone());
+						add_signing_methods!(EthSigning, handler, self);
 					}
-				}
+				},
 				Api::EthPubSub => {
 					if !for_generic_pubsub {
-						let client =
-							EthPubSubClient::new(self.client.clone(), self.executor.clone());
-						let h = client.handler();
-						self.miner
-							.add_transactions_listener(Box::new(move |hashes| {
-								if let Some(h) = h.upgrade() {
-									h.notify_new_transactions(hashes);
-								}
-							}));
-
-						if let Some(h) = client.handler().upgrade() {
-							self.client.add_notify(h);
-						}
+						let client = EthPubSubClient::new(self.client.clone(), self.remote.clone());
+						self.client.add_notify(client.handler());
 						handler.extend_with(client.to_delegate());
 					}
-				}
+				},
 				Api::Personal => {
-					handler.extend_with(
-						PersonalClient::new(
-							&self.secret_store,
-							dispatcher.clone(),
-							self.geth_compatibility,
-							self.experimental_rpcs,
-						).to_delegate(),
-					);
-				}
+					handler.extend_with(PersonalClient::new(&self.secret_store, dispatcher.clone(), self.geth_compatibility).to_delegate());
+				},
 				Api::Signer => {
-					handler.extend_with(
-						SignerClient::new(
-							&self.secret_store,
-							dispatcher.clone(),
-							&self.signer_service,
-							self.executor.clone(),
-						).to_delegate(),
-					);
-				}
+					handler.extend_with(SignerClient::new(&self.secret_store, dispatcher.clone(), &self.signer_service, self.remote.clone()).to_delegate());
+				},
 				Api::Parity => {
 					let signer = match self.signer_service.is_enabled() {
 						true => Some(self.signer_service.clone()),
 						false => None,
 					};
-					handler.extend_with(
-						ParityClient::new(
-							self.client.clone(),
-							self.miner.clone(),
-							self.sync.clone(),
-							self.updater.clone(),
-							self.net_service.clone(),
-							self.secret_store.clone(),
-							self.logger.clone(),
-							self.settings.clone(),
-							signer,
-							self.ws_address.clone(),
-							self.snapshot.clone().into(),
-						).to_delegate(),
-					);
+					handler.extend_with(ParityClient::new(
+						self.client.clone(),
+						self.miner.clone(),
+						self.sync.clone(),
+						self.updater.clone(),
+						self.net_service.clone(),
+						self.health.clone(),
+						self.secret_store.clone(),
+						self.logger.clone(),
+						self.settings.clone(),
+						signer,
+						self.dapps_address.clone(),
+						self.ws_address.clone(),
+					).to_delegate());
 
 					if !for_generic_pubsub {
-						add_signing_methods!(ParitySigning, handler, self, nonces.clone());
+						add_signing_methods!(ParitySigning, handler, self);
 					}
-				}
+				},
 				Api::ParityPubSub => {
 					if !for_generic_pubsub {
 						let mut rpc = MetaIoHandler::default();
-						let apis = ApiSet::List(apis.clone())
-							.retain(ApiSet::PubSub)
-							.list_apis();
+						let apis = ApiSet::List(apis.clone()).retain(ApiSet::PubSub).list_apis();
 						self.extend_api(&mut rpc, &apis, true);
-						handler.extend_with(
-							PubSubClient::new(rpc, self.executor.clone()).to_delegate(),
-						);
+						handler.extend_with(PubSubClient::new(rpc, self.remote.clone()).to_delegate());
 					}
-				}
+				},
 				Api::ParityAccounts => {
-					handler
-						.extend_with(ParityAccountsClient::new(&self.secret_store).to_delegate());
-				}
-				Api::ParitySet => handler.extend_with(
-					ParitySetClient::new(
+					handler.extend_with(ParityAccountsClient::new(&self.secret_store).to_delegate());
+				},
+				Api::ParitySet => {
+					handler.extend_with(ParitySetClient::new(
 						&self.client,
 						&self.miner,
 						&self.updater,
 						&self.net_service,
+						self.dapps_service.clone(),
 						self.fetch.clone(),
-					).to_delegate(),
-				),
-				Api::Traces => handler.extend_with(TracesClient::new(&self.client).to_delegate()),
+					).to_delegate())
+				},
+				Api::Traces => {
+					handler.extend_with(TracesClient::new(&self.client, &self.miner).to_delegate())
+				},
 				Api::Rpc => {
 					let modules = to_modules(&apis);
 					handler.extend_with(RpcClient::new(modules).to_delegate());
-				}
+				},
 				Api::SecretStore => {
 					handler.extend_with(SecretStoreClient::new(&self.secret_store).to_delegate());
-				}
+				},
 				Api::Whisper => {
 					if let Some(ref whisper_rpc) = self.whisper_rpc {
 						let whisper = whisper_rpc.make_handler(self.net.clone());
@@ -428,17 +362,11 @@ impl FullDependencies {
 					if !for_generic_pubsub {
 						if let Some(ref whisper_rpc) = self.whisper_rpc {
 							let whisper = whisper_rpc.make_handler(self.net.clone());
-							handler.extend_with(::parity_whisper::rpc::WhisperPubSub::to_delegate(
-								whisper,
-							));
+							handler.extend_with(
+								::parity_whisper::rpc::WhisperPubSub::to_delegate(whisper)
+							);
 						}
 					}
-				}
-				Api::Private => {
-					handler.extend_with(
-						PrivateClient::new(self.private_tx_service.as_ref().map(|p| p.provider()))
-							.to_delegate(),
-					);
 				}
 			}
 		}
@@ -454,10 +382,11 @@ impl Dependencies for FullDependencies {
 		}
 	}
 
-	fn extend_with_set<S>(&self, handler: &mut MetaIoHandler<Metadata, S>, apis: &HashSet<Api>)
-	where
-		S: core::Middleware<Metadata>,
-	{
+	fn extend_with_set<S>(
+		&self,
+		handler: &mut MetaIoHandler<Metadata, S>,
+		apis: &HashSet<Api>,
+	) where S: core::Middleware<Metadata> {
 		self.extend_api(handler, apis, false)
 	}
 }
@@ -478,18 +407,17 @@ pub struct LightDependencies<T> {
 	pub secret_store: Arc<AccountProvider>,
 	pub logger: Arc<RotatingLogger>,
 	pub settings: Arc<NetworkSettings>,
+	pub health: NodeHealth,
 	pub on_demand: Arc<::light::on_demand::OnDemand>,
 	pub cache: Arc<Mutex<LightDataCache>>,
 	pub transaction_queue: Arc<RwLock<LightTransactionQueue>>,
+	pub dapps_service: Option<Arc<DappsService>>,
+	pub dapps_address: Option<Host>,
 	pub ws_address: Option<Host>,
 	pub fetch: FetchClient,
 	pub geth_compatibility: bool,
-	pub experimental_rpcs: bool,
-	pub executor: Executor,
+	pub remote: parity_reactor::Remote,
 	pub whisper_rpc: Option<::whisper::RpcFactory>,
-	pub private_tx_service: Option<Arc<PrivateTransactionManager>>,
-	pub gas_price_percentile: usize,
-	pub poll_lifetime: u32,
 }
 
 impl<C: LightChainClient + 'static> LightDependencies<C> {
@@ -507,44 +435,35 @@ impl<C: LightChainClient + 'static> LightDependencies<C> {
 			self.on_demand.clone(),
 			self.cache.clone(),
 			self.transaction_queue.clone(),
-			Arc::new(Mutex::new(dispatch::Reservations::new(
-				self.executor.clone(),
-			))),
-			self.gas_price_percentile,
 		);
 
 		macro_rules! add_signing_methods {
-			($namespace:ident, $handler:expr, $deps:expr) => {{
-				let deps = &$deps;
-				let dispatcher = dispatcher.clone();
-				let secret_store = deps.secret_store.clone();
-				if deps.signer_service.is_enabled() {
-					$handler.extend_with($namespace::to_delegate(SigningQueueClient::new(
-						&deps.signer_service,
-						dispatcher,
-						deps.executor.clone(),
-						&secret_store,
-					)))
-				} else {
-					$handler.extend_with($namespace::to_delegate(SigningUnsafeClient::new(
-						&secret_store,
-						dispatcher,
-					)))
+			($namespace:ident, $handler:expr, $deps:expr) => {
+				{
+					let deps = &$deps;
+					let dispatcher = dispatcher.clone();
+					let secret_store = Some(deps.secret_store.clone());
+					if deps.signer_service.is_enabled() {
+						$handler.extend_with($namespace::to_delegate(
+							SigningQueueClient::new(&deps.signer_service, dispatcher, &secret_store)
+						))
+					} else {
+						$handler.extend_with(
+							$namespace::to_delegate(SigningUnsafeClient::new(&secret_store, dispatcher))
+						)
 					}
-				}};
+				}
+			}
 		}
 
 		for api in apis {
 			match *api {
-				Api::Debug => {
-					warn!(target: "rpc", "Debug API is not available in light client mode.")
-				}
 				Api::Web3 => {
 					handler.extend_with(Web3Client::new().to_delegate());
-				}
+				},
 				Api::Net => {
 					handler.extend_with(light::NetClient::new(self.sync.clone()).to_delegate());
-				}
+				},
 				Api::Eth => {
 					let client = light::EthClient::new(
 						self.sync.clone(),
@@ -553,8 +472,6 @@ impl<C: LightChainClient + 'static> LightDependencies<C> {
 						self.transaction_queue.clone(),
 						self.secret_store.clone(),
 						self.cache.clone(),
-						self.gas_price_percentile,
-						self.poll_lifetime,
 					);
 					handler.extend_with(Eth::to_delegate(client.clone()));
 
@@ -562,96 +479,79 @@ impl<C: LightChainClient + 'static> LightDependencies<C> {
 						handler.extend_with(EthFilter::to_delegate(client));
 						add_signing_methods!(EthSigning, handler, self);
 					}
-				}
+				},
 				Api::EthPubSub => {
 					let client = EthPubSubClient::light(
 						self.client.clone(),
 						self.on_demand.clone(),
 						self.sync.clone(),
 						self.cache.clone(),
-						self.executor.clone(),
-						self.gas_price_percentile,
+						self.remote.clone(),
 					);
-					self.client.add_listener(client.handler() as Weak<_>);
-					let h = client.handler();
-					self.transaction_queue
-						.write()
-						.add_listener(Box::new(move |transactions| {
-							if let Some(h) = h.upgrade() {
-								h.notify_new_transactions(transactions);
-							}
-						}));
+					self.client.add_listener(
+						Arc::downgrade(&client.handler()) as Weak<::light::client::LightChainNotify>
+					);
 					handler.extend_with(EthPubSub::to_delegate(client));
-				}
+				},
 				Api::Personal => {
-					handler.extend_with(
-						PersonalClient::new(
-							&self.secret_store,
-							dispatcher.clone(),
-							self.geth_compatibility,
-							self.experimental_rpcs,
-						).to_delegate(),
-					);
-				}
+					let secret_store = Some(self.secret_store.clone());
+					handler.extend_with(PersonalClient::new(&secret_store, dispatcher.clone(), self.geth_compatibility).to_delegate());
+				},
 				Api::Signer => {
-					handler.extend_with(
-						SignerClient::new(
-							&self.secret_store,
-							dispatcher.clone(),
-							&self.signer_service,
-							self.executor.clone(),
-						).to_delegate(),
-					);
-				}
+					let secret_store = Some(self.secret_store.clone());
+					handler.extend_with(SignerClient::new(&secret_store, dispatcher.clone(), &self.signer_service, self.remote.clone()).to_delegate());
+				},
 				Api::Parity => {
 					let signer = match self.signer_service.is_enabled() {
 						true => Some(self.signer_service.clone()),
 						false => None,
 					};
-					handler.extend_with(
-						light::ParityClient::new(
-							Arc::new(dispatcher.clone()),
-							self.secret_store.clone(),
-							self.logger.clone(),
-							self.settings.clone(),
-							signer,
-							self.ws_address.clone(),
-							self.gas_price_percentile,
-						).to_delegate(),
-					);
+					handler.extend_with(light::ParityClient::new(
+						self.client.clone(),
+						Arc::new(dispatcher.clone()),
+						self.secret_store.clone(),
+						self.logger.clone(),
+						self.settings.clone(),
+						self.health.clone(),
+						signer,
+						self.dapps_address.clone(),
+						self.ws_address.clone(),
+					).to_delegate());
 
 					if !for_generic_pubsub {
 						add_signing_methods!(ParitySigning, handler, self);
 					}
-				}
+				},
 				Api::ParityPubSub => {
 					if !for_generic_pubsub {
 						let mut rpc = MetaIoHandler::default();
-						let apis = ApiSet::List(apis.clone())
-							.retain(ApiSet::PubSub)
-							.list_apis();
+						let apis = ApiSet::List(apis.clone()).retain(ApiSet::PubSub).list_apis();
 						self.extend_api(&mut rpc, &apis, true);
-						handler.extend_with(
-							PubSubClient::new(rpc, self.executor.clone()).to_delegate(),
-						);
+						handler.extend_with(PubSubClient::new(rpc, self.remote.clone()).to_delegate());
 					}
-				}
+				},
 				Api::ParityAccounts => {
-					handler
-						.extend_with(ParityAccountsClient::new(&self.secret_store).to_delegate());
-				}
-				Api::ParitySet => handler.extend_with(
-					light::ParitySetClient::new(self.sync.clone(), self.fetch.clone())
-						.to_delegate(),
-				),
-				Api::Traces => handler.extend_with(light::TracesClient.to_delegate()),
+					let secret_store = Some(self.secret_store.clone());
+					handler.extend_with(ParityAccountsClient::new(&secret_store).to_delegate());
+				},
+				Api::ParitySet => {
+					handler.extend_with(light::ParitySetClient::new(
+						self.sync.clone(),
+						self.dapps_service.clone(),
+						self.fetch.clone(),
+					).to_delegate())
+				},
+				Api::Traces => {
+					handler.extend_with(light::TracesClient.to_delegate())
+				},
 				Api::Rpc => {
 					let modules = to_modules(&apis);
 					handler.extend_with(RpcClient::new(modules).to_delegate());
-				}
+				},
 				Api::SecretStore => {
-					handler.extend_with(SecretStoreClient::new(&self.secret_store).to_delegate());
-				}
+					let secret_store = Some(self.secret_store.clone());
+					handler.extend_with(SecretStoreClient::new(&secret_store).to_delegate());
+				},
 				Api::Whisper => {
 					if let Some(ref whisper_rpc) = self.whisper_rpc {
 						let whisper = whisper_rpc.make_handler(self.net.clone());
@@ -661,15 +561,7 @@ impl<C: LightChainClient + 'static> LightDependencies<C> {
 				Api::WhisperPubSub => {
 					if let Some(ref whisper_rpc) = self.whisper_rpc {
 						let whisper = whisper_rpc.make_handler(self.net.clone());
-						handler.extend_with(::parity_whisper::rpc::WhisperPubSub::to_delegate(
-							whisper,
-						));
-					}
-				}
-				Api::Private => {
-					if let Some(ref tx_manager) = self.private_tx_service {
-						let private_tx_service = Some(tx_manager.clone());
-						handler.extend_with(PrivateClient::new(private_tx_service).to_delegate());
+						handler.extend_with(::parity_whisper::rpc::WhisperPubSub::to_delegate(whisper));
 					}
 				}
 			}
@@ -680,14 +572,13 @@ impl<C: LightChainClient + 'static> LightDependencies<C> {
 impl<T: LightChainClient + 'static> Dependencies for LightDependencies<T> {
 	type Notifier = LightClientNotifier;
 
-	fn activity_notifier(&self) -> Self::Notifier {
-		LightClientNotifier
-	}
+	fn activity_notifier(&self) -> Self::Notifier { LightClientNotifier }
 
-	fn extend_with_set<S>(&self, handler: &mut MetaIoHandler<Metadata, S>, apis: &HashSet<Api>)
-	where
-		S: core::Middleware<Metadata>,
-	{
+	fn extend_with_set<S>(
+		&self,
+		handler: &mut MetaIoHandler<Metadata, S>,
+		apis: &HashSet<Api>,
+	) where S: core::Middleware<Metadata> {
 		self.extend_api(handler, apis, false)
 	}
 }
@@ -699,65 +590,56 @@ impl ApiSet {
 	}
 
 	pub fn list_apis(&self) -> HashSet<Api> {
-		let mut public_list: HashSet<Api> = [
+		let mut public_list = [
 			Api::Web3,
 			Api::Net,
 			Api::Eth,
 			Api::EthPubSub,
 			Api::Parity,
 			Api::Rpc,
+			Api::SecretStore,
 			Api::Whisper,
 			Api::WhisperPubSub,
-			Api::Private,
-		]
-			.into_iter()
-			.cloned()
-			.collect();
+		].into_iter().cloned().collect();
 
 		match *self {
 			ApiSet::List(ref apis) => apis.clone(),
+			ApiSet::PublicContext => public_list,
 			ApiSet::UnsafeContext => {
 				public_list.insert(Api::Traces);
 				public_list.insert(Api::ParityPubSub);
 				public_list
-			}
+			},
 			ApiSet::IpcContext => {
 				public_list.insert(Api::Traces);
 				public_list.insert(Api::ParityPubSub);
 				public_list.insert(Api::ParityAccounts);
 				public_list
-			}
+			},
 			ApiSet::SafeContext => {
-				public_list.insert(Api::Debug);
 				public_list.insert(Api::Traces);
 				public_list.insert(Api::ParityPubSub);
 				public_list.insert(Api::ParityAccounts);
 				public_list.insert(Api::ParitySet);
 				public_list.insert(Api::Signer);
-				public_list.insert(Api::SecretStore);
 				public_list
-			}
+			},
 			ApiSet::All => {
-				public_list.insert(Api::Debug);
 				public_list.insert(Api::Traces);
 				public_list.insert(Api::ParityPubSub);
 				public_list.insert(Api::ParityAccounts);
 				public_list.insert(Api::ParitySet);
 				public_list.insert(Api::Signer);
 				public_list.insert(Api::Personal);
-				public_list.insert(Api::SecretStore);
 				public_list
-			}
+			},
 			ApiSet::PubSub => [
 				Api::Eth,
 				Api::Parity,
 				Api::ParityAccounts,
 				Api::ParitySet,
 				Api::Traces,
-			]
-				.into_iter()
-				.cloned()
-				.collect(),
+			].into_iter().cloned().collect()
 		}
 	}
 }
@@ -768,7 +650,6 @@ mod test {
 
 	#[test]
 	fn test_api_parsing() {
-		assert_eq!(Api::Debug, "debug".parse().unwrap());
 		assert_eq!(Api::Web3, "web3".parse().unwrap());
 		assert_eq!(Api::Net, "net".parse().unwrap());
 		assert_eq!(Api::Eth, "eth".parse().unwrap());
@@ -781,7 +662,6 @@ mod test {
 		assert_eq!(Api::Traces, "traces".parse().unwrap());
 		assert_eq!(Api::Rpc, "rpc".parse().unwrap());
 		assert_eq!(Api::SecretStore, "secretstore".parse().unwrap());
-		assert_eq!(Api::Private, "private".parse().unwrap());
 		assert_eq!(Api::Whisper, "shh".parse().unwrap());
 		assert_eq!(Api::WhisperPubSub, "shh_pubsub".parse().unwrap());
 		assert!("rp".parse::<Api>().is_err());
@@ -794,29 +674,15 @@ mod test {
 
 	#[test]
 	fn test_api_set_parsing() {
-		assert_eq!(
-			ApiSet::List(vec![Api::Web3, Api::Eth].into_iter().collect()),
-			"web3,eth".parse().unwrap()
-		);
+		assert_eq!(ApiSet::List(vec![Api::Web3, Api::Eth].into_iter().collect()), "web3,eth".parse().unwrap());
 	}
 
 	#[test]
 	fn test_api_set_unsafe_context() {
 		let expected = vec![
 			// make sure this list contains only SAFE methods
-			Api::Web3,
-			Api::Net,
-			Api::Eth,
-			Api::EthPubSub,
-			Api::Parity,
-			Api::ParityPubSub,
-			Api::Traces,
-			Api::Rpc,
-			Api::Whisper,
-			Api::WhisperPubSub,
-			Api::Private,
-		].into_iter()
-		.collect();
+			Api::Web3, Api::Net, Api::Eth, Api::EthPubSub, Api::Parity, Api::ParityPubSub, Api::Traces, Api::Rpc, Api::SecretStore, Api::Whisper, Api::WhisperPubSub,
+		].into_iter().collect();
 		assert_eq!(ApiSet::UnsafeContext.list_apis(), expected);
 	}
 
@@ -824,21 +690,10 @@ mod test {
 	fn test_api_set_ipc_context() {
 		let expected = vec![
 			// safe
-			Api::Web3,
-			Api::Net,
-			Api::Eth,
-			Api::EthPubSub,
-			Api::Parity,
-			Api::ParityPubSub,
-			Api::Traces,
-			Api::Rpc,
-			Api::Whisper,
-			Api::WhisperPubSub,
-			Api::Private,
+			Api::Web3, Api::Net, Api::Eth, Api::EthPubSub, Api::Parity, Api::ParityPubSub, Api::Traces, Api::Rpc, Api::SecretStore, Api::Whisper, Api::WhisperPubSub,
 			// semi-safe
-			Api::ParityAccounts,
-		].into_iter()
-		.collect();
+			Api::ParityAccounts
+		].into_iter().collect();
 		assert_eq!(ApiSet::IpcContext.list_apis(), expected);
 	}
 
@@ -846,106 +701,38 @@ mod test {
 	fn test_api_set_safe_context() {
 		let expected = vec![
 			// safe
-			Api::Web3,
-			Api::Net,
-			Api::Eth,
-			Api::EthPubSub,
-			Api::Parity,
-			Api::ParityPubSub,
-			Api::Traces,
-			Api::Rpc,
-			Api::SecretStore,
-			Api::Whisper,
-			Api::WhisperPubSub,
-			Api::Private,
+			Api::Web3, Api::Net, Api::Eth, Api::EthPubSub, Api::Parity, Api::ParityPubSub, Api::Traces, Api::Rpc, Api::SecretStore, Api::Whisper, Api::WhisperPubSub,
 			// semi-safe
 			Api::ParityAccounts,
 			// Unsafe
-			Api::ParitySet,
-			Api::Signer,
-			Api::Debug,
-		].into_iter()
-		.collect();
+			Api::ParitySet, Api::Signer,
+		].into_iter().collect();
 		assert_eq!(ApiSet::SafeContext.list_apis(), expected);
 	}
 
 	#[test]
 	fn test_all_apis() {
-		assert_eq!(
-			"all".parse::<ApiSet>().unwrap(),
-			ApiSet::List(
-				vec![
-					Api::Web3,
-					Api::Net,
-					Api::Eth,
-					Api::EthPubSub,
-					Api::Parity,
-					Api::ParityPubSub,
-					Api::Traces,
-					Api::Rpc,
-					Api::SecretStore,
-					Api::Whisper,
-					Api::WhisperPubSub,
-					Api::ParityAccounts,
-					Api::ParitySet,
-					Api::Signer,
-					Api::Personal,
-					Api::Private,
-					Api::Debug,
-				].into_iter()
-				.collect()
-			)
-		);
+		assert_eq!("all".parse::<ApiSet>().unwrap(), ApiSet::List(vec![
+			Api::Web3, Api::Net, Api::Eth, Api::EthPubSub, Api::Parity, Api::ParityPubSub, Api::Traces, Api::Rpc, Api::SecretStore, Api::Whisper, Api::WhisperPubSub,
+			Api::ParityAccounts,
+			Api::ParitySet, Api::Signer,
+			Api::Personal
+		].into_iter().collect()));
 	}
 
 	#[test]
 	fn test_all_without_personal_apis() {
-		assert_eq!(
-			"personal,all,-personal".parse::<ApiSet>().unwrap(),
-			ApiSet::List(
-				vec![
-					Api::Web3,
-					Api::Net,
-					Api::Eth,
-					Api::EthPubSub,
-					Api::Parity,
-					Api::ParityPubSub,
-					Api::Traces,
-					Api::Rpc,
-					Api::SecretStore,
-					Api::Whisper,
-					Api::WhisperPubSub,
-					Api::ParityAccounts,
-					Api::ParitySet,
-					Api::Signer,
-					Api::Private,
-					Api::Debug,
-				].into_iter()
-				.collect()
-			)
-		);
+		assert_eq!("personal,all,-personal".parse::<ApiSet>().unwrap(), ApiSet::List(vec![
+			Api::Web3, Api::Net, Api::Eth, Api::EthPubSub, Api::Parity, Api::ParityPubSub, Api::Traces, Api::Rpc, Api::SecretStore, Api::Whisper, Api::WhisperPubSub,
+			Api::ParityAccounts,
+			Api::ParitySet, Api::Signer,
+		].into_iter().collect()));
 	}
 
 	#[test]
 	fn test_safe_parsing() {
-		assert_eq!(
-			"safe".parse::<ApiSet>().unwrap(),
-			ApiSet::List(
-				vec![
-					Api::Web3,
-					Api::Net,
-					Api::Eth,
-					Api::EthPubSub,
-					Api::Parity,
-					Api::ParityPubSub,
-					Api::Traces,
-					Api::Rpc,
-					Api::Whisper,
-					Api::WhisperPubSub,
-					Api::Private,
-				].into_iter()
-				.collect()
-			)
-		);
+		assert_eq!("safe".parse::<ApiSet>().unwrap(), ApiSet::List(vec![
+			Api::Web3, Api::Net, Api::Eth, Api::EthPubSub, Api::Parity, Api::ParityPubSub, Api::Traces, Api::Rpc, Api::SecretStore, Api::Whisper, Api::WhisperPubSub,
+		].into_iter().collect()));
 	}
 }
