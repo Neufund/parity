@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::sync::Arc;
 
@@ -66,7 +66,7 @@ fn io() -> Tester {
 		state_diff: None,
 	}));
 	let miner = Arc::new(TestMinerService::default());
-	let traces = TracesClient::new(&client, &miner);
+	let traces = TracesClient::new(&client);
 	let mut io = IoHandler::default();
 	io.extend_with(traces.to_delegate());
 
@@ -229,6 +229,16 @@ fn rpc_trace_replay_transaction_state_pruned() {
 
 	let request = r#"{"jsonrpc":"2.0","method":"trace_replayTransaction","params":["0x0000000000000000000000000000000000000000000000000000000000000005", ["trace", "stateDiff", "vmTrace"]],"id":1}"#;
 	let response = r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"This request is not supported because your node is running with state pruning. Run with --pruning=archive."},"id":1}"#;
+
+	assert_eq!(tester.io.handle_request_sync(request), Some(response.to_owned()));
+}
+
+#[test]
+fn rpc_trace_replay_block_transactions() {
+	let tester = io();
+
+	let request = r#"{"jsonrpc":"2.0","method":"trace_replayBlockTransactions","params":["0x10", ["trace", "stateDiff", "vmTrace"]],"id":1}"#;
+	let response = r#"{"jsonrpc":"2.0","result":[{"output":"0x010203","stateDiff":null,"trace":[],"transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000005","vmTrace":null}],"id":1}"#;
 
 	assert_eq!(tester.io.handle_request_sync(request), Some(response.to_owned()));
 }

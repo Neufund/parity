@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Vm execution env.
 
@@ -22,30 +22,30 @@ use hash::H256;
 use blockchain::State;
 use vm::{Transaction, Call, Env};
 
-/// Reporesents vm execution environment before and after exeuction of transaction.
+/// Represents vm execution environment before and after execution of transaction.
 #[derive(Debug, PartialEq, Deserialize)]
 pub struct Vm {
 	/// Contract calls made internaly by executed transaction.
-	#[serde(rename="callcreates")]
+	#[serde(rename = "callcreates")]
 	pub calls: Option<Vec<Call>>,
 	/// Env info.
 	pub env: Env,
 	/// Executed transaction
-	#[serde(rename="exec")]
+	#[serde(rename = "exec")]
 	pub transaction: Transaction,
 	/// Gas left after transaction execution.
-	#[serde(rename="gas")]
+	#[serde(rename = "gas")]
 	pub gas_left: Option<Uint>,
 	/// Hash of logs created during execution of transaction.
 	pub logs: Option<H256>,
 	/// Transaction output.
-	#[serde(rename="out")]
+	#[serde(rename = "out")]
 	pub output: Option<Bytes>,
 	/// Post execution vm state.
-	#[serde(rename="post")]
+	#[serde(rename = "post")]
 	pub post_state: Option<State>,
 	/// Pre execution vm state.
-	#[serde(rename="pre")]
+	#[serde(rename = "pre")]
 	pub pre_state: State,
 }
 

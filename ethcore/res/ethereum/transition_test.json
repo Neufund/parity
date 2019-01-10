@@ -6,15 +6,15 @@
 				"minimumDifficulty": "0x020000",
 				"difficultyBoundDivisor": "0x0800",
 				"durationLimit": "0x0d",
-				"blockReward": "0x4563918244F40000",
+				"blockReward": {
+					"0x0": "0x4563918244F40000",
+					"0x5": "0x29A2241AF62C0000"
+				},
 				"homesteadTransition": "0",
-				"eip150Transition": "0",
-				"eip160Transition": "0",
-				"eip161abcTransition": "0",
-				"eip161dTransition": "0",
-				"eip649Reward": "0x29A2241AF62C0000",
 				"eip100bTransition": "5",
-				"eip649Transition": "5"
+				"difficultyBombDelays": {
+					"5": 3000000
+				}
 			}
 		}
 	},
@@ -26,6 +26,11 @@
 		"minGasLimit": "0x1388",
 		"networkID" : "0x1",
 		"maxCodeSize": 24576,
+		"maxCodeSizeTransition": "0",
+		"eip150Transition": "0",
+		"eip160Transition": "0",
+		"eip161abcTransition": "0",
+		"eip161dTransition": "0",
 		"eip98Transition": "5",
 		"eip140Transition": "5",
 		"eip211Transition": "5",

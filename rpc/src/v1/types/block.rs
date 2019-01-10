@@ -1,26 +1,26 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::ops::Deref;
 use std::collections::BTreeMap;
 
-use ethcore::encoded::Header as EthHeader;
-
-use serde::{Serialize, Serializer};
 use serde::ser::Error;
+use serde::{Serialize, Serializer};
+use types::encoded::Header as EthHeader;
+
 use v1::types::{Bytes, Transaction, H160, H256, H2048, U256};
 
 /// Block Transactions
@@ -44,52 +44,42 @@ impl Serialize for BlockTransactions {
 
 /// Block representation
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Block {
 	/// Hash of the block
 	pub hash: Option<H256>,
 	/// Hash of the parent
-	#[serde(rename="parentHash")]
 	pub parent_hash: H256,
 	/// Hash of the uncles
-	#[serde(rename="sha3Uncles")]
+	#[serde(rename = "sha3Uncles")]
 	pub uncles_hash: H256,
 	/// Authors address
 	pub author: H160,
-	// TODO: get rid of this one
-	/// ?
+	/// Alias of `author`
 	pub miner: H160,
 	/// State root hash
-	#[serde(rename="stateRoot")]
 	pub state_root: H256,
 	/// Transactions root hash
-	#[serde(rename="transactionsRoot")]
 	pub transactions_root: H256,
 	/// Transactions receipts root hash
-	#[serde(rename="receiptsRoot")]
 	pub receipts_root: H256,
 	/// Block number
 	pub number: Option<U256>,
 	/// Gas Used
-	#[serde(rename="gasUsed")]
 	pub gas_used: U256,
 	/// Gas Limit
-	#[serde(rename="gasLimit")]
 	pub gas_limit: U256,
 	/// Extra data
-	#[serde(rename="extraData")]
 	pub extra_data: Bytes,
 	/// Logs bloom
-	#[serde(rename="logsBloom")]
-	pub logs_bloom: H2048,
+	pub logs_bloom: Option<H2048>,
 	/// Timestamp
 	pub timestamp: U256,
 	/// Difficulty
 	pub difficulty: U256,
 	/// Total difficulty
-	#[serde(rename="totalDifficulty")]
 	pub total_difficulty: Option<U256>,
 	/// Seal fields
-	#[serde(rename="sealFields")]
 	pub seal_fields: Vec<Bytes>,
 	/// Uncles' hashes
 	pub uncles: Vec<H256>,
@@ -101,49 +91,40 @@ pub struct Block {
 
 /// Block header representation.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Header {
 	/// Hash of the block
 	pub hash: Option<H256>,
 	/// Hash of the parent
-	#[serde(rename="parentHash")]
 	pub parent_hash: H256,
 	/// Hash of the uncles
-	#[serde(rename="sha3Uncles")]
+	#[serde(rename = "sha3Uncles")]
 	pub uncles_hash: H256,
 	/// Authors address
 	pub author: H160,
-	// TODO: get rid of this one
-	/// ?
+	/// Alias of `author`
 	pub miner: H160,
 	/// State root hash
-	#[serde(rename="stateRoot")]
 	pub state_root: H256,
 	/// Transactions root hash
-	#[serde(rename="transactionsRoot")]
 	pub transactions_root: H256,
 	/// Transactions receipts root hash
-	#[serde(rename="receiptsRoot")]
 	pub receipts_root: H256,
 	/// Block number
 	pub number: Option<U256>,
 	/// Gas Used
-	#[serde(rename="gasUsed")]
 	pub gas_used: U256,
 	/// Gas Limit
-	#[serde(rename="gasLimit")]
 	pub gas_limit: U256,
 	/// Extra data
-	#[serde(rename="extraData")]
 	pub extra_data: Bytes,
 	/// Logs bloom
-	#[serde(rename="logsBloom")]
 	pub logs_bloom: H2048,
 	/// Timestamp
 	pub timestamp: U256,
 	/// Difficulty
 	pub difficulty: U256,
 	/// Seal fields
-	#[serde(rename="sealFields")]
 	pub seal_fields: Vec<Bytes>,
 	/// Size in bytes
 	pub size: Option<U256>,
@@ -173,8 +154,10 @@ impl<'a> From<&'a EthHeader> for Header {
 			logs_bloom: h.log_bloom().into(),
 			timestamp: h.timestamp().into(),
 			difficulty: h.difficulty().into(),
-			seal_fields: h.seal().into_iter().map(Into::into).collect(),
 			extra_data: h.extra_data().into(),
+			seal_fields: h.view().decode_seal()
+				.expect("Client/Miner returns only valid headers. We only serialize headers from Client/Miner; qed")
+				.into_iter().map(Into::into).collect(),
 		}
 	}
 }
@@ -252,7 +235,7 @@ mod tests {
 			gas_used: U256::default(),
 			gas_limit: U256::default(),
 			extra_data: Bytes::default(),
-			logs_bloom: H2048::default(),
+			logs_bloom: Some(H2048::default()),
 			timestamp: U256::default(),
 			difficulty: U256::default(),
 			total_difficulty: Some(U256::default()),
@@ -290,7 +273,7 @@ mod tests {
 			gas_used: U256::default(),
 			gas_limit: U256::default(),
 			extra_data: Bytes::default(),
-			logs_bloom: H2048::default(),
+			logs_bloom: Some(H2048::default()),
 			timestamp: U256::default(),
 			difficulty: U256::default(),
 			total_difficulty: Some(U256::default()),

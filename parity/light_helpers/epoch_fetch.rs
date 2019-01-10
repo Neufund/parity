@@ -1,37 +1,40 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::sync::{Arc, Weak};
 
-use ethcore::encoded;
 use ethcore::engines::{EthEngine, StateDependentProof};
-use ethcore::header::Header;
 use ethcore::machine::EthereumMachine;
-use ethcore::receipt::Receipt;
-use ethsync::LightSync;
+use sync::LightSync;
+use types::encoded;
+use types::header::Header;
+use types::receipt::Receipt;
 
-use futures::{future, Future, BoxFuture};
+use futures::{future, Future};
+use futures::future::Either;
 
 use light::client::fetch::ChainDataFetcher;
 use light::on_demand::{request, OnDemand};
 
 use parking_lot::RwLock;
-use bigint::hash::H256;
+use ethereum_types::H256;
 
 const ALL_VALID_BACKREFS: &str = "no back-references, therefore all back-references valid; qed";
+
+type BoxFuture<T, E> = Box<Future<Item = T, Error = E>>;
 
 /// Allows on-demand fetch of data useful for the light client.
 pub struct EpochFetch {
@@ -45,7 +48,7 @@ impl EpochFetch {
 	fn request<T>(&self, req: T) -> BoxFuture<T::Out, &'static str>
 		where T: Send + request::RequestAdapter + 'static, T::Out: Send + 'static
 	{
-		match self.sync.read().upgrade() {
+		Box::new(match self.sync.read().upgrade() {
 			Some(sync) => {
 				let on_demand = &self.on_demand;
 				let maybe_future = sync.with_context(move |ctx| {
@@ -53,12 +56,12 @@ impl EpochFetch {
 				});
 
 				match maybe_future {
-					Some(x) => x.map_err(|_| "Request canceled").boxed(),
-					None => future::err("Unable to access network.").boxed(),
+					Some(x) => Either::A(x.map_err(|_| "Request canceled")),
+					None => Either::B(future::err("Unable to access network.")),
 				}
 			}
-			None => future::err("Unable to access network").boxed(),
-		}
+			None => Either::B(future::err("Unable to access network")),
+		})
 	}
 }
 

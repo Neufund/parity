@@ -1,71 +1,78 @@
 [package]
 description = "Parity JSON-RPC servers."
 name = "parity-rpc"
-version = "1.8.0"
+version = "1.12.0"
 license = "GPL-3.0"
 authors = ["Parity Technologies <admin@parity.io>"]
 
 [lib]
 
 [dependencies]
-ansi_term = "0.9"
-cid = "0.2"
-futures = "0.1"
-futures-cpupool = "0.1"
-log = "0.3"
-multihash ="0.6"
+ansi_term = "0.10"
+cid = "0.3"
+futures = "0.1.6"
+log = "0.4"
+multihash = "0.8"
 order-stat = "0.1"
-parking_lot = "0.4"
-rand = "0.3"
-rust-crypto = "0.2"
+parking_lot = "0.7"
+rand = "0.4"
 rustc-hex = "1.0"
-semver = "0.6"
+semver = "0.9"
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
-time = "0.1"
+tempdir = "0.3"
+tiny-keccak = "1.4"
 tokio-timer = "0.1"
 transient-hashmap = "0.4"
 itertools = "0.5"
 
-jsonrpc-core = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-1.7" }
-jsonrpc-http-server = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-1.7" }
-jsonrpc-minihttp-server = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-1.7" }
-jsonrpc-ws-server = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-1.7" }
-jsonrpc-ipc-server = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-1.7" }
-jsonrpc-macros = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-1.7" }
-jsonrpc-pubsub = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-1.7" }
+jsonrpc-core = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-2.2" }
+jsonrpc-http-server = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-2.2" }
+jsonrpc-ws-server = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-2.2" }
+jsonrpc-ipc-server = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-2.2" }
+jsonrpc-macros = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-2.2" }
+jsonrpc-pubsub = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-2.2" }
 
-ethcore-io = { path = "../util/io" }
-ethcore-ipc = { path = "../ipc/rpc" }
-ethcore-util = { path = "../util" }
-ethcore-bigint = { path = "../util/bigint" }
-ethcore-bytes = { path = "../util/bytes" }
-ethcore = { path = "../ethcore" }
-ethcrypto = { path = "../ethcrypto" }
-ethkey = { path = "../ethkey" }
-ethstore = { path = "../ethstore" }
+common-types = { path = "../ethcore/types" }
 ethash = { path = "../ethash" }
-ethsync = { path = "../sync" }
-ethjson = { path = "../json" }
-ethcore-devtools = { path = "../devtools" }
+ethcore = { path = "../ethcore", features = ["test-helpers"] }
+fastmap = { path = "../util/fastmap" }
+parity-bytes = "0.1"
+parity-crypto = "0.2"
+ethcore-io = { path = "../util/io" }
 ethcore-light = { path = "../ethcore/light" }
-ethcore-logger = { path = "../logger" }
+ethcore-logger = { path = "../parity/logger" }
+ethcore-miner = { path = "../miner" }
+ethcore-private-tx = { path = "../ethcore/private-tx" }
+ethcore-sync = { path = "../ethcore/sync" }
+ethereum-types = "0.4"
+
+ethjson = { path = "../json" }
+ethkey = { path = "../accounts/ethkey" }
+ethstore = { path = "../accounts/ethstore" }
 fetch = { path = "../util/fetch" }
-node-health = { path = "../dapps/node-health" }
-parity-reactor = { path = "../util/reactor" }
+keccak-hash = "0.1.2"
+parity-runtime = { path = "../util/runtime" }
 parity-updater = { path = "../updater" }
-rlp = { path = "../util/rlp" }
+parity-version = { path = "../util/version" }
+patricia-trie = "0.3.0"
+rlp = { version = "0.3.0", features = ["ethereum"] }
+eip-712 = { path = "../util/EIP-712" }
 stats = { path = "../util/stats" }
 vm = { path = "../ethcore/vm" }
-hash = { path = "../util/hash" }
-hardware-wallet = { path = "../hw" }
 
-clippy = { version = "0.0.103", optional = true}
-pretty_assertions = "0.1"
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android"))'.dependencies]
+hardware-wallet = { path = "../accounts/hw" }
+
+[target.'cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android")))'.dependencies]
+fake-hardware-wallet = { path = "../accounts/fake-hardware-wallet" }
 
 [dev-dependencies]
+ethcore = { path = "../ethcore", features = ["test-helpers"] }
 ethcore-network = { path = "../util/network" }
-
-[features]
-dev = ["clippy", "ethcore/dev", "ethcore-util/dev", "ethsync/dev"]
+fake-fetch = { path = "../util/fake-fetch" }
+kvdb-memorydb = "0.1"
+macros = { path = "../util/macros" }
+pretty_assertions = "0.1"
+transaction-pool = "1.13"

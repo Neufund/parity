@@ -1,26 +1,35 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! RPC Error codes and error objects
 
 use std::fmt;
+
+use ethcore::account_provider::SignError as AccountError;
+use ethcore::error::{Error as EthcoreError, ErrorKind, CallError};
+use ethcore::client::BlockId;
+use jsonrpc_core::{futures, Result as RpcResult, Error, ErrorCode, Value};
 use rlp::DecoderError;
-use ethcore::error::{Error as EthcoreError, CallError, TransactionError};
-use ethcore::account_provider::{SignError as AccountError};
-use jsonrpc_core::{Error, ErrorCode, Value};
+use types::transaction::Error as TransactionError;
+use ethcore_private_tx::Error as PrivateTransactionError;
+use vm::Error as VMError;
+use light::on_demand::error::{Error as OnDemandError, ErrorKind as OnDemandErrorKind};
+use ethcore::client::BlockChainClient;
+use types::blockchain_info::BlockChainInfo;
+use v1::types::BlockNumber;
 
 mod codes {
 	// NOTE [ToDr] Codes from [-32099, -32000]
@@ -29,6 +38,7 @@ mod codes {
 	pub const NO_AUTHOR: i64 = -32002;
 	pub const NO_NEW_WORK: i64 = -32003;
 	pub const NO_WORK_REQUIRED: i64 = -32004;
+	pub const CANNOT_SUBMIT_WORK: i64 = -32005;
 	pub const UNKNOWN_ERROR: i64 = -32009;
 	pub const TRANSACTION_ERROR: i64 = -32010;
 	pub const EXECUTION_ERROR: i64 = -32015;
@@ -37,6 +47,7 @@ mod codes {
 	pub const ACCOUNT_LOCKED: i64 = -32020;
 	pub const PASSWORD_INVALID: i64 = -32021;
 	pub const ACCOUNT_ERROR: i64 = -32023;
+	pub const PRIVATE_ERROR: i64 = -32024;
 	pub const REQUEST_REJECTED: i64 = -32040;
 	pub const REQUEST_REJECTED_LIMIT: i64 = -32041;
 	pub const REQUEST_NOT_FOUND: i64 = -32042;
@@ -44,7 +55,9 @@ mod codes {
 	pub const ENCODING_ERROR: i64 = -32058;
 	pub const FETCH_ERROR: i64 = -32060;
 	pub const NO_LIGHT_PEERS: i64 = -32065;
+	pub const NO_PEERS: i64 = -32066;
 	pub const DEPRECATED: i64 = -32070;
+	pub const EXPERIMENTAL_RPC: i64 = -32071;
 }
 
 pub fn unimplemented(details: Option<String>) -> Error {
@@ -59,14 +72,6 @@ pub fn light_unimplemented(details: Option<String>) -> Error {
 	Error {
 		code: ErrorCode::ServerError(codes::UNSUPPORTED_REQUEST),
 		message: "This request is unsupported for light clients.".into(),
-		data: details.map(Value::String),
-	}
-}
-
-pub fn public_unsupported(details: Option<String>) -> Error {
-	Error {
-		code: ErrorCode::ServerError(codes::UNSUPPORTED_REQUEST),
-		message: "Method disallowed when running parity as a public node.".into(),
 		data: details.map(Value::String),
 	}
 }
@@ -99,6 +104,14 @@ pub fn request_rejected_limit() -> Error {
 	Error {
 		code: ErrorCode::ServerError(codes::REQUEST_REJECTED_LIMIT),
 		message: "Request has been rejected because of queue limit.".into(),
+		data: None,
+	}
+}
+
+pub fn request_rejected_param_limit(limit: u64, items_desc: &str) -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::REQUEST_REJECTED_LIMIT),
+		message: format!("Requested data size exceeds limit of {} {}.", limit, items_desc),
 		data: None,
 	}
 }
@@ -190,6 +203,68 @@ pub fn no_work_required() -> Error {
 	}
 }
 
+pub fn cannot_submit_work(err: EthcoreError) -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::CANNOT_SUBMIT_WORK),
+		message: "Cannot submit work.".into(),
+		data: Some(Value::String(err.to_string())),
+	}
+}
+
+pub fn unavailable_block() -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::UNSUPPORTED_REQUEST),
+		message: "Ancient block sync is still in progress".into(),
+		data: None,
+	}
+}
+
+pub fn check_block_number_existence<'a, T, C>(
+	client: &'a C,
+	num: BlockNumber,
+	allow_missing_blocks: bool,
+) ->
+	impl Fn(Option<T>) -> RpcResult<Option<T>> + 'a
+	where C: BlockChainClient,
+{
+	move |response| {
+		if response.is_none() {
+			if let BlockNumber::Num(block_number) = num {
+				// tried to fetch block number and got nothing even though the block number is
+				// less than the latest block number
+				if block_number < client.chain_info().best_block_number && !allow_missing_blocks {
+					return Err(unavailable_block());
+				}
+			}
+		}
+		Ok(response)
+	}
+}
+
+pub fn check_block_gap<'a, T, C>(
+	client: &'a C,
+	allow_missing_blocks: bool,
+) -> impl Fn(Option<T>) -> RpcResult<Option<T>> + 'a
+	where C: BlockChainClient,
+{
+	move |response| {
+		if response.is_none() && !allow_missing_blocks {
+			let BlockChainInfo { ancient_block_hash, .. } = client.chain_info();
+			// block information was requested, but unfortunately we couldn't find it and there
+			// are gaps in the database ethcore/src/blockchain/blockchain.rs
+			if ancient_block_hash.is_some() {
+				return Err(Error {
+					code: ErrorCode::ServerError(codes::UNSUPPORTED_REQUEST),
+					message: "Block information is incomplete while ancient block sync is still in progress, before \
+					it's finished we can't determine the existence of requested item.".into(),
+					data: None,
+				})
+			}
+		}
+		Ok(response)
+	}
+}
+
 pub fn not_enough_data() -> Error {
 	Error {
 		code: ErrorCode::ServerError(codes::UNSUPPORTED_REQUEST),
@@ -210,14 +285,6 @@ pub fn signer_disabled() -> Error {
 	Error {
 		code: ErrorCode::ServerError(codes::UNSUPPORTED_REQUEST),
 		message: "Trusted Signer is disabled. This API is not available.".into(),
-		data: None,
-	}
-}
-
-pub fn dapps_disabled() -> Error {
-	Error {
-		code: ErrorCode::ServerError(codes::UNSUPPORTED_REQUEST),
-		message: "Dapps Server is disabled. This API is not available.".into(),
 		data: None,
 	}
 }
@@ -278,6 +345,14 @@ pub fn signing(error: AccountError) -> Error {
 	}
 }
 
+pub fn invalid_call_data<T: fmt::Display>(error: T) -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::ENCODING_ERROR),
+		message: format!("{}", error),
+		data: None
+	}
+}
+
 pub fn password(error: AccountError) -> Error {
 	Error {
 		code: ErrorCode::ServerError(codes::PASSWORD_INVALID),
@@ -286,42 +361,61 @@ pub fn password(error: AccountError) -> Error {
 	}
 }
 
-pub fn transaction_message(error: TransactionError) -> String {
-	use ethcore::error::TransactionError::*;
+pub fn private_message(error: PrivateTransactionError) -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::PRIVATE_ERROR),
+		message: "Private transactions call failed.".into(),
+		data: Some(Value::String(format!("{:?}", error))),
+	}
+}
 
-	match error {
+pub fn private_message_block_id_not_supported() -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::PRIVATE_ERROR),
+		message: "Pending block id not supported.".into(),
+		data: None,
+	}
+}
+
+pub fn transaction_message(error: &TransactionError) -> String {
+	use self::TransactionError::*;
+
+	match *error {
 		AlreadyImported => "Transaction with the same hash was already imported.".into(),
 		Old => "Transaction nonce is too low. Try incrementing the nonce.".into(),
 		TooCheapToReplace => {
 			"Transaction gas price is too low. There is another transaction with same nonce in the queue. Try increasing the gas price or incrementing the nonce.".into()
-		},
+		}
 		LimitReached => {
 			"There are too many transactions in the queue. Your transaction was dropped due to limit. Try increasing the fee.".into()
-		},
+		}
 		InsufficientGas { minimal, got } => {
 			format!("Transaction gas is too low. There is not enough gas to cover minimal cost of the transaction (minimal: {}, got: {}). Try increasing supplied gas.", minimal, got)
-		},
+		}
 		InsufficientGasPrice { minimal, got } => {
 			format!("Transaction gas price is too low. It does not satisfy your node's minimal gas price (minimal: {}, got: {}). Try increasing the gas price.", minimal, got)
-		},
+		}
 		InsufficientBalance { balance, cost } => {
 			format!("Insufficient funds. The account you tried to send transaction from does not have enough funds. Required {} and got: {}.", cost, balance)
-		},
+		}
 		GasLimitExceeded { limit, got } => {
 			format!("Transaction cost exceeds current gas limit. Limit: {}, got: {}. Try decreasing supplied gas.", limit, got)
-		},
+		}
+		InvalidSignature(ref sig) => format!("Invalid signature: {}", sig),
 		InvalidChainId => "Invalid chain id.".into(),
 		InvalidGasLimit(_) => "Supplied gas is beyond limit.".into(),
 		SenderBanned => "Sender is banned in local queue.".into(),
 		RecipientBanned => "Recipient is banned in local queue.".into(),
 		CodeBanned => "Code is banned in local queue.".into(),
 		NotAllowed => "Transaction is not permitted.".into(),
+		TooBig => "Transaction is too big, see chain specification for the limit.".into(),
+		InvalidRlp(ref descr) => format!("Invalid RLP data: {}", descr),
 	}
 }
 
-pub fn transaction(error: EthcoreError) -> Error {
-
-	if let EthcoreError::Transaction(e) = error {
+pub fn transaction<T: Into<EthcoreError>>(error: T) -> Error {
+	let error = error.into();
+	if let ErrorKind::Transaction(ref e) = *error.kind() {
 		Error {
 			code: ErrorCode::ServerError(codes::TRANSACTION_ERROR),
 			message: transaction_message(e),
@@ -332,6 +426,18 @@ pub fn transaction(error: EthcoreError) -> Error {
 			code: ErrorCode::ServerError(codes::UNKNOWN_ERROR),
 			message: "Unknown error when sending transaction.".into(),
 			data: Some(Value::String(format!("{:?}", error))),
+		}
+	}
+}
+
+pub fn decode<T: Into<EthcoreError>>(error: T) -> Error {
+	let error = error.into();
+	match *error.kind() {
+		ErrorKind::Decoder(ref dec_err) => rlp(dec_err.clone()),
+		_ => Error {
+			code: ErrorCode::InternalError,
+			message: "decoding error".into(),
+			data: None,
 		}
 	}
 }
@@ -354,6 +460,21 @@ pub fn call(error: CallError) -> Error {
 	}
 }
 
+pub fn vm(error: &VMError, output: &[u8]) -> Error {
+	use rustc_hex::ToHex;
+
+	let data = match error {
+		&VMError::Reverted => format!("{} 0x{}", VMError::Reverted, output.to_hex()),
+		error => format!("{}", error),
+	};
+
+	Error {
+		code: ErrorCode::ServerError(codes::EXECUTION_ERROR),
+		message: "VM execution error.".into(),
+		data: Some(Value::String(data)),
+	}
+}
+
 pub fn unknown_block() -> Error {
 	Error {
 		code: ErrorCode::InvalidParams,
@@ -370,15 +491,94 @@ pub fn no_light_peers() -> Error {
 	}
 }
 
-pub fn deprecated<T: Into<Option<String>>>(message: T) -> Error {
+pub fn deprecated<S: Into<String>, T: Into<Option<S>>>(message: T) -> Error {
 	Error {
 		code: ErrorCode::ServerError(codes::DEPRECATED),
 		message: "Method deprecated".into(),
-		data: message.into().map(Value::String),
+		data: message.into().map(Into::into).map(Value::String),
+	}
+}
+
+pub fn filter_not_found() -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::UNSUPPORTED_REQUEST),
+		message: "Filter not found".into(),
+		data: None,
+	}
+}
+
+pub fn filter_block_not_found(id: BlockId) -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::UNSUPPORTED_REQUEST), // Specified in EIP-234.
+		message: "One of the blocks specified in filter (fromBlock, toBlock or blockHash) cannot be found".into(),
+		data: Some(Value::String(match id {
+			BlockId::Hash(hash) => format!("0x{:x}", hash),
+			BlockId::Number(number) => format!("0x{:x}", number),
+			BlockId::Earliest => "earliest".to_string(),
+			BlockId::Latest => "latest".to_string(),
+		})),
+	}
+}
+
+pub fn on_demand_error(err: OnDemandError) -> Error {
+	match err {
+		OnDemandError(OnDemandErrorKind::ChannelCanceled(e), _) => on_demand_cancel(e),
+		OnDemandError(OnDemandErrorKind::RequestLimit, _) => timeout_new_peer(&err),
+		OnDemandError(OnDemandErrorKind::BadResponse(_), _) => max_attempts_reached(&err),
+		_ => on_demand_others(&err),
 	}
 }
 
 // on-demand sender cancelled.
-pub fn on_demand_cancel(_cancel: ::futures::sync::oneshot::Canceled) -> Error {
+pub fn on_demand_cancel(_cancel: futures::sync::oneshot::Canceled) -> Error {
 	internal("on-demand sender cancelled", "")
+}
+
+pub fn max_attempts_reached(err: &OnDemandError) -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::REQUEST_NOT_FOUND),
+		message: err.to_string(),
+		data: None,
+	}
+}
+
+pub fn timeout_new_peer(err: &OnDemandError) -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::NO_LIGHT_PEERS),
+		message: err.to_string(),
+		data: None,
+	}
+}
+
+pub fn on_demand_others(err: &OnDemandError) -> Error {
+	Error {
+		code: ErrorCode::ServerError(codes::UNKNOWN_ERROR),
+		message: err.to_string(),
+		data: None,
+	}
+}
+
+pub fn status_error(has_peers: bool) -> Error {
+	if has_peers {
+		no_work()
+	} else {
+		Error {
+			code: ErrorCode::ServerError(codes::NO_PEERS),
+			message: "Node is not connected to any peers.".into(),
+			data: None,
+		}
+	}
+}
+
+/// Returns a descriptive error in case experimental RPCs are not enabled.
+pub fn require_experimental(allow_experimental_rpcs: bool, eip: &str) -> Result<(), Error> {
+	if allow_experimental_rpcs {
+		Ok(())
+	} else {
+		Err(Error {
+			code: ErrorCode::ServerError(codes::EXPERIMENTAL_RPC),
+			message: format!("This method is not part of the official RPC API yet (EIP-{}). Run with `--jsonrpc-experimental` to enable it.", eip),
+			data: Some(Value::String(format!("See EIP: https://eips.ethereum.org/EIPS/eip-{}", eip))),
+		})
+	}
 }

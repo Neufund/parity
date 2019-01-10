@@ -1,23 +1,23 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Evm interface.
 
 use std::{ops, cmp, fmt};
-use bigint::prelude::{U128, U256, U512};
+use ethereum_types::{U128, U256, U512};
 use vm::{Ext, Result, ReturnData, GasLeft, Error};
 
 /// Finalization result. Gas Left: either it is a known value, or it needs to be computed by processing
@@ -45,7 +45,7 @@ impl Finalize for Result<GasLeft> {
 	fn finalize<E: Ext>(self, ext: E) -> Result<FinalizationResult> {
 		match self {
 			Ok(GasLeft::Known(gas_left)) => Ok(FinalizationResult { gas_left: gas_left, apply_state: true, return_data: ReturnData::empty() }),
-			Ok(GasLeft::NeedsReturn {gas_left, data, apply_state}) => ext.ret(&gas_left, &data, apply_state).map(|gas_left| FinalizationResult {
+			Ok(GasLeft::NeedsReturn { gas_left, data, apply_state }) => ext.ret(&gas_left, &data, apply_state).map(|gas_left| FinalizationResult {
 				gas_left: gas_left,
 				apply_state: apply_state,
 				return_data: data,
@@ -55,9 +55,15 @@ impl Finalize for Result<GasLeft> {
 	}
 }
 
+impl Finalize for Error {
+	fn finalize<E: Ext>(self, _ext: E) -> Result<FinalizationResult> {
+		Err(self)
+	}
+}
+
 /// Cost calculation type. For low-gas usage we calculate costs using usize instead of U256
-pub trait CostType: Sized + From<usize> + Copy
-	+ ops::Mul<Output=Self> + ops::Div<Output=Self> + ops::Add<Output=Self> +ops::Sub<Output=Self>
+pub trait CostType: Sized + From<usize> + Copy + Send
+	+ ops::Mul<Output=Self> + ops::Div<Output=Self> + ops::Add<Output=Self> + ops::Sub<Output=Self>
 	+ ops::Shr<usize, Output=Self> + ops::Shl<usize, Output=Self>
 	+ cmp::Ord + fmt::Debug {
 	/// Converts this cost into `U256`
@@ -149,7 +155,7 @@ impl CostType for usize {
 
 #[cfg(test)]
 mod tests {
-	use bigint::prelude::U256;
+	use ethereum_types::U256;
 	use super::CostType;
 
 	#[test]

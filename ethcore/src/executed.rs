@@ -1,35 +1,34 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Transaction execution format module.
 
-use bigint::prelude::{U256, U512};
-use util::Address;
+use ethereum_types::{U256, U512, Address};
 use bytes::Bytes;
-use trie;
+use ethtrie;
 use vm;
 use trace::{VMTrace, FlatTrace};
-use log_entry::LogEntry;
-use state_diff::StateDiff;
+use types::state_diff::StateDiff;
+use types::log_entry::LogEntry;
 
-use std::fmt;
+use std::{fmt, error};
 
 /// Transaction execution receipt.
 #[derive(Debug, PartialEq, Clone)]
-pub struct Executed {
+pub struct Executed<T = FlatTrace, V = VMTrace> {
 	/// True if the outer call/create resulted in an exceptional exit.
 	pub exception: Option<vm::Error>,
 
@@ -63,9 +62,9 @@ pub struct Executed {
 	/// Transaction output.
 	pub output: Bytes,
 	/// The trace of this transaction.
-	pub trace: Vec<FlatTrace>,
+	pub trace: Vec<T>,
 	/// The VM trace of this transaction.
-	pub vm_trace: Option<VMTrace>,
+	pub vm_trace: Option<V>,
 	/// The state diff, if we traced it.
 	pub state_diff: Option<StateDiff>,
 }
@@ -118,9 +117,14 @@ pub enum ExecutionError {
 	TransactionMalformed(String),
 }
 
-impl From<Box<trie::TrieError>> for ExecutionError {
-	fn from(err: Box<trie::TrieError>) -> Self {
-		ExecutionError::Internal(format!("{}", err))
+impl From<Box<ethtrie::TrieError>> for ExecutionError {
+	fn from(err: Box<ethtrie::TrieError>) -> Self {
+		ExecutionError::Internal(format!("{:?}", err))
+	}
+}
+impl From<ethtrie::TrieError> for ExecutionError {
+	fn from(err: ethtrie::TrieError) -> Self {
+		ExecutionError::Internal(format!("{:?}", err))
 	}
 }
 
@@ -146,6 +150,12 @@ impl fmt::Display for ExecutionError {
 		};
 
 		f.write_fmt(format_args!("Transaction execution error ({}).", msg))
+	}
+}
+
+impl error::Error for ExecutionError {
+	fn description(&self) -> &str {
+		"Transaction execution error"
 	}
 }
 

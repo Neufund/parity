@@ -1,34 +1,32 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Abstraction over filters which works with polling and subscription.
 
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc};
-use std::thread;
+use std::{sync::{Arc, atomic, atomic::AtomicBool, mpsc}, thread};
 
-use bigint::hash::{H256, H512};
+use ethereum_types::{H256, H512};
 use ethkey::Public;
 use jsonrpc_macros::pubsub::{Subscriber, Sink};
 use parking_lot::{Mutex, RwLock};
 use rand::{Rng, OsRng};
 
 use message::{Message, Topic};
-use super::key_store::KeyStore;
-use super::types::{self, FilterItem, HexEncode};
+use super::{key_store::KeyStore, types::{self, FilterItem, HexEncode}};
 
 /// Kinds of filters,
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -53,6 +51,7 @@ pub struct Manager {
 	filters: RwLock<HashMap<H256, FilterEntry>>,
 	tx: Mutex<mpsc::Sender<Box<Fn() + Send>>>,
 	join: Option<thread::JoinHandle<()>>,
+	exit: Arc<AtomicBool>,
 }
 
 impl Manager {
@@ -60,15 +59,29 @@ impl Manager {
 	/// the given thread pool.
 	pub fn new() -> ::std::io::Result<Self> {
 		let (tx, rx) = mpsc::channel::<Box<Fn() + Send>>();
+		let exit = Arc::new(AtomicBool::new(false));
+		let e = exit.clone();
+
 		let join_handle = thread::Builder::new()
 			.name("Whisper Decryption Worker".to_string())
-			.spawn(move || for item in rx { (item)() })?;
+			.spawn(move || {
+				trace!(target: "parity_whisper", "Start decryption worker");
+				loop {
+					if exit.load(atomic::Ordering::Acquire) {
+						break;
+					}
+					if let Ok(item) = rx.try_recv() {
+						item();
+					}
+				}
+			})?;
 
 		Ok(Manager {
 			key_store: Arc::new(RwLock::new(KeyStore::new()?)),
 			filters: RwLock::new(HashMap::new()),
 			tx: Mutex::new(tx),
 			join: Some(join_handle),
+			exit: e,
 		})
 	}
 
@@ -103,7 +116,7 @@ impl Manager {
 	}
 
 	/// Insert new subscription filter. Generates a secure ID and sends it to
-	/// the
+	/// the subscriber
 	pub fn insert_subscription(&self, filter: Filter, sub: Subscriber<FilterItem>)
 		-> Result<(), &'static str>
 	{
@@ -111,7 +124,7 @@ impl Manager {
 			.map_err(|_| "unable to acquire secure randomness")?
 			.gen();
 
-		sub.assign_id(::jsonrpc_pubsub::SubscriptionId::String(id.hex()))
+		sub.assign_id(::jsonrpc_pubsub::SubscriptionId::String(format!("{:x}", id)))
 			.map(move |sink| {
 				let entry = FilterEntry::Subscription(Arc::new(filter), sink);
 				self.filters.write().insert(id, entry);
@@ -180,9 +193,12 @@ impl ::net::MessageHandler for Arc<Manager> {
 
 impl Drop for Manager {
 	fn drop(&mut self) {
+		trace!(target: "parity_whisper", "waiting to drop FilterManager");
+		self.exit.store(true, atomic::Ordering::Release);
 		if let Some(guard) = self.join.take() {
 			let _ = guard.join();
 		}
+		trace!(target: "parity_whisper", "FilterManager dropped");
 	}
 }
 
@@ -386,7 +402,7 @@ mod tests {
 			sign_with: Some(signing_pair.secret().unwrap())
 		}).unwrap();
 
-		let encrypted = encryption_instance.encrypt(&payload);
+		let encrypted = encryption_instance.encrypt(&payload).unwrap();
 
 		let message = Message::create(CreateParams {
 			ttl: 100,

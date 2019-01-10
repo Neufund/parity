@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Cache for data fetched from the network.
 //!
@@ -20,19 +20,18 @@
 //! Furthermore, stores a "gas price corpus" of relative recency, which is a sorted
 //! vector of all gas prices from a recent range of blocks.
 
-use ethcore::encoded;
-use ethcore::header::BlockNumber;
-use ethcore::receipt::Receipt;
+use std::time::{Instant, Duration};
 
-use stats::Corpus;
-use time::{SteadyTime, Duration};
+use common_types::encoded;
+use common_types::BlockNumber;
+use common_types::receipt::Receipt;
+use ethereum_types::{H256, U256};
 use heapsize::HeapSizeOf;
-use bigint::prelude::U256;
-use bigint::hash::H256;
-use util::cache::MemoryLruCache;
+use memory_cache::MemoryLruCache;
+use stats::Corpus;
 
 /// Configuration for how much data to cache.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct CacheSizes {
 	/// Maximum size, in bytes, of cached headers.
 	pub headers: usize,
@@ -70,7 +69,7 @@ pub struct Cache {
 	bodies: MemoryLruCache<H256, encoded::Body>,
 	receipts: MemoryLruCache<H256, Vec<Receipt>>,
 	chain_score: MemoryLruCache<H256, U256>,
-	corpus: Option<(Corpus<U256>, SteadyTime)>,
+	corpus: Option<(Corpus<U256>, Instant)>,
 	corpus_expiration: Duration,
 }
 
@@ -84,33 +83,33 @@ impl Cache {
 			receipts: MemoryLruCache::new(sizes.receipts),
 			chain_score: MemoryLruCache::new(sizes.chain_score),
 			corpus: None,
-			corpus_expiration: corpus_expiration,
+			corpus_expiration,
 		}
 	}
 
 	/// Query header by hash.
 	pub fn block_header(&mut self, hash: &H256) -> Option<encoded::Header> {
-		self.headers.get_mut(hash).map(|x| x.clone())
+		self.headers.get_mut(hash).cloned()
 	}
 
 	/// Query hash by number.
-	pub fn block_hash(&mut self, num: &BlockNumber) -> Option<H256> {
-		self.canon_hashes.get_mut(num).map(|x| x.clone())
+	pub fn block_hash(&mut self, num: BlockNumber) -> Option<H256> {
+		self.canon_hashes.get_mut(&num).map(|h| *h)
 	}
 
 	/// Query block body by block hash.
 	pub fn block_body(&mut self, hash: &H256) -> Option<encoded::Body> {
-		self.bodies.get_mut(hash).map(|x| x.clone())
+		self.bodies.get_mut(hash).cloned()
 	}
 
 	/// Query block receipts by block hash.
 	pub fn block_receipts(&mut self, hash: &H256) -> Option<Vec<Receipt>> {
-		self.receipts.get_mut(hash).map(|x| x.clone())
+		self.receipts.get_mut(hash).cloned()
 	}
 
 	/// Query chain score by block hash.
 	pub fn chain_score(&mut self, hash: &H256) -> Option<U256> {
-		self.chain_score.get_mut(hash).map(|x| x.clone())
+		self.chain_score.get_mut(hash).map(|h| *h)
 	}
 
 	/// Cache the given header.
@@ -140,7 +139,7 @@ impl Cache {
 
 	/// Get gas price corpus, if recent enough.
 	pub fn gas_price_corpus(&self) -> Option<Corpus<U256>> {
-		let now = SteadyTime::now();
+		let now = Instant::now();
 
 		self.corpus.as_ref().and_then(|&(ref corpus, ref tm)| {
 			if *tm + self.corpus_expiration >= now {
@@ -153,7 +152,7 @@ impl Cache {
 
 	/// Set the cached gas price corpus.
 	pub fn set_gas_price_corpus(&mut self, corpus: Corpus<U256>) {
-		self.corpus = Some((corpus, SteadyTime::now()))
+		self.corpus = Some((corpus, Instant::now()))
 	}
 
 	/// Get the memory used.
@@ -176,18 +175,19 @@ impl HeapSizeOf for Cache {
 #[cfg(test)]
 mod tests {
 	use super::Cache;
-	use time::Duration;
+	use std::time::Duration;
 
 	#[test]
 	fn corpus_inaccessible() {
-		let mut cache = Cache::new(Default::default(), Duration::hours(5));
+		let duration = Duration::from_secs(20);
+		let mut cache = Cache::new(Default::default(), duration.clone());
 
 		cache.set_gas_price_corpus(vec![].into());
 		assert_eq!(cache.gas_price_corpus(), Some(vec![].into()));
 
 		{
 			let corpus_time = &mut cache.corpus.as_mut().unwrap().1;
-			*corpus_time = *corpus_time - Duration::hours(6);
+			*corpus_time = *corpus_time - duration;
 		}
 		assert!(cache.gas_price_corpus().is_none());
 	}

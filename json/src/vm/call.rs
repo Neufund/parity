@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Vm call deserialization.
 
@@ -23,13 +23,13 @@ use maybe::MaybeEmpty;
 
 /// Vm call deserialization.
 #[derive(Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Call {
 	/// Call data.
 	pub data: Bytes,
 	/// Call destination.
 	pub destination: MaybeEmpty<Address>,
 	/// Gas limit.
-	#[serde(rename="gasLimit")]
 	pub gas_limit: Uint,
 	/// Call value.
 	pub value: Uint,
@@ -39,7 +39,7 @@ pub struct Call {
 mod tests {
 	use serde_json;
 	use vm::Call;
-	use bigint::prelude::{U256, H160 as Hash160};
+	use ethereum_types::{U256, H160 as Hash160};
 	use uint::Uint;
 	use hash::Address;
 	use maybe::MaybeEmpty;

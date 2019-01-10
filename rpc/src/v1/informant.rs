@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! RPC Requests Statistics
 
@@ -20,13 +20,13 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{self, AtomicUsize};
 use std::time;
-use futures::Future;
-use futures_cpupool as pool;
-use jsonrpc_core as rpc;
+use parity_runtime;
+use jsonrpc_core as core;
+use jsonrpc_core::futures::future::Either;
 use order_stat;
 use parking_lot::RwLock;
 
-pub use self::pool::CpuPool;
+pub use self::parity_runtime::Executor;
 
 const RATE_SECONDS: usize = 10;
 const STATS_SAMPLES: usize = 60;
@@ -187,16 +187,14 @@ pub trait ActivityNotifier: Send + Sync + 'static {
 pub struct Middleware<T: ActivityNotifier = ClientNotifier> {
 	stats: Arc<RpcStats>,
 	notifier: T,
-	pool: Option<CpuPool>,
 }
 
 impl<T: ActivityNotifier> Middleware<T> {
 	/// Create new Middleware with stats counter and activity notifier.
-	pub fn new(stats: Arc<RpcStats>, notifier: T, pool: Option<CpuPool>) -> Self {
+	pub fn new(stats: Arc<RpcStats>, notifier: T) -> Self {
 		Middleware {
 			stats,
 			notifier,
-			pool,
 		}
 	}
 
@@ -205,33 +203,35 @@ impl<T: ActivityNotifier> Middleware<T> {
 	}
 }
 
-impl<M: rpc::Metadata, T: ActivityNotifier> rpc::Middleware<M> for Middleware<T> {
-	type Future = rpc::futures::future::Either<
-		pool::CpuFuture<Option<rpc::Response>, ()>,
-		rpc::FutureResponse,
-	>;
+impl<M: core::Metadata, T: ActivityNotifier> core::Middleware<M> for Middleware<T> {
+	type Future = core::FutureResponse;
+	type CallFuture = core::middleware::NoopCallFuture;
 
-	fn on_request<F, X>(&self, request: rpc::Request, meta: M, process: F) -> Self::Future where
-		F: FnOnce(rpc::Request, M) -> X,
-		X: rpc::futures::Future<Item=Option<rpc::Response>, Error=()> + Send + 'static,
+	fn on_request<F, X>(&self, request: core::Request, meta: M, process: F) -> Either<Self::Future, X> where
+		F: FnOnce(core::Request, M) -> X,
+		X: core::futures::Future<Item=Option<core::Response>, Error=()> + Send + 'static,
 	{
-		use self::rpc::futures::future::Either::{A, B};
-
 		let start = time::Instant::now();
 
 		self.notifier.active();
 		self.stats.count_request();
 
+		let id = match request {
+			core::Request::Single(core::Call::MethodCall(ref call)) => Some(call.id.clone()),
+			_ => None,
+		};
 		let stats = self.stats.clone();
+
 		let future = process(request, meta).map(move |res| {
-			stats.add_roundtrip(Self::as_micro(start.elapsed()));
+			let time = Self::as_micro(start.elapsed());
+			if time > 10_000 {
+				debug!(target: "rpc", "[{:?}] Took {}ms", id, time / 1_000);
+			}
+			stats.add_roundtrip(time);
 			res
 		});
 
-		match self.pool {
-			Some(ref pool) => A(pool.spawn(future)),
-			None => B(future.boxed()),
-		}
+		Either::A(Box::new(future))
 	}
 }
 

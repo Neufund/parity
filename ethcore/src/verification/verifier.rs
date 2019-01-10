@@ -1,35 +1,38 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! A generic verifier trait.
 
+use client::{BlockInfo, CallContract};
 use engines::EthEngine;
 use error::Error;
-use header::Header;
+use types::header::Header;
 use super::verification;
 
 /// Should be used to verify blocks.
-pub trait Verifier: Send + Sync {
+pub trait Verifier<C>: Send + Sync
+	where C: BlockInfo + CallContract
+{
 	/// Verify a block relative to its parent and uncles.
-    fn verify_block_family(
+	fn verify_block_family(
 		&self,
 		header: &Header,
 		parent: &Header,
 		engine: &EthEngine,
-		do_full: Option<verification::FullFamilyParams>
+		do_full: Option<verification::FullFamilyParams<C>>
 	) -> Result<(), Error>;
 
 	/// Do a final verification check for an enacted header vs its expected counterpart.

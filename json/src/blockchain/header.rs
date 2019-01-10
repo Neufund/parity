@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Blockchain test header deserializer.
 
@@ -22,26 +22,23 @@ use bytes::Bytes;
 
 /// Blockchain test header deserializer.
 #[derive(Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Header {
 	/// Blocks bloom.
 	pub bloom: Bloom,
 	/// Blocks author.
-	#[serde(rename="coinbase")]
+	#[serde(rename = "coinbase")]
 	pub author: Address,
 	/// Difficulty.
 	pub difficulty: Uint,
-	#[serde(rename="extraData")]
 	/// Extra data.
 	pub extra_data: Bytes,
 	/// Gas limit.
-	#[serde(rename="gasLimit")]
 	pub gas_limit: Uint,
 	/// Gas used.
-	#[serde(rename="gasUsed")]
 	pub gas_used: Uint,
 	/// Hash.
 	pub hash: H256,
-	#[serde(rename="mixHash")]
 	/// Mix hash.
 	pub mix_hash: H256,
 	/// Seal nonce.
@@ -49,21 +46,19 @@ pub struct Header {
 	/// Block number.
 	pub number: Uint,
 	/// Parent hash.
-	#[serde(rename="parentHash")]
 	pub parent_hash: H256,
 	/// Receipt root.
-	#[serde(rename="receiptTrie")]
+	#[serde(rename = "receiptTrie")]
 	pub receipts_root: H256,
 	/// State root.
-	#[serde(rename="stateRoot")]
 	pub state_root: H256,
 	/// Timestamp.
 	pub timestamp: Uint,
 	/// Transactions root.
-	#[serde(rename="transactionsTrie")]
+	#[serde(rename = "transactionsTrie")]
 	pub transactions_root: H256,
 	/// Uncles hash.
-	#[serde(rename="uncleHash")]
+	#[serde(rename = "uncleHash")]
 	pub uncles_hash: H256,
 }
 

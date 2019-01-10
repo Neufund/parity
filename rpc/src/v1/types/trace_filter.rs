@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Trace filter deserialization.
 
@@ -23,18 +23,15 @@ use v1::types::{BlockNumber, H160};
 /// Trace filter
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct TraceFilter {
 	/// From block
-	#[serde(rename="fromBlock")]
 	pub from_block: Option<BlockNumber>,
 	/// To block
-	#[serde(rename="toBlock")]
 	pub to_block: Option<BlockNumber>,
 	/// From address
-	#[serde(rename="fromAddress")]
 	pub from_address: Option<Vec<H160>>,
 	/// To address
-	#[serde(rename="toAddress")]
 	pub to_address: Option<Vec<H160>>,
 	/// Output offset
 	pub after: Option<usize>,
@@ -44,8 +41,17 @@ pub struct TraceFilter {
 
 impl Into<client::TraceFilter> for TraceFilter {
 	fn into(self) -> client::TraceFilter {
-		let start = self.from_block.map_or(BlockId::Latest, Into::into);
-		let end = self.to_block.map_or(BlockId::Latest, Into::into);
+		let num_to_id = |num| match num {
+			BlockNumber::Num(n) => BlockId::Number(n),
+			BlockNumber::Earliest => BlockId::Earliest,
+			BlockNumber::Latest => BlockId::Latest,
+			BlockNumber::Pending => {
+				warn!("Pending traces are not supported and might be removed in future versions. Falling back to Latest");
+				BlockId::Latest
+			}
+		};
+		let start = self.from_block.map_or(BlockId::Latest, &num_to_id);
+		let end = self.to_block.map_or(BlockId::Latest, &num_to_id);
 		client::TraceFilter {
 			range: start..end,
 			from_address: self.from_address.map_or_else(Vec::new, |x| x.into_iter().map(Into::into).collect()),
@@ -59,7 +65,7 @@ impl Into<client::TraceFilter> for TraceFilter {
 #[cfg(test)]
 mod tests {
 	use serde_json;
-	use util::Address;
+	use ethereum_types::Address;
 	use v1::types::{BlockNumber, TraceFilter};
 
 	#[test]

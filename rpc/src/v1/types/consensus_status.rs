@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 use semver;
 use v1::types::{H160, H256};
@@ -20,49 +20,43 @@ use updater::{self, CapState};
 
 /// Capability info
 #[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ConsensusCapability {
 	/// Unknown.
-	#[serde(rename="unknown")]
 	Unknown,
 	/// Capable of consensus indefinitely.
-	#[serde(rename="capable")]
 	Capable,
-	/// Capable of consensus up until a definite block. 
-	#[serde(rename="capableUntil")]
+	/// Capable of consensus up until a definite block.
 	CapableUntil(u64),
-	/// Incapable of consensus since a particular block. 
-	#[serde(rename="incapableSince")]
+	/// Incapable of consensus since a particular block.
 	IncapableSince(u64),
 }
 
 impl Into<ConsensusCapability> for CapState {
 	fn into(self) -> ConsensusCapability {
 		match self {
-			CapState::Unknown => ConsensusCapability::Unknown, 
-			CapState::Capable => ConsensusCapability::Capable, 
-			CapState::CapableUntil(n) => ConsensusCapability::CapableUntil(n), 
-			CapState::IncapableSince(n) => ConsensusCapability::IncapableSince(n), 
+			CapState::Unknown => ConsensusCapability::Unknown,
+			CapState::Capable => ConsensusCapability::Capable,
+			CapState::CapableUntil(n) => ConsensusCapability::CapableUntil(n),
+			CapState::IncapableSince(n) => ConsensusCapability::IncapableSince(n),
 		}
 	}
 }
 
 /// A release's track.
 #[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ReleaseTrack {
 	/// Stable track.
-	#[serde(rename="stable")]
 	Stable,
 	/// Beta track.
-	#[serde(rename="beta")]
 	Beta,
 	/// Nightly track.
-	#[serde(rename="nightly")]
 	Nightly,
 	/// Testing track.
-	#[serde(rename="testing")]
 	Testing,
 	/// No known track.
-	#[serde(rename="null")]
+	#[serde(rename = "null")]
 	Unknown,
 }
 
@@ -99,7 +93,7 @@ impl Into<Version> for semver::Version {
 	}
 }
 
-/// Version information of a particular release. 
+/// Version information of a particular release.
 #[derive(Debug, PartialEq, Serialize)]
 pub struct VersionInfo {
 	/// The track on which it was released.
@@ -125,11 +119,11 @@ impl Into<VersionInfo> for updater::VersionInfo {
 pub struct ReleaseInfo {
 	/// Information on the version.
 	pub version: VersionInfo,
-	/// Does this release contain critical security updates? 
+	/// Does this release contain critical security updates?
 	pub is_critical: bool,
 	/// The latest fork that this release can handle.
 	pub fork: u64,
-	/// Our platform's binary, if known. 
+	/// Our platform's binary, if known.
 	pub binary: Option<H256>,
 }
 
@@ -149,9 +143,9 @@ impl Into<ReleaseInfo> for updater::ReleaseInfo {
 pub struct OperationsInfo {
 	/// Our blockchain's latest fork.
 	pub fork: u64,
-	/// Last fork our client supports, if known. 
+	/// Last fork our client supports, if known.
 	pub this_fork: Option<u64>,
-	/// Information on our track's latest release. 
+	/// Information on our track's latest release.
 	pub track: ReleaseInfo,
 	/// Information on our minor version's latest release.
 	pub minor: Option<ReleaseInfo>,

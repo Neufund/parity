@@ -1,35 +1,33 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! A blockchain engine that supports a basic, non-BFT proof-of-authority.
 
 use std::sync::{Weak, Arc};
-use bigint::hash::{H256, H520};
+use ethereum_types::{H256, H520, Address};
 use parking_lot::RwLock;
-use util::*;
-use ethkey::{recover, public_to_address, Signature};
+use ethkey::{self, Password, Signature};
 use account_provider::AccountProvider;
 use block::*;
 use engines::{Engine, Seal, ConstructedVerifier, EngineError};
 use error::{BlockError, Error};
 use ethjson;
-use header::Header;
 use client::EngineClient;
 use machine::{AuxiliaryData, Call, EthereumMachine};
-use semantic_version::SemanticVersion;
+use types::header::{Header, ExtendedHeader};
 use super::signer::EngineSigner;
 use super::validator_set::{ValidatorSet, SimpleList, new_validator_set};
 
@@ -59,11 +57,11 @@ impl super::EpochVerifier<EthereumMachine> for EpochVerifier {
 }
 
 fn verify_external(header: &Header, validators: &ValidatorSet) -> Result<(), Error> {
-	use rlp::UntrustedRlp;
+	use rlp::Rlp;
 
 	// Check if the signature belongs to a validator, can depend on parent state.
-	let sig = UntrustedRlp::new(&header.seal()[0]).as_val::<H520>()?;
-	let signer = public_to_address(&recover(&sig.into(), &header.bare_hash())?);
+	let sig = Rlp::new(&header.seal()[0]).as_val::<H520>()?;
+	let signer = ethkey::public_to_address(&ethkey::recover(&sig.into(), &header.bare_hash())?);
 
 	if *header.author() != signer {
 		return Err(EngineError::NotAuthorized(*header.author()).into())
@@ -95,25 +93,24 @@ impl BasicAuthority {
 
 impl Engine<EthereumMachine> for BasicAuthority {
 	fn name(&self) -> &str { "BasicAuthority" }
-	fn version(&self) -> SemanticVersion { SemanticVersion::new(1, 0, 0) }
 
 	fn machine(&self) -> &EthereumMachine { &self.machine }
 
 	// One field - the signature
-	fn seal_fields(&self) -> usize { 1 }
+	fn seal_fields(&self, _header: &Header) -> usize { 1 }
 
 	fn seals_internally(&self) -> Option<bool> {
 		Some(self.signer.read().is_some())
 	}
 
 	/// Attempt to seal the block internally.
-	fn generate_seal(&self, block: &ExecutedBlock) -> Seal {
+	fn generate_seal(&self, block: &ExecutedBlock, _parent: &Header) -> Seal {
 		let header = block.header();
 		let author = header.author();
 		if self.validators.contains(header.parent_hash(), author) {
 			// account should be pernamently unlocked, otherwise sealing will fail
 			if let Ok(signature) = self.sign(header.bare_hash()) {
-				return Seal::Regular(vec![::rlp::encode(&(&H520::from(signature) as &[u8])).into_vec()]);
+				return Seal::Regular(vec![::rlp::encode(&(&H520::from(signature) as &[u8]))]);
 			} else {
 				trace!(target: "basicauthority", "generate_seal: FAIL: accounts secret key unavailable");
 			}
@@ -153,6 +150,7 @@ impl Engine<EthereumMachine> for BasicAuthority {
 	fn is_epoch_end(
 		&self,
 		chain_head: &Header,
+		_finalized: &[H256],
 		_chain: &super::Headers<Header>,
 		_transition_store: &super::PendingTransitionStore,
 	) -> Option<Vec<u8>> {
@@ -160,6 +158,15 @@ impl Engine<EthereumMachine> for BasicAuthority {
 
 		// finality never occurs so only apply immediate transitions.
 		self.validators.is_epoch_end(first, chain_head)
+	}
+
+	fn is_epoch_end_light(
+		&self,
+		chain_head: &Header,
+		chain: &super::Headers<Header>,
+		transition_store: &super::PendingTransitionStore,
+	) -> Option<Vec<u8>> {
+		self.is_epoch_end(chain_head, &[], chain, transition_store)
 	}
 
 	fn epoch_verifier<'a>(&self, header: &Header, proof: &'a [u8]) -> ConstructedVerifier<'a, EthereumMachine> {
@@ -183,16 +190,20 @@ impl Engine<EthereumMachine> for BasicAuthority {
 		self.validators.register_client(client);
 	}
 
-	fn set_signer(&self, ap: Arc<AccountProvider>, address: Address, password: String) {
+	fn set_signer(&self, ap: Arc<AccountProvider>, address: Address, password: Password) {
 		self.signer.write().set(ap, address, password);
 	}
 
 	fn sign(&self, hash: H256) -> Result<Signature, Error> {
-		self.signer.read().sign(hash).map_err(Into::into)
+		Ok(self.signer.read().sign(hash)?)
 	}
 
 	fn snapshot_components(&self) -> Option<Box<::snapshot::SnapshotComponents>> {
 		None
+	}
+
+	fn fork_choice(&self, new: &ExtendedHeader, current: &ExtendedHeader) -> super::ForkChoice {
+		super::total_difficulty_fork_choice(new, current)
 	}
 }
 
@@ -200,25 +211,26 @@ impl Engine<EthereumMachine> for BasicAuthority {
 mod tests {
 	use std::sync::Arc;
 	use hash::keccak;
-	use bigint::hash::H520;
+	use ethereum_types::H520;
 	use block::*;
-	use tests::helpers::*;
+	use test_helpers::get_temp_state_db;
 	use account_provider::AccountProvider;
-	use header::Header;
+	use types::header::Header;
 	use spec::Spec;
 	use engines::Seal;
+	use tempdir::TempDir;
 
 	/// Create a new test chain spec with `BasicAuthority` consensus engine.
 	fn new_test_authority() -> Spec {
 		let bytes: &[u8] = include_bytes!("../../res/basic_authority.json");
-		Spec::load(&::std::env::temp_dir(), bytes).expect("invalid chain spec")
+		let tempdir = TempDir::new("").unwrap();
+		Spec::load(&tempdir.path(), bytes).expect("invalid chain spec")
 	}
 
 	#[test]
 	fn has_valid_metadata() {
 		let engine = new_test_authority().engine;
 		assert!(!engine.name().is_empty());
-		assert!(engine.version().major >= 1);
 	}
 
 	#[test]
@@ -232,7 +244,7 @@ mod tests {
 	fn can_do_signature_verification_fail() {
 		let engine = new_test_authority().engine;
 		let mut header: Header = Header::default();
-		header.set_seal(vec![::rlp::encode(&H520::default()).into_vec()]);
+		header.set_seal(vec![::rlp::encode(&H520::default())]);
 
 		let verify_result = engine.verify_block_external(&header);
 		assert!(verify_result.is_err());
@@ -241,7 +253,7 @@ mod tests {
 	#[test]
 	fn can_generate_seal() {
 		let tap = AccountProvider::transient_provider();
-		let addr = tap.insert_account(keccak("").into(), "").unwrap();
+		let addr = tap.insert_account(keccak("").into(), &"".into()).unwrap();
 
 		let spec = new_test_authority();
 		let engine = &*spec.engine;
@@ -249,9 +261,9 @@ mod tests {
 		let genesis_header = spec.genesis_header();
 		let db = spec.ensure_db_good(get_temp_state_db(), &Default::default()).unwrap();
 		let last_hashes = Arc::new(vec![genesis_header.hash()]);
-		let b = OpenBlock::new(engine, Default::default(), false, db, &genesis_header, last_hashes, addr, (3141562.into(), 31415620.into()), vec![], false).unwrap();
-		let b = b.close_and_lock();
-		if let Seal::Regular(seal) = engine.generate_seal(b.block()) {
+		let b = OpenBlock::new(engine, Default::default(), false, db, &genesis_header, last_hashes, addr, (3141562.into(), 31415620.into()), vec![], false, &mut Vec::new().into_iter()).unwrap();
+		let b = b.close_and_lock().unwrap();
+		if let Seal::Regular(seal) = engine.generate_seal(b.block(), &genesis_header) {
 			assert!(b.try_seal(engine, seal).is_ok());
 		}
 	}
@@ -259,7 +271,7 @@ mod tests {
 	#[test]
 	fn seals_internally() {
 		let tap = AccountProvider::transient_provider();
-		let authority = tap.insert_account(keccak("").into(), "").unwrap();
+		let authority = tap.insert_account(keccak("").into(), &"".into()).unwrap();
 
 		let engine = new_test_authority().engine;
 		assert!(!engine.seals_internally().unwrap());

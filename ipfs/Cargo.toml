@@ -1,17 +1,20 @@
 [package]
 description = "Parity IPFS-compatible API"
 name = "parity-ipfs-api"
-version = "1.8.0"
+version = "1.12.0"
 license = "GPL-3.0"
 authors = ["Parity Technologies <admin@parity.io>"]
 
 [dependencies]
 ethcore = { path = "../ethcore" }
-ethcore-util = { path = "../util" }
-ethcore-bigint = { path = "../util/bigint" }
-ethcore-bytes = { path = "../util/bytes" }
-jsonrpc-http-server = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-1.7" }
-rlp = { path = "../util/rlp" }
-mime = "0.2"
-cid = "0.2"
-multihash = "0.6"
+parity-bytes = "0.1"
+ethereum-types = "0.4"
+jsonrpc-core = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-2.2" }
+jsonrpc-http-server = { git = "https://github.com/paritytech/jsonrpc.git", branch = "parity-2.2" }
+rlp = { version = "0.3.0", features = ["ethereum"] }
+cid = "0.3"
+multihash = "0.8"
+unicase = "2.0"
+
+[dev-dependencies]
+ethcore = { path = "../ethcore", features = ["test-helpers"] }

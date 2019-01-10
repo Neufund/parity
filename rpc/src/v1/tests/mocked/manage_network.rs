@@ -1,20 +1,21 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
-use ethsync::{ManageNetwork, NetworkConfiguration};
+use std::ops::Range;
+use sync::ManageNetwork;
 use self::ethcore_network::{ProtocolId, NetworkContext};
 
 extern crate ethcore_network;
@@ -29,6 +30,6 @@ impl ManageNetwork for TestManageNetwork {
 	fn add_reserved_peer(&self, _peer: String) -> Result<(), String> { Ok(()) }
 	fn start_network(&self) {}
 	fn stop_network(&self) {}
-	fn network_config(&self) -> NetworkConfiguration { NetworkConfiguration::new_local() }
+	fn num_peers_range(&self) -> Range<u32> { 25 .. 51 }
 	fn with_proto_context(&self, _: ProtocolId, _: &mut FnMut(&NetworkContext)) { }
 }

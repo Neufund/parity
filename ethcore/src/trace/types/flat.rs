@@ -1,25 +1,24 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Flat trace module
 
-use std::collections::VecDeque;
-use rlp::*;
+use rlp::{Rlp, RlpStream, Decodable, Encodable, DecoderError};
 use heapsize::HeapSizeOf;
-use basic_types::LogBloom;
+use ethereum_types::Bloom;
 use super::trace::{Action, Res};
 
 /// Trace localized in vector of traces produced by a single transaction.
@@ -36,12 +35,12 @@ pub struct FlatTrace {
 	/// Exact location of trace.
 	///
 	/// [index in root, index in first CALL, index in second CALL, ...]
-	pub trace_address: VecDeque<usize>,
+	pub trace_address: Vec<usize>,
 }
 
 impl FlatTrace {
 	/// Returns bloom of the trace.
-	pub fn bloom(&self) -> LogBloom {
+	pub fn bloom(&self) -> Bloom {
 		self.action.bloom() | self.result.bloom()
 	}
 }
@@ -63,7 +62,7 @@ impl Encodable for FlatTrace {
 }
 
 impl Decodable for FlatTrace {
-	fn decode(d: &UntrustedRlp) -> Result<Self, DecoderError> {
+	fn decode(d: &Rlp) -> Result<Self, DecoderError> {
 		let v: Vec<usize> = d.list_at(3)?;
 		let res = FlatTrace {
 			action: d.val_at(0)?,
@@ -94,7 +93,7 @@ impl HeapSizeOf for FlatTransactionTraces {
 
 impl FlatTransactionTraces {
 	/// Returns bloom of all traces in the collection.
-	pub fn bloom(&self) -> LogBloom {
+	pub fn bloom(&self) -> Bloom {
 		self.0.iter().fold(Default::default(), | bloom, trace | bloom | trace.bloom())
 	}
 }
@@ -123,7 +122,7 @@ impl From<Vec<FlatTransactionTraces>> for FlatBlockTraces {
 
 impl FlatBlockTraces {
 	/// Returns bloom of all traces in the block.
-	pub fn bloom(&self) -> LogBloom {
+	pub fn bloom(&self) -> Bloom {
 		self.0.iter().fold(Default::default(), | bloom, tx_traces | bloom | tx_traces.bloom())
 	}
 }
@@ -244,7 +243,7 @@ mod tests {
 		]);
 
 		let encoded = ::rlp::encode(&block_traces);
-		let decoded = ::rlp::decode(&encoded);
+		let decoded = ::rlp::decode(&encoded).expect("error decoding block traces");
 		assert_eq!(block_traces, decoded);
 	}
 }

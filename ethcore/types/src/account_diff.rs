@@ -1,31 +1,30 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Diff between two accounts.
 
 use std::cmp::*;
 use std::fmt;
 use std::collections::BTreeMap;
-use bigint::prelude::U256;
-use bigint::hash::H256;
+use ethereum_types::{H256, U256};
 use bytes::Bytes;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 /// Diff type for specifying a change (or not).
-pub enum Diff<T> where T: Eq {
+pub enum Diff<T> {
 	/// Both sides are the same.
 	Same,
 	/// Left (pre, source) side doesn't include value, right side (post, destination) does.
@@ -36,9 +35,15 @@ pub enum Diff<T> where T: Eq {
 	Died(T),
 }
 
-impl<T> Diff<T> where T: Eq {
+impl<T> Diff<T> {
 	/// Construct new object with given `pre` and `post`.
-	pub fn new(pre: T, post: T) -> Self { if pre == post { Diff::Same } else { Diff::Changed(pre, post) } }
+	pub fn new(pre: T, post: T) -> Self where T: Eq {
+		if pre == post {
+			Diff::Same
+		} else {
+			Diff::Changed(pre, post)
+		}
+	}
 
 	/// Get the before value, if there is one.
 	pub fn pre(&self) -> Option<&T> { match *self { Diff::Died(ref x) | Diff::Changed(ref x, _) => Some(x), _ => None } }
@@ -51,7 +56,6 @@ impl<T> Diff<T> where T: Eq {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-#[cfg_attr(feature = "ipc", binary)]
 /// Account diff.
 pub struct AccountDiff {
 	/// Change in balance, allowed to be `Diff::Same`.
@@ -65,7 +69,6 @@ pub struct AccountDiff {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-#[cfg_attr(feature = "ipc", binary)]
 /// Change in existance type.
 // TODO: include other types of change.
 pub enum Existance {
@@ -141,4 +144,3 @@ impl fmt::Display for AccountDiff {
 		Ok(())
 	}
 }
-

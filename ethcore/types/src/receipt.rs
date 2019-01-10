@@ -1,29 +1,27 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Receipt
 
-use bigint::prelude::U256;
-use bigint::hash::H256;
-use util::Address;
+use ethereum_types::{H160, H256, U256, Address, Bloom};
 use heapsize::HeapSizeOf;
-use rlp::*;
+use rlp::{Rlp, RlpStream, Encodable, Decodable, DecoderError};
 
-use {BlockNumber};
-use log_entry::{LogBloom, LogEntry, LocalizedLogEntry};
+use BlockNumber;
+use log_entry::{LogEntry, LocalizedLogEntry};
 
 /// Transaction outcome store in the receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +40,7 @@ pub struct Receipt {
 	/// The total gas used in the block following execution of the transaction.
 	pub gas_used: U256,
 	/// The OR-wide combination of all logs' blooms for this transaction.
-	pub log_bloom: LogBloom,
+	pub log_bloom: Bloom,
 	/// The logs stemming from this transaction.
 	pub logs: Vec<LogEntry>,
 	/// Transaction outcome.
@@ -51,12 +49,15 @@ pub struct Receipt {
 
 impl Receipt {
 	/// Create a new receipt.
-	pub fn new(outcome: TransactionOutcome, gas_used: U256, logs: Vec<LogEntry>) -> Receipt {
-		Receipt {
-			gas_used: gas_used,
-			log_bloom: logs.iter().fold(LogBloom::default(), |mut b, l| { b = &b | &l.bloom(); b }), //TODO: use |= operator
-			logs: logs,
-			outcome: outcome,
+	pub fn new(outcome: TransactionOutcome, gas_used: U256, logs: Vec<LogEntry>) -> Self {
+		Self {
+			gas_used,
+			log_bloom: logs.iter().fold(Bloom::default(), |mut b, l| {
+				b.accrue_bloom(&l.bloom());
+				b
+			}),
+			logs,
+			outcome,
 		}
 	}
 }
@@ -83,7 +84,7 @@ impl Encodable for Receipt {
 }
 
 impl Decodable for Receipt {
-	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
 		if rlp.item_count()? == 3 {
 			Ok(Receipt {
 				outcome: TransactionOutcome::Unknown,
@@ -131,7 +132,7 @@ pub struct RichReceipt {
 	/// Logs
 	pub logs: Vec<LogEntry>,
 	/// Logs bloom
-	pub log_bloom: LogBloom,
+	pub log_bloom: Bloom,
 	/// Transaction outcome.
 	pub outcome: TransactionOutcome,
 }
@@ -156,9 +157,13 @@ pub struct LocalizedReceipt {
 	/// Logs
 	pub logs: Vec<LocalizedLogEntry>,
 	/// Logs bloom
-	pub log_bloom: LogBloom,
+	pub log_bloom: Bloom,
 	/// Transaction outcome.
 	pub outcome: TransactionOutcome,
+	/// Receiver address
+	pub to: Option<H160>,
+	/// Sender
+	pub from: H160
 }
 
 #[cfg(test)]
@@ -195,7 +200,7 @@ mod tests {
 		);
 		let encoded = ::rlp::encode(&r);
 		assert_eq!(&encoded[..], &expected[..]);
-		let decoded: Receipt = ::rlp::decode(&encoded);
+		let decoded: Receipt = ::rlp::decode(&encoded).expect("decoding receipt failed");
 		assert_eq!(decoded, r);
 	}
 
@@ -213,7 +218,7 @@ mod tests {
 		);
 		let encoded = ::rlp::encode(&r);
 		assert_eq!(&encoded[..], &expected[..]);
-		let decoded: Receipt = ::rlp::decode(&encoded);
+		let decoded: Receipt = ::rlp::decode(&encoded).expect("decoding receipt failed");
 		assert_eq!(decoded, r);
 	}
 }

@@ -1,23 +1,23 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::str::FromStr;
 use std::fmt;
 use serde;
-use bigint::prelude::{U256 as EthU256, U128 as EthU128};
+use ethereum_types::{U256 as EthU256, U128 as EthU128};
 
 macro_rules! impl_uint {
 	($name: ident, $other: ident, $size: expr) => {
@@ -55,7 +55,7 @@ macro_rules! impl_uint {
 
 		impl fmt::LowerHex for $name {
 			fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-				write!(f, "{:#x}", self.0)
+				fmt::LowerHex::fmt(&self.0, f)
 			}
 		}
 
@@ -102,19 +102,19 @@ impl_uint!(U64, u64, 1);
 
 impl serde::Serialize for U128 {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
-		serializer.serialize_str(&format!("0x{}", self.0.to_hex()))
+		serializer.serialize_str(&format!("{:#x}", self))
 	}
 }
 
 impl serde::Serialize for U256 {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
-		serializer.serialize_str(&format!("0x{}", self.0.to_hex()))
+		serializer.serialize_str(&format!("{:#x}", self))
 	}
 }
 
 impl serde::Serialize for U64 {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
-		serializer.serialize_str(&format!("0x{:x}", self.0))
+		serializer.serialize_str(&format!("{:#x}", self))
 	}
 }
 

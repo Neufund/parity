@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! State test deserialization.
 
@@ -22,20 +22,20 @@ use state::{Env, AccountState, Transaction, Log};
 
 /// State test deserialization.
 #[derive(Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct State {
 	/// Environment.
 	pub env: Env,
 	/// Output.
-	#[serde(rename="out")]
+	#[serde(rename = "out")]
 	pub output: Bytes,
 	/// Pre state.
-	#[serde(rename="pre")]
+	#[serde(rename = "pre")]
 	pub pre_state: AccountState,
 	/// Post state.
-	#[serde(rename="post")]
+	#[serde(rename = "post")]
 	pub post_state: AccountState,
 	/// Post state root.
-	#[serde(rename="postStateRoot")]
 	pub post_state_root: H256,
 	/// Transaction.
 	pub transaction: Transaction,

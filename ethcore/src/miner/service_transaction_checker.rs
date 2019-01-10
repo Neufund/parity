@@ -1,61 +1,51 @@
-// Copyright 2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity. If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
-use client::MiningBlockChainClient;
-use transaction::SignedTransaction;
-use types::ids::BlockId;
+//! A service transactions contract checker.
 
-use futures::{future, Future};
-use native_contracts::ServiceTransactionChecker as Contract;
-use bigint::prelude::U256;
-use parking_lot::Mutex;
+use client::{RegistryInfo, CallContract, BlockId};
+use types::transaction::SignedTransaction;
+use ethabi::FunctionOutputDecoder;
+
+use_contract!(service_transaction, "res/contracts/service_transaction.json");
 
 const SERVICE_TRANSACTION_CONTRACT_REGISTRY_NAME: &'static str = "service_transaction_checker";
 
 /// Service transactions checker.
-#[derive(Default)]
-pub struct ServiceTransactionChecker {
-	contract: Mutex<Option<Contract>>,
-}
+#[derive(Default, Clone)]
+pub struct ServiceTransactionChecker;
 
 impl ServiceTransactionChecker {
-	/// Try to create instance, reading contract address from given chain client.
-	pub fn update_from_chain_client(&self, client: &MiningBlockChainClient) {
-		let mut contract = self.contract.lock();
-		if contract.is_none() {
-			*contract = client.registry_address(SERVICE_TRANSACTION_CONTRACT_REGISTRY_NAME.to_owned())
-				.and_then(|contract_addr| {
-					trace!(target: "txqueue", "Configuring for service transaction checker contract from {}", contract_addr);
+	/// Checks if given address is whitelisted to send service transactions.
+	pub fn check<C: CallContract + RegistryInfo>(&self, client: &C, tx: &SignedTransaction) -> Result<bool, String> {
+		let sender = tx.sender();
+		let hash = tx.hash();
 
-					Some(Contract::new(contract_addr))
-				})
+		// Skip checking the contract if the transaction does not have zero gas price
+		if !tx.gas_price.is_zero() {
+			return Ok(false)
 		}
-	}
 
-	/// Checks if service transaction can be appended to the transaction queue.
-	pub fn check(&self, client: &MiningBlockChainClient, tx: &SignedTransaction) -> Result<bool, String> {
-		debug_assert_eq!(tx.gas_price, U256::zero());
+		let address = client.registry_address(SERVICE_TRANSACTION_CONTRACT_REGISTRY_NAME.to_owned(), BlockId::Latest)
+			.ok_or_else(|| "contract is not configured")?;
 
-		if let Some(ref contract) = *self.contract.lock() {
-			contract.certified(
-				|addr, data| future::done(client.call_contract(BlockId::Latest, addr, data)),
-				tx.sender()
-			).wait()
-		} else {
-			Err("contract is not configured".to_owned())
-		}
+		trace!(target: "txqueue", "[{:?}] Checking service transaction checker contract from {}", hash, sender);
+
+		let (data, decoder) = service_transaction::functions::certified::call(sender);
+		let value = client.call_contract(BlockId::Latest, address, data)?;
+		decoder.decode(&value).map_err(|e| e.to_string())
 	}
 }

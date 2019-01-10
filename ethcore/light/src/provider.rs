@@ -1,30 +1,30 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
-//! A provider for the LES protocol. This is typically a full node, who can
+//! A provider for the PIP protocol. This is typically a full node, who can
 //! give as much data as necessary to its peers.
 
 use std::sync::Arc;
 
-use ethcore::blockchain_info::BlockChainInfo;
-use ethcore::client::{BlockChainClient, ProvingBlockChainClient};
-use ethcore::transaction::PendingTransaction;
-use ethcore::ids::BlockId;
-use ethcore::encoded;
-use bigint::hash::H256;
+use common_types::blockchain_info::BlockChainInfo;
+use common_types::encoded;
+use common_types::ids::BlockId;
+use common_types::transaction::PendingTransaction;
+use ethcore::client::{BlockChainClient, ProvingBlockChainClient, ChainInfo, BlockInfo as ClientBlockInfo};
+use ethereum_types::H256;
 use parking_lot::RwLock;
 
 use cht::{self, BlockInfo};
@@ -33,8 +33,10 @@ use transaction_queue::TransactionQueue;
 
 use request;
 
+/// Maximum allowed size of a headers request.
+pub const MAX_HEADERS_PER_REQUEST: u64 = 512;
+
 /// Defines the operations that a provider for the light subprotocol must fulfill.
-#[cfg_attr(feature = "ipc", ipc(client_ident="LightProviderClient"))]
 pub trait Provider: Send + Sync {
 	/// Provide current blockchain info.
 	fn chain_info(&self) -> BlockChainInfo;
@@ -83,10 +85,12 @@ pub trait Provider: Send + Sync {
 			}
 		};
 
-		let headers: Vec<_> = (0u64..req.max as u64)
-			.map(|x: u64| x.saturating_mul(req.skip + 1))
-			.take_while(|x| if req.reverse { x < &start_num } else { best_num.saturating_sub(start_num) >= *x })
-			.map(|x| if req.reverse { start_num - x } else { start_num + x })
+		let max = ::std::cmp::min(MAX_HEADERS_PER_REQUEST, req.max);
+
+		let headers: Vec<_> = (0_u64..max)
+			.map(|x: u64| x.saturating_mul(req.skip.saturating_add(1)))
+			.take_while(|&x| if req.reverse { x < start_num } else { best_num.saturating_sub(start_num) >= x })
+			.map(|x| if req.reverse { start_num.saturating_sub(x) } else { start_num.saturating_add(x) })
 			.map(|x| self.block_header(BlockId::Number(x)))
 			.take_while(|x| x.is_some())
 			.flat_map(|x| x)
@@ -95,12 +99,16 @@ pub trait Provider: Send + Sync {
 		if headers.is_empty() {
 			None
 		} else {
-			Some(::request::HeadersResponse { headers: headers })
+			Some(::request::HeadersResponse { headers })
 		}
 	}
 
 	/// Get a block header by id.
 	fn block_header(&self, id: BlockId) -> Option<encoded::Header>;
+
+	/// Get a transaction index by hash.
+	fn transaction_index(&self, req: request::CompleteTransactionIndexRequest)
+		-> Option<request::TransactionIndexResponse>;
 
 	/// Fulfill a block body request.
 	fn block_body(&self, req: request::CompleteBodyRequest) -> Option<request::BodyResponse>;
@@ -122,7 +130,7 @@ pub trait Provider: Send + Sync {
 	fn header_proof(&self, req: request::CompleteHeaderProofRequest) -> Option<request::HeaderProofResponse>;
 
 	/// Provide pending transactions.
-	fn ready_transactions(&self) -> Vec<PendingTransaction>;
+	fn transactions_to_propagate(&self) -> Vec<PendingTransaction>;
 
 	/// Provide a proof-of-execution for the given transaction proof request.
 	/// Returns a vector of all state items necessary to execute the transaction.
@@ -135,7 +143,7 @@ pub trait Provider: Send + Sync {
 // Implementation of a light client data provider for a client.
 impl<T: ProvingBlockChainClient + ?Sized> Provider for T {
 	fn chain_info(&self) -> BlockChainInfo {
-		BlockChainClient::chain_info(self)
+		ChainInfo::chain_info(self)
 	}
 
 	fn reorg_depth(&self, a: &H256, b: &H256) -> Option<u64> {
@@ -147,23 +155,35 @@ impl<T: ProvingBlockChainClient + ?Sized> Provider for T {
 	}
 
 	fn block_header(&self, id: BlockId) -> Option<encoded::Header> {
-		BlockChainClient::block_header(self, id)
+		ClientBlockInfo::block_header(self, id)
+	}
+
+	fn transaction_index(&self, req: request::CompleteTransactionIndexRequest)
+		-> Option<request::TransactionIndexResponse>
+	{
+		use common_types::ids::TransactionId;
+
+		self.transaction_receipt(TransactionId::Hash(req.hash)).map(|receipt| request::TransactionIndexResponse {
+			num: receipt.block_number,
+			hash: receipt.block_hash,
+			index: receipt.transaction_index as u64,
+		})
 	}
 
 	fn block_body(&self, req: request::CompleteBodyRequest) -> Option<request::BodyResponse> {
 		BlockChainClient::block_body(self, BlockId::Hash(req.hash))
-			.map(|body| ::request::BodyResponse { body: body })
+			.map(|body| ::request::BodyResponse { body })
 	}
 
 	fn block_receipts(&self, req: request::CompleteReceiptsRequest) -> Option<request::ReceiptsResponse> {
 		BlockChainClient::block_receipts(self, &req.hash)
-			.map(|x| ::request::ReceiptsResponse { receipts: ::rlp::decode_list(&x) })
+			.map(|x| ::request::ReceiptsResponse { receipts: x.receipts })
 	}
 
 	fn account_proof(&self, req: request::CompleteAccountRequest) -> Option<request::AccountResponse> {
 		self.prove_account(req.address_hash, BlockId::Hash(req.block_hash)).map(|(proof, acc)| {
 			::request::AccountResponse {
-				proof: proof,
+				proof,
 				nonce: acc.nonce,
 				balance: acc.balance,
 				code_hash: acc.code_hash,
@@ -175,7 +195,7 @@ impl<T: ProvingBlockChainClient + ?Sized> Provider for T {
 	fn storage_proof(&self, req: request::CompleteStorageRequest) -> Option<request::StorageResponse> {
 		self.prove_storage(req.address_hash, req.key_hash, BlockId::Hash(req.block_hash)).map(|(proof, item) | {
 			::request::StorageResponse {
-				proof: proof,
+				proof,
 				value: item,
 			}
 		})
@@ -183,7 +203,7 @@ impl<T: ProvingBlockChainClient + ?Sized> Provider for T {
 
 	fn contract_code(&self, req: request::CompleteCodeRequest) -> Option<request::CodeResponse> {
 		self.state_data(&req.code_hash)
-			.map(|code| ::request::CodeResponse { code: code })
+			.map(|code| ::request::CodeResponse { code })
 	}
 
 	fn header_proof(&self, req: request::CompleteHeaderProofRequest) -> Option<request::HeaderProofResponse> {
@@ -232,7 +252,7 @@ impl<T: ProvingBlockChainClient + ?Sized> Provider for T {
 		// prove our result.
 		match cht.prove(req.num, 0) {
 			Ok(Some(proof)) => Some(::request::HeaderProofResponse {
-				proof: proof,
+				proof,
 				hash: needed_hdr.hash(),
 				td: needed_td,
 			}),
@@ -245,15 +265,15 @@ impl<T: ProvingBlockChainClient + ?Sized> Provider for T {
 	}
 
 	fn transaction_proof(&self, req: request::CompleteExecutionRequest) -> Option<request::ExecutionResponse> {
-		use ethcore::transaction::Transaction;
+		use common_types::transaction::Transaction;
 
 		let id = BlockId::Hash(req.block_hash);
-		let nonce = match self.nonce(&req.from, id.clone()) {
+		let nonce = match self.nonce(&req.from, id) {
 			Some(nonce) => nonce,
 			None => return None,
 		};
 		let transaction = Transaction {
-			nonce: nonce,
+			nonce,
 			gas: req.gas,
 			gas_price: req.gas_price,
 			action: req.action,
@@ -265,13 +285,16 @@ impl<T: ProvingBlockChainClient + ?Sized> Provider for T {
 			.map(|(_, proof)| ::request::ExecutionResponse { items: proof })
 	}
 
-	fn ready_transactions(&self) -> Vec<PendingTransaction> {
-		BlockChainClient::ready_transactions(self)
+	fn transactions_to_propagate(&self) -> Vec<PendingTransaction> {
+		BlockChainClient::transactions_to_propagate(self)
+			.into_iter()
+			.map(|tx| tx.pending().clone())
+			.collect()
 	}
 
 	fn epoch_signal(&self, req: request::CompleteSignalRequest) -> Option<request::SignalResponse> {
 		self.epoch_signal(req.block_hash).map(|signal| request::SignalResponse {
-			signal: signal,
+			signal,
 		})
 	}
 }
@@ -287,8 +310,8 @@ impl<L> LightProvider<L> {
 	/// Create a new `LightProvider` from the given client and transaction queue.
 	pub fn new(client: Arc<L>, txqueue: Arc<RwLock<TransactionQueue>>) -> Self {
 		LightProvider {
-			client: client,
-			txqueue: txqueue,
+			client,
+			txqueue,
 		}
 	}
 }
@@ -309,6 +332,12 @@ impl<L: AsLightClient + Send + Sync> Provider for LightProvider<L> {
 
 	fn block_header(&self, id: BlockId) -> Option<encoded::Header> {
 		self.client.as_light_client().block_header(id)
+	}
+
+	fn transaction_index(&self, _req: request::CompleteTransactionIndexRequest)
+		-> Option<request::TransactionIndexResponse>
+	{
+		None
 	}
 
 	fn block_body(&self, _req: request::CompleteBodyRequest) -> Option<request::BodyResponse> {
@@ -343,9 +372,10 @@ impl<L: AsLightClient + Send + Sync> Provider for LightProvider<L> {
 		None
 	}
 
-	fn ready_transactions(&self) -> Vec<PendingTransaction> {
+	fn transactions_to_propagate(&self) -> Vec<PendingTransaction> {
 		let chain_info = self.chain_info();
-		self.txqueue.read().ready_transactions(chain_info.best_block_number, chain_info.best_block_timestamp)
+		self.txqueue.read()
+			.ready_transactions(chain_info.best_block_number, chain_info.best_block_timestamp)
 	}
 }
 

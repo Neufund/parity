@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Secondary chunk creation and restoration, implementation for proof-of-work
 //! chains.
@@ -26,15 +26,16 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use blockchain::{BlockChain, BlockProvider};
+use blockchain::{BlockChain, BlockChainDB, BlockProvider};
 use engines::EthEngine;
-use snapshot::{Error, ManifestData};
+use snapshot::{Error, ManifestData, Progress};
 use snapshot::block::AbridgedBlock;
-use bigint::hash::H256;
-use util::KeyValueDB;
+use ethereum_types::H256;
+use kvdb::KeyValueDB;
 use bytes::Bytes;
-use rlp::{RlpStream, UntrustedRlp};
+use rlp::{RlpStream, Rlp};
 use rand::OsRng;
+use types::encoded;
 
 /// Snapshot creation and restoration for PoW chains.
 /// This includes blocks from the head of the chain as a
@@ -64,6 +65,7 @@ impl SnapshotComponents for PowSnapshot {
 		chain: &BlockChain,
 		block_at: H256,
 		chunk_sink: &mut ChunkSink,
+		progress: &Progress,
 		preferred_size: usize,
 	) -> Result<(), Error> {
 		PowWorker {
@@ -71,6 +73,7 @@ impl SnapshotComponents for PowSnapshot {
 			rlps: VecDeque::new(),
 			current_hash: block_at,
 			writer: chunk_sink,
+			progress: progress,
 			preferred_size: preferred_size,
 		}.chunk_all(self.blocks)
 	}
@@ -78,10 +81,10 @@ impl SnapshotComponents for PowSnapshot {
 	fn rebuilder(
 		&self,
 		chain: BlockChain,
-		db: Arc<KeyValueDB>,
+		db: Arc<BlockChainDB>,
 		manifest: &ManifestData,
 	) -> Result<Box<Rebuilder>, ::error::Error> {
-		PowRebuilder::new(chain, db, manifest, self.max_restore_blocks).map(|r| Box::new(r) as Box<_>)
+		PowRebuilder::new(chain, db.key_value().clone(), manifest, self.max_restore_blocks).map(|r| Box::new(r) as Box<_>)
 	}
 
 	fn min_supported_version(&self) -> u64 { ::snapshot::MIN_SUPPORTED_STATE_CHUNK_VERSION }
@@ -95,6 +98,7 @@ struct PowWorker<'a> {
 	rlps: VecDeque<Bytes>,
 	current_hash: H256,
 	writer: &'a mut ChunkSink<'a>,
+	progress: &'a Progress,
 	preferred_size: usize,
 }
 
@@ -137,6 +141,7 @@ impl<'a> PowWorker<'a> {
 
 			last = self.current_hash;
 			self.current_hash = block.header_view().parent_hash();
+			self.progress.blocks.fetch_add(1, Ordering::SeqCst);
 		}
 
 		if loaded_size != 0 {
@@ -153,19 +158,19 @@ impl<'a> PowWorker<'a> {
 	fn write_chunk(&mut self, last: H256) -> Result<(), Error> {
 		trace!(target: "snapshot", "prepared block chunk with {} blocks", self.rlps.len());
 
-		let (last_header, last_details) = self.chain.block_header(&last)
+		let (last_header, last_details) = self.chain.block_header_data(&last)
 			.and_then(|n| self.chain.block_details(&last).map(|d| (n, d)))
 			.ok_or(Error::BlockNotFound(last))?;
 
 		let parent_number = last_header.number() - 1;
 		let parent_hash = last_header.parent_hash();
-		let parent_total_difficulty = last_details.total_difficulty - *last_header.difficulty();
+		let parent_total_difficulty = last_details.total_difficulty - last_header.difficulty();
 
 		trace!(target: "snapshot", "parent last written block: {}", parent_hash);
 
 		let num_entries = self.rlps.len();
 		let mut rlp_stream = RlpStream::new_list(3 + num_entries);
-		rlp_stream.append(&parent_number).append(parent_hash).append(&parent_total_difficulty);
+		rlp_stream.append(&parent_number).append(&parent_hash).append(&parent_total_difficulty);
 
 		for pair in self.rlps.drain(..) {
 			rlp_stream.append_raw(&pair, 1);
@@ -220,17 +225,15 @@ impl Rebuilder for PowRebuilder {
 	/// Feed the rebuilder an uncompressed block chunk.
 	/// Returns the number of blocks fed or any errors.
 	fn feed(&mut self, chunk: &[u8], engine: &EthEngine, abort_flag: &AtomicBool) -> Result<(), ::error::Error> {
-		use basic_types::Seal::With;
-		use views::BlockView;
 		use snapshot::verify_old_block;
-		use bigint::prelude::U256;
+		use ethereum_types::U256;
 		use triehash::ordered_trie_root;
 
-		let rlp = UntrustedRlp::new(chunk);
+		let rlp = Rlp::new(chunk);
 		let item_count = rlp.item_count()?;
 		let num_blocks = (item_count - 3) as u64;
 
-		trace!(target: "snapshot", "restoring block chunk with {} blocks.", item_count - 3);
+		trace!(target: "snapshot", "restoring block chunk with {} blocks.", num_blocks);
 
 		if self.fed_blocks + num_blocks > self.snapshot_blocks {
 			return Err(Error::TooManyBlocks(self.snapshot_blocks, self.fed_blocks + num_blocks).into())
@@ -247,13 +250,11 @@ impl Rebuilder for PowRebuilder {
 			let pair = rlp.at(idx)?;
 			let abridged_rlp = pair.at(0)?.as_raw().to_owned();
 			let abridged_block = AbridgedBlock::from_raw(abridged_rlp);
-			let receipts: Vec<::receipt::Receipt> = pair.list_at(1)?;
-			let receipts_root = ordered_trie_root(
-				pair.at(1)?.iter().map(|r| r.as_raw().to_owned())
-			);
+			let receipts: Vec<::types::receipt::Receipt> = pair.list_at(1)?;
+			let receipts_root = ordered_trie_root(pair.at(1)?.iter().map(|r| r.as_raw()));
 
 			let block = abridged_block.to_block(parent_hash, cur_number, receipts_root)?;
-			let block_bytes = block.rlp_bytes(With);
+			let block_bytes = encoded::Block::new(block.rlp_bytes());
 			let is_best = cur_number == self.best_number;
 
 			if is_best {
@@ -278,16 +279,16 @@ impl Rebuilder for PowRebuilder {
 
 			// special-case the first block in each chunk.
 			if idx == 3 {
-				if self.chain.insert_unordered_block(&mut batch, &block_bytes, receipts, Some(parent_total_difficulty), is_best, false) {
+				if self.chain.insert_unordered_block(&mut batch, block_bytes, receipts, Some(parent_total_difficulty), is_best, false) {
 					self.disconnected.push((cur_number, block.header.hash()));
 				}
 			} else {
-				self.chain.insert_unordered_block(&mut batch, &block_bytes, receipts, None, is_best, false);
+				self.chain.insert_unordered_block(&mut batch, block_bytes, receipts, None, is_best, false);
 			}
 			self.db.write_buffered(batch);
 			self.chain.commit();
 
-			parent_hash = BlockView::new(&block_bytes).hash();
+			parent_hash = block.header.hash();
 			cur_number += 1;
 		}
 

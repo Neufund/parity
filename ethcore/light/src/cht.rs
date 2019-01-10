@@ -1,15 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
+
+// You should have received a copy of the GNU General Public License
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Canonical hash trie definitions and helper functions.
 //!
@@ -20,13 +23,16 @@
 //! root has. A correct proof implies that the claimed block is identical to the one
 //! we discarded.
 
-use ethcore::ids::BlockId;
-use bigint::prelude::U256;
-use bigint::hash::H256;
-use util::{HashDB, MemoryDB};
+use common_types::ids::BlockId;
+use ethereum_types::{H256, U256};
+use hashdb::HashDB;
+use keccak_hasher::KeccakHasher;
+use kvdb::DBValue;
+use memorydb::MemoryDB;
 use bytes::Bytes;
-use trie::{self, TrieMut, TrieDBMut, Trie, TrieDB, Recorder};
-use rlp::{RlpStream, UntrustedRlp};
+use trie::{TrieMut, Trie, Recorder};
+use ethtrie::{self, TrieDB, TrieDBMut};
+use rlp::{RlpStream, Rlp};
 
 // encode a key.
 macro_rules! key {
@@ -47,13 +53,13 @@ pub const SIZE: u64 = 2048;
 /// A canonical hash trie. This is generic over any database it can query.
 /// See module docs for more details.
 #[derive(Debug, Clone)]
-pub struct CHT<DB: HashDB> {
+pub struct CHT<DB: HashDB<KeccakHasher, DBValue>> {
 	db: DB,
 	root: H256, // the root of this CHT.
 	number: u64,
 }
 
-impl<DB: HashDB> CHT<DB> {
+impl<DB: HashDB<KeccakHasher, DBValue>> CHT<DB> {
 	/// Query the root of the CHT.
 	pub fn root(&self) -> H256 { self.root }
 
@@ -63,7 +69,7 @@ impl<DB: HashDB> CHT<DB> {
 	/// Generate an inclusion proof for the entry at a specific block.
 	/// Nodes before level `from_level` will be omitted.
 	/// Returns an error on an incomplete trie, and `Ok(None)` on an unprovable request.
-	pub fn prove(&self, num: u64, from_level: u32) -> trie::Result<Option<Vec<Bytes>>> {
+	pub fn prove(&self, num: u64, from_level: u32) -> ethtrie::Result<Option<Vec<Bytes>>> {
 		if block_to_cht_number(num) != Some(self.number) { return Ok(None) }
 
 		let mut recorder = Recorder::with_depth(from_level);
@@ -87,10 +93,10 @@ pub struct BlockInfo {
 /// Build an in-memory CHT from a closure which provides necessary information
 /// about blocks. If the fetcher ever fails to provide the info, the CHT
 /// will not be generated.
-pub fn build<F>(cht_num: u64, mut fetcher: F) ->  Option<CHT<MemoryDB>>
+pub fn build<F>(cht_num: u64, mut fetcher: F) -> Option<CHT<MemoryDB<KeccakHasher, DBValue>>>
 	where F: FnMut(BlockId) -> Option<BlockInfo>
 {
-	let mut db = MemoryDB::new();
+	let mut db = MemoryDB::<KeccakHasher, DBValue>::new();
 
 	// start from the last block by number and work backwards.
 	let last_num = start_number(cht_num + 1) - 1;
@@ -113,8 +119,8 @@ pub fn build<F>(cht_num: u64, mut fetcher: F) ->  Option<CHT<MemoryDB>>
 	}
 
 	Some(CHT {
-		db: db,
-		root: root,
+		db,
+		root,
 		number: cht_num,
 	})
 }
@@ -129,7 +135,7 @@ pub fn compute_root<I>(cht_num: u64, iterable: I) -> Option<H256>
 	let start_num = start_number(cht_num) as usize;
 
 	for (i, (h, td)) in iterable.into_iter().take(SIZE as usize).enumerate() {
-		v.push((key!(i + start_num).into_vec(), val!(h, td).into_vec()))
+		v.push((key!(i + start_num), val!(h, td)))
 	}
 
 	if v.len() == SIZE as usize {
@@ -144,13 +150,13 @@ pub fn compute_root<I>(cht_num: u64, iterable: I) -> Option<H256>
 /// verify the given trie branch and extract the canonical hash and total difficulty.
 // TODO: better support for partially-checked queries.
 pub fn check_proof(proof: &[Bytes], num: u64, root: H256) -> Option<(H256, U256)> {
-	let mut db = MemoryDB::new();
+	let mut db = MemoryDB::<KeccakHasher, DBValue>::new();
 
 	for node in proof { db.insert(&node[..]); }
 	let res = match TrieDB::new(&db, &root) {
 		Err(_) => return None,
 		Ok(trie) => trie.get_with(&key!(num), |val: &[u8]| {
-			let rlp = UntrustedRlp::new(val);
+			let rlp = Rlp::new(val);
 			rlp.val_at::<H256>(0)
 				.and_then(|h| rlp.val_at::<U256>(1).map(|td| (h, td)))
 				.ok()

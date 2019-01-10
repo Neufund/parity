@@ -1,53 +1,58 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Parameters for a block chain.
 
-use std::io::Read;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
-use bigint::hash::{H256, H2048};
-use bigint::prelude::U256;
 use bytes::Bytes;
+use ethereum_types::{H256, Bloom, U256, Address};
 use ethjson;
 use hash::{KECCAK_NULL_RLP, keccak};
+use memorydb::MemoryDB;
 use parking_lot::RwLock;
 use rlp::{Rlp, RlpStream};
-use rustc_hex::FromHex;
-use util::*;
-use vm::{EnvInfo, CallType, ActionValue, ActionParams};
-
-use super::genesis::Genesis;
-use super::seal::Generic as GenericSeal;
+use rustc_hex::{FromHex, ToHex};
+use types::BlockNumber;
+use types::encoded;
+use types::header::Header;
+use vm::{EnvInfo, CallType, ActionValue, ActionParams, ParamsType};
 
 use builtin::Builtin;
-use engines::{EthEngine, NullEngine, InstantSeal, BasicAuthority, AuthorityRound, Tendermint, DEFAULT_BLOCKHASH_CONTRACT};
+use engines::{
+	EthEngine, NullEngine, InstantSeal, InstantSealParams, BasicAuthority,
+	AuthorityRound, DEFAULT_BLOCKHASH_CONTRACT
+};
 use error::Error;
 use executive::Executive;
 use factory::Factories;
-use header::{BlockNumber, Header};
 use machine::EthereumMachine;
-use pod_state::*;
-use state::{Backend, State, Substate};
+use pod_state::PodState;
+use spec::Genesis;
+use spec::seal::Generic as GenericSeal;
 use state::backend::Basic as BasicBackend;
+use state::{Backend, State, Substate};
 use trace::{NoopTracer, NoopVMTracer};
 
 pub use ethash::OptimizeFor;
+
+const MAX_TRANSACTION_SIZE: usize = 300 * 1024;
 
 // helper for formatting errors.
 fn fmt_err<F: ::std::fmt::Display>(f: F) -> String {
@@ -56,7 +61,7 @@ fn fmt_err<F: ::std::fmt::Display>(f: F) -> String {
 
 /// Parameters common to ethereum-like blockchains.
 /// NOTE: when adding bugfix hard-fork parameters,
-/// add to `contains_bugfix_hard_fork`
+/// add to `nonzero_bugfix_hard_fork`
 ///
 /// we define a "bugfix" hard fork as any hard fork which
 /// you would put on-by-default in a new chain.
@@ -77,6 +82,14 @@ pub struct CommonParams {
 	pub min_gas_limit: U256,
 	/// Fork block to check.
 	pub fork_block: Option<(BlockNumber, H256)>,
+	/// EIP150 transition block number.
+	pub eip150_transition: BlockNumber,
+	/// Number of first block where EIP-160 rules begin.
+	pub eip160_transition: BlockNumber,
+	/// Number of first block where EIP-161.abc begin.
+	pub eip161abc_transition: BlockNumber,
+	/// Number of first block where EIP-161.d begins.
+	pub eip161d_transition: BlockNumber,
 	/// Number of first block where EIP-98 rules begin.
 	pub eip98_transition: BlockNumber,
 	/// Number of first block where EIP-658 rules begin.
@@ -85,8 +98,8 @@ pub struct CommonParams {
 	pub eip155_transition: BlockNumber,
 	/// Validate block receipts root.
 	pub validate_receipts_transition: BlockNumber,
-	/// Number of first block where EIP-86 (Metropolis) rules begin.
-	pub eip86_transition: BlockNumber,
+	/// Validate transaction chain id.
+	pub validate_chain_id_transition: BlockNumber,
 	/// Number of first block where EIP-140 (Metropolis: REVERT opcode) rules begin.
 	pub eip140_transition: BlockNumber,
 	/// Number of first block where EIP-210 (Metropolis: BLOCKHASH changes) rules begin.
@@ -102,14 +115,26 @@ pub struct CommonParams {
 	pub eip211_transition: BlockNumber,
 	/// Number of first block where EIP-214 rules begin.
 	pub eip214_transition: BlockNumber,
+	/// Number of first block where EIP-145 rules begin.
+	pub eip145_transition: BlockNumber,
+	/// Number of first block where EIP-1052 rules begin.
+	pub eip1052_transition: BlockNumber,
+	/// Number of first block where EIP-1283 rules begin.
+	pub eip1283_transition: BlockNumber,
+	/// Number of first block where EIP-1014 rules begin.
+	pub eip1014_transition: BlockNumber,
 	/// Number of first block where dust cleanup rules (EIP-168 and EIP169) begin.
 	pub dust_protection_transition: BlockNumber,
 	/// Nonce cap increase per block. Nonce cap is only checked if dust protection is enabled.
 	pub nonce_cap_increment: u64,
 	/// Enable dust cleanup for contracts.
 	pub remove_dust_contracts: bool,
-	/// Wasm support
-	pub wasm: bool,
+	/// Wasm activation blocknumber, if any disabled initially.
+	pub wasm_activation_transition: BlockNumber,
+	/// Number of first block where KIP-4 rules begin. Only has effect if Wasm is activated.
+	pub kip4_transition: BlockNumber,
+	/// Number of first block where KIP-6 rules begin. Only has effect if Wasm is activated.
+	pub kip6_transition: BlockNumber,
 	/// Gas limit bound divisor (how much gas limit can change per block)
 	pub gas_limit_bound_divisor: U256,
 	/// Registrar contract address.
@@ -118,24 +143,53 @@ pub struct CommonParams {
 	pub node_permission_contract: Option<Address>,
 	/// Maximum contract code size that can be deployed.
 	pub max_code_size: u64,
+	/// Number of first block where max code size limit is active.
+	pub max_code_size_transition: BlockNumber,
 	/// Transaction permission managing contract address.
 	pub transaction_permission_contract: Option<Address>,
+	/// Block at which the transaction permission contract should start being used.
+	pub transaction_permission_contract_transition: BlockNumber,
+	/// Maximum size of transaction's RLP payload
+	pub max_transaction_size: usize,
 }
 
 impl CommonParams {
 	/// Schedule for an EVM in the post-EIP-150-era of the Ethereum main net.
 	pub fn schedule(&self, block_number: u64) -> ::vm::Schedule {
-		let mut schedule = ::vm::Schedule::new_post_eip150(self.max_code_size as _, true, true, true);
-		self.update_schedule(block_number, &mut schedule);
-		schedule
+		if block_number < self.eip150_transition {
+			::vm::Schedule::new_homestead()
+		} else {
+			let max_code_size = self.max_code_size(block_number);
+			let mut schedule = ::vm::Schedule::new_post_eip150(
+				max_code_size as _,
+				block_number >= self.eip160_transition,
+				block_number >= self.eip161abc_transition,
+				block_number >= self.eip161d_transition
+			);
+
+			self.update_schedule(block_number, &mut schedule);
+			schedule
+		}
+	}
+
+	/// Returns max code size at given block.
+	pub fn max_code_size(&self, block_number: u64) -> u64 {
+		if block_number >= self.max_code_size_transition {
+			self.max_code_size
+		} else {
+			u64::max_value()
+		}
 	}
 
 	/// Apply common spec config parameters to the schedule.
 	pub fn update_schedule(&self, block_number: u64, schedule: &mut ::vm::Schedule) {
-		schedule.have_create2 = block_number >= self.eip86_transition;
+		schedule.have_create2 = block_number >= self.eip1014_transition;
 		schedule.have_revert = block_number >= self.eip140_transition;
 		schedule.have_static_call = block_number >= self.eip214_transition;
 		schedule.have_return_data = block_number >= self.eip211_transition;
+		schedule.have_bitwise_shifting = block_number >= self.eip145_transition;
+		schedule.have_extcodehash = block_number >= self.eip1052_transition;
+		schedule.eip1283 = block_number >= self.eip1283_transition;
 		if block_number >= self.eip210_transition {
 			schedule.blockhash_gas = 800;
 		}
@@ -145,15 +199,33 @@ impl CommonParams {
 				false => ::vm::CleanDustMode::BasicOnly,
 			};
 		}
+		if block_number >= self.wasm_activation_transition {
+			let mut wasm = ::vm::WasmCosts::default();
+			if block_number >= self.kip4_transition {
+				wasm.have_create2 = true;
+			}
+			if block_number >= self.kip6_transition {
+				wasm.have_gasleft = true;
+			}
+			schedule.wasm = Some(wasm);
+		}
 	}
 
-	/// Whether these params contain any bug-fix hard forks.
-	pub fn contains_bugfix_hard_fork(&self) -> bool {
-		self.eip98_transition != 0 && self.eip155_transition != 0 &&
-			self.validate_receipts_transition != 0 && self.eip86_transition != 0 &&
-			self.eip140_transition != 0 && self.eip210_transition != 0 &&
-			self.eip211_transition != 0 && self.eip214_transition != 0 &&
-			self.dust_protection_transition != 0
+	/// Return Some if the current parameters contain a bugfix hard fork not on block 0.
+	pub fn nonzero_bugfix_hard_fork(&self) -> Option<&str> {
+		if self.eip155_transition != 0 {
+			return Some("eip155Transition");
+		}
+
+		if self.validate_receipts_transition != 0 {
+			return Some("validateReceiptsTransition");
+		}
+
+		if self.validate_chain_id_transition != 0 {
+			return Some("validateChainIdTransition");
+		}
+
+		None
 	}
 }
 
@@ -175,19 +247,23 @@ impl From<ethjson::spec::Params> for CommonParams {
 			} else {
 				None
 			},
-			eip98_transition: p.eip98_transition.map_or(0, Into::into),
+			eip150_transition: p.eip150_transition.map_or(0, Into::into),
+			eip160_transition: p.eip160_transition.map_or(0, Into::into),
+			eip161abc_transition: p.eip161abc_transition.map_or(0, Into::into),
+			eip161d_transition: p.eip161d_transition.map_or(0, Into::into),
+			eip98_transition: p.eip98_transition.map_or_else(
+				BlockNumber::max_value,
+				Into::into,
+			),
 			eip155_transition: p.eip155_transition.map_or(0, Into::into),
 			validate_receipts_transition: p.validate_receipts_transition.map_or(0, Into::into),
-			eip86_transition: p.eip86_transition.map_or(
-				BlockNumber::max_value(),
+			validate_chain_id_transition: p.validate_chain_id_transition.map_or(0, Into::into),
+			eip140_transition: p.eip140_transition.map_or_else(
+				BlockNumber::max_value,
 				Into::into,
 			),
-			eip140_transition: p.eip140_transition.map_or(
-				BlockNumber::max_value(),
-				Into::into,
-			),
-			eip210_transition: p.eip210_transition.map_or(
-				BlockNumber::max_value(),
+			eip210_transition: p.eip210_transition.map_or_else(
+				BlockNumber::max_value,
 				Into::into,
 			),
 			eip210_contract_address: p.eip210_contract_address.map_or(0xf0.into(), Into::into),
@@ -200,30 +276,61 @@ impl From<ethjson::spec::Params> for CommonParams {
 				Into::into,
 			),
 			eip210_contract_gas: p.eip210_contract_gas.map_or(1000000.into(), Into::into),
-			eip211_transition: p.eip211_transition.map_or(
-				BlockNumber::max_value(),
+			eip211_transition: p.eip211_transition.map_or_else(
+				BlockNumber::max_value,
 				Into::into,
 			),
-			eip214_transition: p.eip214_transition.map_or(
-				BlockNumber::max_value(),
+			eip145_transition: p.eip145_transition.map_or_else(
+				BlockNumber::max_value,
 				Into::into,
 			),
-			eip658_transition: p.eip658_transition.map_or(
-				BlockNumber::max_value(),
+			eip214_transition: p.eip214_transition.map_or_else(
+				BlockNumber::max_value,
 				Into::into,
 			),
-			dust_protection_transition: p.dust_protection_transition.map_or(
-				BlockNumber::max_value(),
+			eip658_transition: p.eip658_transition.map_or_else(
+				BlockNumber::max_value,
+				Into::into,
+			),
+			eip1052_transition: p.eip1052_transition.map_or_else(
+				BlockNumber::max_value,
+				Into::into,
+			),
+			eip1283_transition: p.eip1283_transition.map_or_else(
+				BlockNumber::max_value,
+				Into::into,
+			),
+			eip1014_transition: p.eip1014_transition.map_or_else(
+				BlockNumber::max_value,
+				Into::into,
+			),
+			dust_protection_transition: p.dust_protection_transition.map_or_else(
+				BlockNumber::max_value,
 				Into::into,
 			),
 			nonce_cap_increment: p.nonce_cap_increment.map_or(64, Into::into),
 			remove_dust_contracts: p.remove_dust_contracts.unwrap_or(false),
-			wasm: p.wasm.unwrap_or(false),
 			gas_limit_bound_divisor: p.gas_limit_bound_divisor.into(),
 			registrar: p.registrar.map_or_else(Address::new, Into::into),
 			node_permission_contract: p.node_permission_contract.map(Into::into),
 			max_code_size: p.max_code_size.map_or(u64::max_value(), Into::into),
+			max_transaction_size: p.max_transaction_size.map_or(MAX_TRANSACTION_SIZE, Into::into),
+			max_code_size_transition: p.max_code_size_transition.map_or(0, Into::into),
 			transaction_permission_contract: p.transaction_permission_contract.map(Into::into),
+			transaction_permission_contract_transition:
+				p.transaction_permission_contract_transition.map_or(0, Into::into),
+			wasm_activation_transition: p.wasm_activation_transition.map_or_else(
+				BlockNumber::max_value,
+				Into::into
+			),
+			kip4_transition: p.kip4_transition.map_or_else(
+				BlockNumber::max_value,
+				Into::into
+			),
+			kip6_transition: p.kip6_transition.map_or_else(
+				BlockNumber::max_value,
+				Into::into
+			),
 		}
 	}
 }
@@ -265,7 +372,6 @@ impl<'a, T: AsRef<Path>> From<&'a T> for SpecParams<'a> {
 	}
 }
 
-
 /// Parameters for a block chain; includes both those intrinsic to the design of the
 /// chain and those to be interpreted by the active chain engine.
 pub struct Spec {
@@ -300,6 +406,9 @@ pub struct Spec {
 	/// Each seal field, expressed as RLP, concatenated.
 	pub seal_rlp: Bytes,
 
+	/// Hardcoded synchronization. Allows the light client to immediately jump to a specific block.
+	pub hardcoded_sync: Option<SpecHardcodedSync>,
+
 	/// Contract constructors to be executed on genesis.
 	constructors: Vec<(Address, Bytes)>,
 
@@ -328,9 +437,49 @@ impl Clone for Spec {
 			timestamp: self.timestamp.clone(),
 			extra_data: self.extra_data.clone(),
 			seal_rlp: self.seal_rlp.clone(),
+			hardcoded_sync: self.hardcoded_sync.clone(),
 			constructors: self.constructors.clone(),
 			state_root_memo: RwLock::new(*self.state_root_memo.read()),
 			genesis_state: self.genesis_state.clone(),
+		}
+	}
+}
+
+/// Part of `Spec`. Describes the hardcoded synchronization parameters.
+pub struct SpecHardcodedSync {
+	/// Header of the block to jump to for hardcoded sync, and total difficulty.
+	pub header: encoded::Header,
+	/// Total difficulty of the block to jump to.
+	pub total_difficulty: U256,
+	/// List of hardcoded CHTs, in order. If `hardcoded_sync` is set, the CHTs should include the
+	/// header of `hardcoded_sync`.
+	pub chts: Vec<H256>,
+}
+
+impl SpecHardcodedSync {
+	/// Turns this specifications back into JSON. Useful for pretty printing.
+	pub fn to_json(self) -> ethjson::spec::HardcodedSync {
+		self.into()
+	}
+}
+
+#[cfg(test)]
+impl Clone for SpecHardcodedSync {
+	fn clone(&self) -> SpecHardcodedSync {
+		SpecHardcodedSync {
+			header: self.header.clone(),
+			total_difficulty: self.total_difficulty.clone(),
+			chts: self.chts.clone(),
+		}
+	}
+}
+
+impl From<SpecHardcodedSync> for ethjson::spec::HardcodedSync {
+	fn from(sync: SpecHardcodedSync) -> ethjson::spec::HardcodedSync {
+		ethjson::spec::HardcodedSync {
+			header: sync.header.into_inner().to_hex(),
+			total_difficulty: ethjson::uint::Uint(sync.total_difficulty),
+			chts: sync.chts.into_iter().map(Into::into).collect(),
 		}
 	}
 }
@@ -353,6 +502,23 @@ fn load_from(spec_params: SpecParams, s: ethjson::spec::Spec) -> Result<Spec, Er
 	let GenericSeal(seal_rlp) = g.seal.into();
 	let params = CommonParams::from(s.params);
 
+	let hardcoded_sync = if let Some(ref hs) = s.hardcoded_sync {
+		if let Ok(header) = hs.header.from_hex() {
+			Some(SpecHardcodedSync {
+				header: encoded::Header::new(header),
+				total_difficulty: hs.total_difficulty.into(),
+				chts: s.hardcoded_sync
+					.as_ref()
+					.map(|s| s.chts.iter().map(|c| c.clone().into()).collect())
+					.unwrap_or(Vec::new()),
+			})
+		} else {
+			None
+		}
+	} else {
+		None
+	};
+
 	let mut s = Spec {
 		name: s.name.clone().into(),
 		engine: Spec::engine(spec_params, s.engine, params, builtins),
@@ -368,6 +534,7 @@ fn load_from(spec_params: SpecParams, s: ethjson::spec::Spec) -> Result<Spec, Er
 		timestamp: g.timestamp,
 		extra_data: g.extra_data,
 		seal_rlp: seal_rlp,
+		hardcoded_sync: hardcoded_sync,
 		constructors: s.accounts
 			.constructors()
 			.into_iter()
@@ -400,6 +567,7 @@ macro_rules! load_bundled {
 	};
 }
 
+#[cfg(any(test, feature = "test-helpers"))]
 macro_rules! load_machine_bundled {
 	($e:expr) => {
 		Spec::load_machine(
@@ -435,12 +603,11 @@ impl Spec {
 		match engine_spec {
 			ethjson::spec::Engine::Null(null) => Arc::new(NullEngine::new(null.params.into(), machine)),
 			ethjson::spec::Engine::Ethash(ethash) => Arc::new(::ethereum::Ethash::new(spec_params.cache_dir, ethash.params.into(), machine, spec_params.optimization_setting)),
-			ethjson::spec::Engine::InstantSeal => Arc::new(InstantSeal::new(machine)),
+			ethjson::spec::Engine::InstantSeal(Some(instant_seal)) => Arc::new(InstantSeal::new(instant_seal.params.into(), machine)),
+			ethjson::spec::Engine::InstantSeal(None) => Arc::new(InstantSeal::new(InstantSealParams::default(), machine)),
 			ethjson::spec::Engine::BasicAuthority(basic_authority) => Arc::new(BasicAuthority::new(basic_authority.params.into(), machine)),
 			ethjson::spec::Engine::AuthorityRound(authority_round) => AuthorityRound::new(authority_round.params.into(), machine)
 				.expect("Failed to start AuthorityRound consensus engine."),
-			ethjson::spec::Engine::Tendermint(tendermint) => Tendermint::new(tendermint.params.into(), machine)
-				.expect("Failed to start the Tendermint consensus engine."),
 		}
 	}
 
@@ -501,13 +668,16 @@ impl Spec {
 					code: Some(Arc::new(constructor.clone())),
 					data: None,
 					call_type: CallType::None,
+					params_type: ParamsType::Embedded,
 				};
 
 				let mut substate = Substate::new();
 
 				{
-					let mut exec = Executive::new(&mut state, &env_info, self.engine.machine());
-					if let Err(e) = exec.create(params, &mut substate, &mut None, &mut NoopTracer, &mut NoopVMTracer) {
+					let machine = self.engine.machine();
+					let schedule = machine.schedule(env_info.number);
+					let mut exec = Executive::new(&mut state, &env_info, &machine, &schedule);
+					if let Err(e) = exec.create(params, &mut substate, &mut NoopTracer, &mut NoopVMTracer) {
 						warn!(target: "spec", "Genesis constructor execution at {} failed: {}.", address, e);
 					}
 				}
@@ -573,7 +743,7 @@ impl Spec {
 		header.set_extra_data(self.extra_data.clone());
 		header.set_state_root(self.state_root());
 		header.set_receipts_root(self.receipts_root.clone());
-		header.set_log_bloom(H2048::new().clone());
+		header.set_log_bloom(Bloom::default());
 		header.set_gas_used(self.gas_used.clone());
 		header.set_gas_limit(self.gas_limit.clone());
 		header.set_difficulty(self.difficulty.clone());
@@ -622,6 +792,11 @@ impl Spec {
 		Ok(())
 	}
 
+	/// Return genesis state as Plain old data.
+	pub fn genesis_state(&self) -> &PodState {
+		&self.genesis_state
+	}
+
 	/// Returns `false` if the memoized state root is invalid. `true` otherwise.
 	pub fn is_state_root_valid(&self) -> bool {
 		// TODO: get rid of this function and ensure state root always is valid.
@@ -666,14 +841,15 @@ impl Spec {
 	/// initialize genesis epoch data, using in-memory database for
 	/// constructor.
 	pub fn genesis_epoch_data(&self) -> Result<Vec<u8>, String> {
-		use transaction::{Action, Transaction};
-		use util::{journaldb, kvdb};
+		use types::transaction::{Action, Transaction};
+		use journaldb;
+		use kvdb_memorydb;
 
 		let genesis = self.genesis_header();
 
 		let factories = Default::default();
 		let mut db = journaldb::new(
-			Arc::new(kvdb::in_memory(0)),
+			Arc::new(kvdb_memorydb::create(0)),
 			journaldb::Algorithm::Archive,
 			None,
 		);
@@ -688,7 +864,7 @@ impl Spec {
 				author: *genesis.author(),
 				timestamp: genesis.timestamp(),
 				difficulty: *genesis.difficulty(),
-				gas_limit: *genesis.gas_limit(),
+				gas_limit: U256::max_value(),
 				last_hashes: Arc::new(Vec::new()),
 				gas_used: 0.into(),
 			};
@@ -697,20 +873,19 @@ impl Spec {
 			let tx = Transaction {
 				nonce: self.engine.account_start_nonce(0),
 				action: Action::Call(a),
-				gas: U256::from(50_000_000), // TODO: share with client.
+				gas: U256::max_value(),
 				gas_price: U256::default(),
 				value: U256::default(),
 				data: d,
 			}.fake_sign(from);
 
-			let res = ::state::prove_transaction(
+			let res = ::state::prove_transaction_virtual(
 				db.as_hashdb_mut(),
 				*genesis.state_root(),
 				&tx,
 				self.engine.machine(),
 				&env_info,
 				factories.clone(),
-				true,
 			);
 
 			res.map(|(out, proof)| {
@@ -721,48 +896,62 @@ impl Spec {
 		self.engine.genesis_epoch_data(&genesis, &call)
 	}
 
-	/// Create a new Spec which conforms to the Frontier-era Morden chain except that it's a
-	/// NullEngine consensus.
-	pub fn new_test() -> Spec {
-		load_bundled!("null_morden")
-	}
-
-	/// Create the EthereumMachine corresponding to Spec::new_test.
-	pub fn new_test_machine() -> EthereumMachine { load_machine_bundled!("null_morden") }
-
-
-	/// Create a new Spec which conforms to the Frontier-era Morden chain except that it's a NullEngine consensus with applying reward on block close.
-	pub fn new_test_with_reward() -> Spec { load_bundled!("null_morden_with_reward") }
-
-	/// Create a new Spec which is a NullEngine consensus with a premine of address whose
-	/// secret is keccak('').
-	pub fn new_null() -> Spec {
-		load_bundled!("null")
-	}
-
-	/// Create a new Spec which constructs a contract at address 5 with storage at 0 equal to 1.
-	pub fn new_test_constructor() -> Spec {
-		load_bundled!("constructor")
-	}
-
 	/// Create a new Spec with InstantSeal consensus which does internal sealing (not requiring
 	/// work).
 	pub fn new_instant() -> Spec {
 		load_bundled!("instant_seal")
 	}
 
+	/// Create a new Spec which conforms to the Frontier-era Morden chain except that it's a
+	/// NullEngine consensus.
+	#[cfg(any(test, feature = "test-helpers"))]
+	pub fn new_test() -> Spec {
+		load_bundled!("null_morden")
+	}
+
+	/// Create the EthereumMachine corresponding to Spec::new_test.
+	#[cfg(any(test, feature = "test-helpers"))]
+	pub fn new_test_machine() -> EthereumMachine { load_machine_bundled!("null_morden") }
+
+	/// Create a new Spec which conforms to the Frontier-era Morden chain except that it's a NullEngine consensus with applying reward on block close.
+	#[cfg(any(test, feature = "test-helpers"))]
+	pub fn new_test_with_reward() -> Spec { load_bundled!("null_morden_with_reward") }
+
+	/// Create a new Spec which is a NullEngine consensus with a premine of address whose
+	/// secret is keccak('').
+	#[cfg(any(test, feature = "test-helpers"))]
+	pub fn new_null() -> Spec {
+		load_bundled!("null")
+	}
+
+	/// Create a new Spec which constructs a contract at address 5 with storage at 0 equal to 1.
+	#[cfg(any(test, feature = "test-helpers"))]
+	pub fn new_test_constructor() -> Spec {
+		load_bundled!("constructor")
+	}
+
 	/// Create a new Spec with AuthorityRound consensus which does internal sealing (not
 	/// requiring work).
 	/// Accounts with secrets keccak("0") and keccak("1") are the validators.
+	#[cfg(any(test, feature = "test-helpers"))]
 	pub fn new_test_round() -> Self {
 		load_bundled!("authority_round")
 	}
 
-	/// Create a new Spec with Tendermint consensus which does internal sealing (not requiring
-	/// work).
-	/// Account keccak("0") and keccak("1") are a authorities.
-	pub fn new_test_tendermint() -> Self {
-		load_bundled!("tendermint")
+	/// Create a new Spec with AuthorityRound consensus which does internal sealing (not
+	/// requiring work) with empty step messages enabled.
+	/// Accounts with secrets keccak("0") and keccak("1") are the validators.
+	#[cfg(any(test, feature = "test-helpers"))]
+	pub fn new_test_round_empty_steps() -> Self {
+		load_bundled!("authority_round_empty_steps")
+	}
+
+	/// Create a new Spec with AuthorityRound consensus (with empty steps) using a block reward
+	/// contract. The contract source code can be found at:
+	/// https://github.com/parity-contracts/block-reward/blob/daf7d44383b6cdb11cb6b953b018648e2b027cfb/contracts/ExampleBlockReward.sol
+	#[cfg(any(test, feature = "test-helpers"))]
+	pub fn new_test_round_block_reward_contract() -> Self {
+		load_bundled!("authority_round_block_reward_contract")
 	}
 
 	/// TestList.sol used in both specs: https://github.com/paritytech/contracts/pull/30/files
@@ -773,6 +962,7 @@ impl Spec {
 	/// "0xbfc708a000000000000000000000000082a978b3f5962a5b0957d9ee9eef472ee55b42f1" and added
 	/// back in using
 	/// "0x4d238c8e00000000000000000000000082a978b3f5962a5b0957d9ee9eef472ee55b42f1".
+	#[cfg(any(test, feature = "test-helpers"))]
 	pub fn new_validator_safe_contract() -> Self {
 		load_bundled!("validator_safe_contract")
 	}
@@ -780,6 +970,7 @@ impl Spec {
 	/// The same as the `safeContract`, but allows reporting and uses AuthorityRound.
 	/// Account is marked with `reportBenign` it can be checked as disliked with "0xd8f2e0bf".
 	/// Validator can be removed with `reportMalicious`.
+	#[cfg(any(test, feature = "test-helpers"))]
 	pub fn new_validator_contract() -> Self {
 		load_bundled!("validator_contract")
 	}
@@ -788,13 +979,9 @@ impl Spec {
 	/// height.
 	/// Account with secrets keccak("0") is the validator for block 1 and with keccak("1")
 	/// onwards.
+	#[cfg(any(test, feature = "test-helpers"))]
 	pub fn new_validator_multi() -> Self {
 		load_bundled!("validator_multi")
-	}
-
-	/// Create a new spec for a PoW chain
-	pub fn new_pow_test_spec() -> Self {
-		load_bundled!("ethereum/olympic")
 	}
 }
 
@@ -802,14 +989,16 @@ impl Spec {
 mod tests {
 	use super::*;
 	use state::State;
-	use std::str::FromStr;
-	use tests::helpers::get_temp_state_db;
-	use views::*;
+	use test_helpers::get_temp_state_db;
+	use tempdir::TempDir;
+	use types::view;
+	use types::views::BlockView;
 
-	// https://github.com/paritytech/parity/issues/1840
+	// https://github.com/paritytech/parity-ethereum/issues/1840
 	#[test]
 	fn test_load_empty() {
-		assert!(Spec::load(&::std::env::temp_dir(), &[] as &[u8]).is_err());
+		let tempdir = TempDir::new("").unwrap();
+		assert!(Spec::load(&tempdir.path(), &[] as &[u8]).is_err());
 	}
 
 	#[test]
@@ -818,22 +1007,18 @@ mod tests {
 
 		assert_eq!(
 			test_spec.state_root(),
-			H256::from_str(
-				"f3f4696bbf3b3b07775128eb7a3763279a394e382130f27c21e70233e04946a9",
-			).unwrap()
+			"f3f4696bbf3b3b07775128eb7a3763279a394e382130f27c21e70233e04946a9".into()
 		);
 		let genesis = test_spec.genesis_block();
 		assert_eq!(
-			BlockView::new(&genesis).header_view().hash(),
-			H256::from_str(
-				"0cd786a2425d16f152c658316c423e6ce1181e15c3295826d7c9904cba9ce303",
-			).unwrap()
+			view!(BlockView, &genesis).header_view().hash(),
+			"0cd786a2425d16f152c658316c423e6ce1181e15c3295826d7c9904cba9ce303".into()
 		);
 	}
 
 	#[test]
 	fn genesis_constructor() {
-		::ethcore_logger::init_log();
+		let _ = ::env_logger::try_init();
 		let spec = Spec::new_test_constructor();
 		let db = spec.ensure_db_good(get_temp_state_db(), &Default::default())
 			.unwrap();
@@ -843,10 +1028,8 @@ mod tests {
 			spec.engine.account_start_nonce(0),
 			Default::default(),
 		).unwrap();
-		let expected = H256::from_str(
-			"0000000000000000000000000000000000000000000000000000000000000001",
-		).unwrap();
-		let address = Address::from_str("0000000000000000000000000000000000000005").unwrap();
+		let expected = "0000000000000000000000000000000000000000000000000000000000000001".into();
+		let address = "0000000000000000000000000000000000001337".into();
 
 		assert_eq!(state.storage_at(&address, &H256::zero()).unwrap(), expected);
 		assert_eq!(state.balance(&address).unwrap(), 1.into());

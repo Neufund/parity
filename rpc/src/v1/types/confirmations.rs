@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Types used in Confirmations queue (Trusted Signer)
 
@@ -23,6 +23,7 @@ use bytes::ToPretty;
 
 use v1::types::{U256, TransactionRequest, RichRawTransaction, H160, H256, H520, Bytes, TransactionCondition, Origin};
 use v1::helpers;
+use ethkey::Password;
 
 /// Confirmation waiting in a queue
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -47,43 +48,74 @@ impl From<helpers::ConfirmationRequest> for ConfirmationRequest {
 }
 
 impl fmt::Display for ConfirmationRequest {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "#{}: {} coming from {}", self.id, self.payload, self.origin)
 	}
 }
 
 impl fmt::Display for ConfirmationPayload {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
 			ConfirmationPayload::SendTransaction(ref transaction) => write!(f, "{}", transaction),
 			ConfirmationPayload::SignTransaction(ref transaction) => write!(f, "(Sign only) {}", transaction),
 			ConfirmationPayload::EthSignMessage(ref sign) => write!(f, "{}", sign),
+			ConfirmationPayload::EIP191SignMessage(ref sign) => write!(f, "{}", sign),
 			ConfirmationPayload::Decrypt(ref decrypt) => write!(f, "{}", decrypt),
 		}
 	}
 }
 
-/// Sign request
+/// Ethereum-prefixed Sign request
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SignRequest {
+pub struct EthSignRequest {
 	/// Address
 	pub address: H160,
 	/// Hash to sign
 	pub data: Bytes,
 }
 
-impl From<(H160, Bytes)> for SignRequest {
-	fn from(tuple: (H160, Bytes)) -> Self {
-		SignRequest {
+/// EIP191 Sign request
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EIP191SignRequest {
+	/// Address
+	pub address: H160,
+	/// Hash to sign
+	pub data: H256,
+}
+
+impl From<(H160, H256)> for EIP191SignRequest {
+	fn from(tuple: (H160, H256)) -> Self {
+		EIP191SignRequest {
 			address: tuple.0,
 			data: tuple.1,
 		}
 	}
 }
 
-impl fmt::Display for SignRequest {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl fmt::Display for EIP191SignRequest {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(
+			f,
+			"sign 0x{} with {}",
+			self.data.0.pretty(),
+			Colour::White.bold().paint(format!("0x{:?}", self.address)),
+		)
+	}
+}
+
+impl From<(H160, Bytes)> for EthSignRequest {
+	fn from(tuple: (H160, Bytes)) -> Self {
+		EthSignRequest {
+			address: tuple.0,
+			data: tuple.1,
+		}
+	}
+}
+
+impl fmt::Display for EthSignRequest {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(
 			f,
 			"sign 0x{} with {}",
@@ -113,7 +145,7 @@ impl From<(H160, Bytes)> for DecryptRequest {
 }
 
 impl fmt::Display for DecryptRequest {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(
 			f,
 			"decrypt data with {}",
@@ -149,29 +181,29 @@ impl Serialize for ConfirmationResponse {
 }
 
 /// Confirmation response with additional token for further requests
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 pub struct ConfirmationResponseWithToken {
 	/// Actual response
 	pub result: ConfirmationResponse,
 	/// New token
-	pub token: String,
+	pub token: Password,
 }
 
 /// Confirmation payload, i.e. the thing to be confirmed
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub enum ConfirmationPayload {
 	/// Send Transaction
-	#[serde(rename="sendTransaction")]
 	SendTransaction(TransactionRequest),
 	/// Sign Transaction
-	#[serde(rename="signTransaction")]
 	SignTransaction(TransactionRequest),
 	/// Signature
-	#[serde(rename="sign")]
-	EthSignMessage(SignRequest),
+	#[serde(rename = "sign")]
+	EthSignMessage(EthSignRequest),
+	/// signature without prefix
+	EIP191SignMessage(EIP191SignRequest),
 	/// Decryption
-	#[serde(rename="decrypt")]
 	Decrypt(DecryptRequest),
 }
 
@@ -180,7 +212,11 @@ impl From<helpers::ConfirmationPayload> for ConfirmationPayload {
 		match c {
 			helpers::ConfirmationPayload::SendTransaction(t) => ConfirmationPayload::SendTransaction(t.into()),
 			helpers::ConfirmationPayload::SignTransaction(t) => ConfirmationPayload::SignTransaction(t.into()),
-			helpers::ConfirmationPayload::EthSignMessage(address, data) => ConfirmationPayload::EthSignMessage(SignRequest {
+			helpers::ConfirmationPayload::EthSignMessage(address, data) => ConfirmationPayload::EthSignMessage(EthSignRequest {
+				address: address.into(),
+				data: data.into(),
+			}),
+			helpers::ConfirmationPayload::SignMessage(address, data) => ConfirmationPayload::EIP191SignMessage(EIP191SignRequest {
 				address: address.into(),
 				data: data.into(),
 			}),
@@ -195,11 +231,11 @@ impl From<helpers::ConfirmationPayload> for ConfirmationPayload {
 /// Possible modifications to the confirmed transaction sent by `Trusted Signer`
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct TransactionModification {
 	/// Modified transaction sender
 	pub sender: Option<H160>,
 	/// Modified gas price
-	#[serde(rename="gasPrice")]
 	pub gas_price: Option<U256>,
 	/// Modified gas
 	pub gas: Option<U256>,
@@ -284,14 +320,13 @@ mod tests {
 				condition: None,
 			}),
 			origin: Origin::Signer {
-				dapp: "http://parity.io".into(),
 				session: 5.into(),
 			}
 		};
 
 		// when
 		let res = serde_json::to_string(&ConfirmationRequest::from(request));
-		let expected = r#"{"id":"0xf","payload":{"sendTransaction":{"from":"0x0000000000000000000000000000000000000000","to":null,"gasPrice":"0x2710","gas":"0x3a98","value":"0x186a0","data":"0x010203","nonce":"0x1","condition":null}},"origin":{"signer":{"dapp":"http://parity.io","session":"0x0000000000000000000000000000000000000000000000000000000000000005"}}}"#;
+		let expected = r#"{"id":"0xf","payload":{"sendTransaction":{"from":"0x0000000000000000000000000000000000000000","to":null,"gasPrice":"0x2710","gas":"0x3a98","value":"0x186a0","data":"0x010203","nonce":"0x1","condition":null}},"origin":{"signer":{"session":"0x0000000000000000000000000000000000000000000000000000000000000005"}}}"#;
 
 		// then
 		assert_eq!(res.unwrap(), expected.to_owned());
@@ -313,12 +348,12 @@ mod tests {
 				nonce: Some(1.into()),
 				condition: None,
 			}),
-			origin: Origin::Dapps("http://parity.io".into()),
+			origin: Origin::Unknown,
 		};
 
 		// when
 		let res = serde_json::to_string(&ConfirmationRequest::from(request));
-		let expected = r#"{"id":"0xf","payload":{"signTransaction":{"from":"0x0000000000000000000000000000000000000000","to":null,"gasPrice":"0x2710","gas":"0x3a98","value":"0x186a0","data":"0x010203","nonce":"0x1","condition":null}},"origin":{"dapp":"http://parity.io"}}"#;
+		let expected = r#"{"id":"0xf","payload":{"signTransaction":{"from":"0x0000000000000000000000000000000000000000","to":null,"gasPrice":"0x2710","gas":"0x3a98","value":"0x186a0","data":"0x010203","nonce":"0x1","condition":null}},"origin":"unknown"}"#;
 
 		// then
 		assert_eq!(res.unwrap(), expected.to_owned());

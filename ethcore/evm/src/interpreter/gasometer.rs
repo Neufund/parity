@@ -1,22 +1,21 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::cmp;
-use bigint::prelude::U256;
-use bigint::hash::H256;
+use ethereum_types::{U256, H256};
 use super::u256_to_address;
 
 use {evm, vm};
@@ -32,7 +31,6 @@ macro_rules! overflowing {
 	}}
 }
 
-#[cfg_attr(feature="dev", allow(enum_variant_names))]
 enum Request<Cost: ::evm::CostType> {
 	Gas(Cost),
 	GasMem(Cost, Cost),
@@ -101,7 +99,6 @@ impl<Gas: evm::CostType> Gasometer<Gas> {
 		}
 	}
 
-	#[cfg_attr(feature="dev", allow(cyclomatic_complexity))]
 	/// Determine how much gas is used by the given instruction, given the machine's state.
 	///
 	/// We guarantee that the final element of the returned tuple (`provided`) will be `Some`
@@ -116,7 +113,7 @@ impl<Gas: evm::CostType> Gasometer<Gas> {
 		current_mem_size: usize,
 	) -> vm::Result<InstructionRequirements<Gas>> {
 		let schedule = ext.schedule();
-		let tier = instructions::get_tier_idx(info.tier);
+		let tier = info.tier.idx();
 		let default_gas = Gas::from(schedule.tier_step_gas[tier]);
 
 		let cost = match instruction {
@@ -128,12 +125,17 @@ impl<Gas: evm::CostType> Gasometer<Gas> {
 				let newval = stack.peek(1);
 				let val = U256::from(&*ext.storage_at(&address)?);
 
-				let gas = if val.is_zero() && !newval.is_zero() {
-					schedule.sstore_set_gas
+				let gas = if schedule.eip1283 {
+					let orig = U256::from(&*ext.initial_storage_at(&address)?);
+					calculate_eip1283_sstore_gas(schedule, &orig, &val, &newval)
 				} else {
-					// Refund for below case is added when actually executing sstore
-					// !is_zero(&val) && is_zero(newval)
-					schedule.sstore_reset_gas
+					if val.is_zero() && !newval.is_zero() {
+						schedule.sstore_set_gas
+					} else {
+						// Refund for below case is added when actually executing sstore
+						// !is_zero(&val) && is_zero(newval)
+						schedule.sstore_reset_gas
+					}
 				};
 				Request::Gas(Gas::from(gas))
 			},
@@ -145,6 +147,9 @@ impl<Gas: evm::CostType> Gasometer<Gas> {
 			},
 			instructions::EXTCODESIZE => {
 				Request::Gas(Gas::from(schedule.extcodesize_gas))
+			},
+			instructions::EXTCODEHASH => {
+				Request::Gas(Gas::from(schedule.extcodehash_gas))
 			},
 			instructions::SUICIDE => {
 				let mut gas = Gas::from(schedule.suicide_gas);
@@ -171,9 +176,8 @@ impl<Gas: evm::CostType> Gasometer<Gas> {
 				Request::GasMem(default_gas, mem_needed(stack.peek(0), stack.peek(1))?)
 			},
 			instructions::SHA3 => {
-				let w = overflowing!(add_gas_usize(Gas::from_u256(*stack.peek(1))?, 31));
-				let words = w >> 5;
-				let gas = Gas::from(schedule.sha3_gas) + (Gas::from(schedule.sha3_word_gas) * words);
+				let words = overflowing!(to_word_size(Gas::from_u256(*stack.peek(1))?));
+				let gas = overflowing!(Gas::from(schedule.sha3_gas).overflow_add(overflowing!(Gas::from(schedule.sha3_word_gas).overflow_mul(words))));
 				Request::GasMem(gas, mem_needed(stack.peek(0), stack.peek(1))?)
 			},
 			instructions::CALLDATACOPY | instructions::CODECOPY | instructions::RETURNDATACOPY => {
@@ -182,8 +186,8 @@ impl<Gas: evm::CostType> Gasometer<Gas> {
 			instructions::EXTCODECOPY => {
 				Request::GasMemCopy(schedule.extcodecopy_base_gas.into(), mem_needed(stack.peek(1), stack.peek(3))?, Gas::from_u256(*stack.peek(3))?)
 			},
-			instructions::LOG0...instructions::LOG4 => {
-				let no_of_topics = instructions::get_log_topics(instruction);
+			instructions::LOG0 | instructions::LOG1 | instructions::LOG2 | instructions::LOG3 | instructions::LOG4 => {
+				let no_of_topics = instruction.log_topics().expect("log_topics always return some for LOG* instructions; qed");
 				let log_gas = schedule.log_gas + schedule.log_topic_gas * no_of_topics;
 
 				let data_gas = overflowing!(Gas::from_u256(*stack.peek(1))?.overflow_mul(Gas::from(schedule.log_data_gas)));
@@ -226,9 +230,24 @@ impl<Gas: evm::CostType> Gasometer<Gas> {
 
 				Request::GasMemProvide(gas, mem, Some(requested))
 			},
-			instructions::CREATE | instructions::CREATE2 => {
+			instructions::CREATE => {
+				let start = stack.peek(1);
+				let len = stack.peek(2);
+
 				let gas = Gas::from(schedule.create_gas);
-				let mem = mem_needed(stack.peek(1), stack.peek(2))?;
+				let mem = mem_needed(start, len)?;
+
+				Request::GasMemProvide(gas, mem, None)
+			},
+			instructions::CREATE2 => {
+				let start = stack.peek(1);
+				let len = stack.peek(2);
+
+				let base = Gas::from(schedule.create_gas);
+				let word = overflowing!(to_word_size(Gas::from_u256(*len)?));
+				let word_gas = overflowing!(Gas::from(schedule.sha3_word_gas).overflow_mul(word));
+				let gas = overflowing!(base.overflow_add(word_gas));
+				let mem = mem_needed(start, len)?;
 
 				Request::GasMemProvide(gas, mem, None)
 			},
@@ -278,8 +297,8 @@ impl<Gas: evm::CostType> Gasometer<Gas> {
 			},
 			Request::GasMemCopy(gas, mem_size, copy) => {
 				let (mem_gas_cost, new_mem_gas, new_mem_size) = self.mem_gas_cost(schedule, current_mem_size, &mem_size)?;
-				let copy = overflowing!(add_gas_usize(copy, 31)) >> 5;
-				let copy_gas = Gas::from(schedule.copy_gas) * copy;
+				let copy = overflowing!(to_word_size(copy));
+				let copy_gas = overflowing!(Gas::from(schedule.copy_gas).overflow_mul(copy));
 				let gas = overflowing!(gas.overflow_add(copy_gas));
 				let gas = overflowing!(gas.overflow_add(mem_gas_cost));
 
@@ -306,7 +325,7 @@ impl<Gas: evm::CostType> Gasometer<Gas> {
 		};
 
 		let current_mem_size = Gas::from(current_mem_size);
-		let req_mem_size_rounded = (overflowing!(mem_size.overflow_add(Gas::from(31 as usize))) >> 5) << 5;
+		let req_mem_size_rounded = overflowing!(to_word_size(*mem_size)) << 5;
 
 		let (mem_gas_cost, new_mem_gas) = if req_mem_size_rounded > current_mem_size {
 			let new_mem_gas = gas_for_mem(req_mem_size_rounded)?;
@@ -318,7 +337,6 @@ impl<Gas: evm::CostType> Gasometer<Gas> {
 		Ok((mem_gas_cost, new_mem_gas, req_mem_size_rounded.as_usize()))
 	}
 }
-
 
 #[inline]
 fn mem_needed_const<Gas: evm::CostType>(mem: &U256, add: usize) -> vm::Result<Gas> {
@@ -337,6 +355,99 @@ fn mem_needed<Gas: evm::CostType>(offset: &U256, size: &U256) -> vm::Result<Gas>
 #[inline]
 fn add_gas_usize<Gas: evm::CostType>(value: Gas, num: usize) -> (Gas, bool) {
 	value.overflow_add(Gas::from(num))
+}
+
+#[inline]
+fn to_word_size<Gas: evm::CostType>(value: Gas) -> (Gas, bool) {
+	let (gas, overflow) = add_gas_usize(value, 31);
+	if overflow {
+		return (gas, overflow);
+	}
+
+	(gas >> 5, false)
+}
+
+#[inline]
+fn calculate_eip1283_sstore_gas<Gas: evm::CostType>(schedule: &Schedule, original: &U256, current: &U256, new: &U256) -> Gas {
+	Gas::from(
+		if current == new {
+			// 1. If current value equals new value (this is a no-op), 200 gas is deducted.
+			schedule.sload_gas
+		} else {
+			// 2. If current value does not equal new value
+			if original == current {
+				// 2.1. If original value equals current value (this storage slot has not been changed by the current execution context)
+				if original.is_zero() {
+					// 2.1.1. If original value is 0, 20000 gas is deducted.
+					schedule.sstore_set_gas
+				} else {
+					// 2.1.2. Otherwise, 5000 gas is deducted.
+					schedule.sstore_reset_gas
+
+					// 2.1.2.1. If new value is 0, add 15000 gas to refund counter.
+				}
+			} else {
+				// 2.2. If original value does not equal current value (this storage slot is dirty), 200 gas is deducted. Apply both of the following clauses.
+				schedule.sload_gas
+
+				// 2.2.1. If original value is not 0
+				// 2.2.1.1. If current value is 0 (also means that new value is not 0), remove 15000 gas from refund counter. We can prove that refund counter will never go below 0.
+				// 2.2.1.2. If new value is 0 (also means that current value is not 0), add 15000 gas to refund counter.
+
+				// 2.2.2. If original value equals new value (this storage slot is reset)
+				// 2.2.2.1. If original value is 0, add 19800 gas to refund counter.
+				// 2.2.2.2. Otherwise, add 4800 gas to refund counter.
+			}
+		}
+	)
+}
+
+pub fn handle_eip1283_sstore_clears_refund(ext: &mut vm::Ext, original: &U256, current: &U256, new: &U256) {
+	let sstore_clears_schedule = ext.schedule().sstore_refund_gas;
+
+	if current == new {
+		// 1. If current value equals new value (this is a no-op), 200 gas is deducted.
+	} else {
+		// 2. If current value does not equal new value
+		if original == current {
+			// 2.1. If original value equals current value (this storage slot has not been changed by the current execution context)
+			if original.is_zero() {
+				// 2.1.1. If original value is 0, 20000 gas is deducted.
+			} else {
+				// 2.1.2. Otherwise, 5000 gas is deducted.
+				if new.is_zero() {
+					// 2.1.2.1. If new value is 0, add 15000 gas to refund counter.
+					ext.add_sstore_refund(sstore_clears_schedule);
+				}
+			}
+		} else {
+			// 2.2. If original value does not equal current value (this storage slot is dirty), 200 gas is deducted. Apply both of the following clauses.
+
+			if !original.is_zero() {
+				// 2.2.1. If original value is not 0
+				if current.is_zero() {
+					// 2.2.1.1. If current value is 0 (also means that new value is not 0), remove 15000 gas from refund counter. We can prove that refund counter will never go below 0.
+					ext.sub_sstore_refund(sstore_clears_schedule);
+				} else if new.is_zero() {
+					// 2.2.1.2. If new value is 0 (also means that current value is not 0), add 15000 gas to refund counter.
+					ext.add_sstore_refund(sstore_clears_schedule);
+				}
+			}
+
+			if original == new {
+				// 2.2.2. If original value equals new value (this storage slot is reset)
+				if original.is_zero() {
+					// 2.2.2.1. If original value is 0, add 19800 gas to refund counter.
+					let refund = ext.schedule().sstore_set_gas - ext.schedule().sload_gas;
+					ext.add_sstore_refund(refund);
+				} else {
+					// 2.2.2.2. Otherwise, add 4800 gas to refund counter.
+					let refund = ext.schedule().sstore_reset_gas - ext.schedule().sload_gas;
+					ext.add_sstore_refund(refund);
+				}
+			}
+		}
+	}
 }
 
 #[test]
@@ -372,4 +483,3 @@ fn test_calculate_mem_cost() {
 	assert_eq!(new_mem_gas, 3);
 	assert_eq!(mem_size, 32);
 }
-

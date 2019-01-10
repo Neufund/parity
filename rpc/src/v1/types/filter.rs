@@ -1,25 +1,28 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use jsonrpc_core::{Error as RpcError};
 use serde::de::{Error, DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, from_value};
-use ethcore::filter::Filter as EthFilter;
-use ethcore::client::BlockId;
+use types::filter::Filter as EthFilter;
+use types::ids::BlockId;
+
 use v1::types::{BlockNumber, H160, H256, Log};
+use v1::helpers::errors::invalid_params;
 
 /// Variadic value
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
@@ -55,13 +58,14 @@ pub type Topic = VariadicValue<H256>;
 /// Filter
 #[derive(Debug, PartialEq, Clone, Deserialize, Eq, Hash)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct Filter {
 	/// From Block
-	#[serde(rename="fromBlock")]
 	pub from_block: Option<BlockNumber>,
 	/// To Block
-	#[serde(rename="toBlock")]
 	pub to_block: Option<BlockNumber>,
+	/// Block hash
+	pub block_hash: Option<H256>,
 	/// Address
 	pub address: Option<FilterAddress>,
 	/// Topics
@@ -70,11 +74,30 @@ pub struct Filter {
 	pub limit: Option<usize>,
 }
 
-impl Into<EthFilter> for Filter {
-	fn into(self) -> EthFilter {
-		EthFilter {
-			from_block: self.from_block.map_or_else(|| BlockId::Latest, Into::into),
-			to_block: self.to_block.map_or_else(|| BlockId::Latest, Into::into),
+impl Filter {
+	pub fn try_into(self) -> Result<EthFilter, RpcError> {
+		if self.block_hash.is_some() && (self.from_block.is_some() || self.to_block.is_some()) {
+			return Err(invalid_params("blockHash", "blockHash is mutually exclusive with fromBlock/toBlock"));
+		}
+
+		let num_to_id = |num| match num {
+			BlockNumber::Num(n) => BlockId::Number(n),
+			BlockNumber::Earliest => BlockId::Earliest,
+			BlockNumber::Latest | BlockNumber::Pending => BlockId::Latest,
+		};
+
+		let (from_block, to_block) = match self.block_hash {
+			Some(hash) => {
+				let hash = hash.into();
+				(BlockId::Hash(hash), BlockId::Hash(hash))
+			},
+			None =>
+				(self.from_block.map_or_else(|| BlockId::Latest, &num_to_id),
+				 self.to_block.map_or_else(|| BlockId::Latest, &num_to_id)),
+		};
+
+		Ok(EthFilter {
+			from_block, to_block,
 			address: self.address.and_then(|address| match address {
 				VariadicValue::Null => None,
 				VariadicValue::Single(a) => Some(vec![a.into()]),
@@ -95,7 +118,7 @@ impl Into<EthFilter> for Filter {
 				]
 			},
 			limit: self.limit,
-		}
+		})
 	}
 }
 
@@ -124,11 +147,11 @@ impl Serialize for FilterChanges {
 mod tests {
 	use serde_json;
 	use std::str::FromStr;
-	use bigint::hash::H256;
+	use ethereum_types::H256;
 	use super::{VariadicValue, Topic, Filter};
 	use v1::types::BlockNumber;
-	use ethcore::filter::Filter as EthFilter;
-	use ethcore::client::BlockId;
+	use types::filter::Filter as EthFilter;
+	use types::ids::BlockId;
 
 	#[test]
 	fn topic_deserialization() {
@@ -151,6 +174,7 @@ mod tests {
 		assert_eq!(deserialized, Filter {
 			from_block: Some(BlockNumber::Earliest),
 			to_block: Some(BlockNumber::Latest),
+			block_hash: None,
 			address: None,
 			topics: None,
 			limit: None,
@@ -162,6 +186,7 @@ mod tests {
 		let filter = Filter {
 			from_block: Some(BlockNumber::Earliest),
 			to_block: Some(BlockNumber::Latest),
+			block_hash: None,
 			address: Some(VariadicValue::Multiple(vec![])),
 			topics: Some(vec![
 				VariadicValue::Null,
@@ -171,7 +196,7 @@ mod tests {
 			limit: None,
 		};
 
-		let eth_filter: EthFilter = filter.into();
+		let eth_filter: EthFilter = filter.try_into().unwrap();
 		assert_eq!(eth_filter, EthFilter {
 			from_block: BlockId::Earliest,
 			to_block: BlockId::Latest,

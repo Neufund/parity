@@ -1,23 +1,21 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Evm input params.
-use bigint::prelude::U256;
-use bigint::hash::{H256};
-use util::Address;
+use ethereum_types::{U256, H256, Address};
 use bytes::Bytes;
 use hash::{keccak, KECCAK_EMPTY};
 use ethjson;
@@ -33,6 +31,15 @@ pub enum ActionValue {
 	Transfer(U256),
 	/// Apparent value for transaction (not transfered)
 	Apparent(U256)
+}
+
+/// Type of the way parameters encoded
+#[derive(Clone, Debug)]
+pub enum ParamsType {
+	/// Parameters are included in code
+	Embedded,
+	/// Parameters are passed in data section
+	Separate,
 }
 
 impl ActionValue {
@@ -81,7 +88,8 @@ pub struct ActionParams {
 	pub data: Option<Bytes>,
 	/// Type of call
 	pub call_type: CallType,
-
+	/// Param types encoding
+	pub params_type: ParamsType,
 }
 
 impl Default for ActionParams {
@@ -99,6 +107,7 @@ impl Default for ActionParams {
 			code: None,
 			data: None,
 			call_type: CallType::None,
+			params_type: ParamsType::Separate,
 		}
 	}
 }
@@ -118,6 +127,7 @@ impl From<ethjson::vm::Transaction> for ActionParams {
 			gas_price: t.gas_price.into(),
 			value: ActionValue::Transfer(t.value.into()),
 			call_type: match address.is_zero() { true => CallType::None, false => CallType::Call },	// TODO @debris is this correct?
+			params_type: ParamsType::Separate,
 		}
 	}
 }

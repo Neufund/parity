@@ -1,36 +1,31 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Tracing datatypes.
 
-use bigint::prelude::U256;
-use util::Address;
+use ethereum_types::{U256, Address, Bloom, BloomInput};
 use bytes::Bytes;
-use hash::keccak;
-use bloomable::Bloomable;
-use rlp::*;
+use rlp::{Rlp, RlpStream, Encodable, DecoderError, Decodable};
 
 use vm::ActionParams;
-use basic_types::LogBloom;
 use evm::CallType;
 use super::error::Error;
 
 /// `Call` result.
 #[derive(Debug, Clone, PartialEq, Default, RlpEncodable, RlpDecodable)]
-#[cfg_attr(feature = "ipc", binary)]
 pub struct CallResult {
 	/// Gas used by call.
 	pub gas_used: U256,
@@ -40,7 +35,6 @@ pub struct CallResult {
 
 /// `Create` result.
 #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
-#[cfg_attr(feature = "ipc", binary)]
 pub struct CreateResult {
 	/// Gas used by create.
 	pub gas_used: U256,
@@ -52,14 +46,13 @@ pub struct CreateResult {
 
 impl CreateResult {
 	/// Returns bloom.
-	pub fn bloom(&self) -> LogBloom {
-		LogBloom::from_bloomed(&keccak(&self.address))
+	pub fn bloom(&self) -> Bloom {
+		BloomInput::Raw(&self.address).into()
 	}
 }
 
 /// Description of a _call_ action, either a `CALL` operation or a message transction.
 #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
-#[cfg_attr(feature = "ipc", binary)]
 pub struct Call {
 	/// The sending account.
 	pub from: Address,
@@ -77,13 +70,23 @@ pub struct Call {
 
 impl From<ActionParams> for Call {
 	fn from(p: ActionParams) -> Self {
-		Call {
-			from: p.sender,
-			to: p.address,
-			value: p.value.value(),
-			gas: p.gas,
-			input: p.data.unwrap_or_else(Vec::new),
-			call_type: p.call_type,
+		match p.call_type {
+			CallType::DelegateCall | CallType::CallCode => Call {
+				from: p.address,
+				to: p.code_address,
+				value: p.value.value(),
+				gas: p.gas,
+				input: p.data.unwrap_or_else(Vec::new),
+				call_type: p.call_type,
+			},
+			_ => Call {
+				from: p.sender,
+				to: p.address,
+				value: p.value.value(),
+				gas: p.gas,
+				input: p.data.unwrap_or_else(Vec::new),
+				call_type: p.call_type,
+			},
 		}
 	}
 }
@@ -91,15 +94,16 @@ impl From<ActionParams> for Call {
 impl Call {
 	/// Returns call action bloom.
 	/// The bloom contains from and to addresses.
-	pub fn bloom(&self) -> LogBloom {
-		LogBloom::from_bloomed(&keccak(&self.from))
-			.with_bloomed(&keccak(&self.to))
+	pub fn bloom(&self) -> Bloom {
+		let mut bloom = Bloom::default();
+		bloom.accrue(BloomInput::Raw(&self.from));
+		bloom.accrue(BloomInput::Raw(&self.to));
+		bloom
 	}
 }
 
 /// Description of a _create_ action, either a `CREATE` operation or a create transction.
 #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
-#[cfg_attr(feature = "ipc", binary)]
 pub struct Create {
 	/// The address of the creator.
 	pub from: Address,
@@ -125,19 +129,22 @@ impl From<ActionParams> for Create {
 impl Create {
 	/// Returns bloom create action bloom.
 	/// The bloom contains only from address.
-	pub fn bloom(&self) -> LogBloom {
-		LogBloom::from_bloomed(&keccak(&self.from))
+	pub fn bloom(&self) -> Bloom {
+		BloomInput::Raw(&self.from).into()
 	}
 }
 
 /// Reward type.
 #[derive(Debug, PartialEq, Clone)]
-#[cfg_attr(feature = "ipc", binary)]
 pub enum RewardType {
 	/// Block
 	Block,
 	/// Uncle
 	Uncle,
+	/// Empty step (AuthorityRound)
+	EmptyStep,
+	/// A reward directly attributed by an external protocol (e.g. block reward contract)
+	External,
 }
 
 impl Encodable for RewardType {
@@ -145,16 +152,20 @@ impl Encodable for RewardType {
 		let v = match *self {
 			RewardType::Block => 0u32,
 			RewardType::Uncle => 1,
+			RewardType::EmptyStep => 2,
+			RewardType::External => 3,
 		};
 		Encodable::rlp_append(&v, s);
 	}
 }
 
 impl Decodable for RewardType {
-	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
 		rlp.as_val().and_then(|v| Ok(match v {
 			0u32 => RewardType::Block,
 			1 => RewardType::Uncle,
+			2 => RewardType::EmptyStep,
+			3 => RewardType::External,
 			_ => return Err(DecoderError::Custom("Invalid value of RewardType item")),
 		}))
 	}
@@ -162,7 +173,6 @@ impl Decodable for RewardType {
 
 /// Reward action
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "ipc", binary)]
 pub struct Reward {
 	/// Author's address.
 	pub author: Address,
@@ -174,8 +184,8 @@ pub struct Reward {
 
 impl Reward {
 	/// Return reward action bloom.
-	pub fn bloom(&self) -> LogBloom {
-		LogBloom::from_bloomed(&keccak(&self.author))
+	pub fn bloom(&self) -> Bloom {
+		BloomInput::Raw(&self.author).into()
 	}
 }
 
@@ -189,7 +199,7 @@ impl Encodable for Reward {
 }
 
 impl Decodable for Reward {
-	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
 		let res = Reward {
 			author: rlp.val_at(0)?,
 			value: rlp.val_at(1)?,
@@ -200,10 +210,8 @@ impl Decodable for Reward {
 	}
 }
 
-
 /// Suicide action.
 #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
-#[cfg_attr(feature = "ipc", binary)]
 pub struct Suicide {
 	/// Suicided address.
 	pub address: Address,
@@ -215,15 +223,16 @@ pub struct Suicide {
 
 impl Suicide {
 	/// Return suicide action bloom.
-	pub fn bloom(&self) -> LogBloom {
-		LogBloom::from_bloomed(&keccak(self.address))
-			.with_bloomed(&keccak(self.refund_address))
+	pub fn bloom(&self) -> Bloom {
+		let mut bloom = Bloom::default();
+		bloom.accrue(BloomInput::Raw(&self.address));
+		bloom.accrue(BloomInput::Raw(&self.refund_address));
+		bloom
 	}
 }
 
 /// Description of an action that we trace; will be either a call or a create.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "ipc", binary)]
 pub enum Action {
 	/// It's a call action.
 	Call(Call),
@@ -261,7 +270,7 @@ impl Encodable for Action {
 }
 
 impl Decodable for Action {
-	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
 		let action_type: u8 = rlp.val_at(0)?;
 		match action_type {
 			0 => rlp.val_at(1).map(Action::Call),
@@ -275,7 +284,7 @@ impl Decodable for Action {
 
 impl Action {
 	/// Returns action bloom.
-	pub fn bloom(&self) -> LogBloom {
+	pub fn bloom(&self) -> Bloom {
 		match *self {
 			Action::Call(ref call) => call.bloom(),
 			Action::Create(ref create) => create.bloom(),
@@ -287,7 +296,6 @@ impl Action {
 
 /// The result of the performed action.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "ipc", binary)]
 pub enum Res {
 	/// Successful call action result.
 	Call(CallResult),
@@ -333,7 +341,7 @@ impl Encodable for Res {
 }
 
 impl Decodable for Res {
-	fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
+	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
 		let action_type: u8 = rlp.val_at(0)?;
 		match action_type {
 			0 => rlp.val_at(1).map(Res::Call),
@@ -348,7 +356,7 @@ impl Decodable for Res {
 
 impl Res {
 	/// Returns result bloom.
-	pub fn bloom(&self) -> LogBloom {
+	pub fn bloom(&self) -> Bloom {
 		match *self {
 			Res::Create(ref create) => create.bloom(),
 			Res::Call(_) | Res::FailedCall(_) | Res::FailedCreate(_) | Res::None => Default::default(),
@@ -365,7 +373,6 @@ impl Res {
 }
 
 #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
-#[cfg_attr(feature = "ipc", binary)]
 /// A diff of some chunk of memory.
 pub struct MemoryDiff {
 	/// Offset into memory the change begins.
@@ -375,7 +382,6 @@ pub struct MemoryDiff {
 }
 
 #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
-#[cfg_attr(feature = "ipc", binary)]
 /// A diff of some storage value.
 pub struct StorageDiff {
 	/// Which key in storage is changed.
@@ -385,7 +391,6 @@ pub struct StorageDiff {
 }
 
 #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
-#[cfg_attr(feature = "ipc", binary)]
 /// A record of an executed VM operation.
 pub struct VMExecutedOperation {
 	/// The total gas used.
@@ -399,7 +404,6 @@ pub struct VMExecutedOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Default, RlpEncodable, RlpDecodable)]
-#[cfg_attr(feature = "ipc", binary)]
 /// A record of the execution of a single VM operation.
 pub struct VMOperation {
 	/// The program counter.
@@ -413,7 +417,6 @@ pub struct VMOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Default, RlpEncodable, RlpDecodable)]
-#[cfg_attr(feature = "ipc", binary)]
 /// A record of a full VM trace for a CALL/CREATE.
 pub struct VMTrace {
 	/// The step (i.e. index into operations) at which this trace corresponds.

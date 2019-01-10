@@ -1,39 +1,52 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
+
+//! State database abstraction. For more info, see the doc for `StateDB`
 
 use std::collections::{VecDeque, HashSet};
+use std::io;
 use std::sync::Arc;
-use lru_cache::LruCache;
-use util::cache::MemoryLruCache;
-use util::journaldb::JournalDB;
-use util::kvdb::KeyValueDB;
-use bigint::hash::H256;
-use hashdb::HashDB;
-use state::{self, Account};
-use header::BlockNumber;
-use hash::keccak;
-use parking_lot::Mutex;
-use util::{Address, DBTransaction, UtilError};
-use bloom_journal::{Bloom, BloomJournal};
-use db::COL_ACCOUNT_BLOOM;
-use byteorder::{LittleEndian, ByteOrder};
 
+use bloom_journal::{Bloom, BloomJournal};
+use byteorder::{LittleEndian, ByteOrder};
+use db::COL_ACCOUNT_BLOOM;
+use ethereum_types::{H256, Address};
+use hash::keccak;
+use hashdb::HashDB;
+use journaldb::JournalDB;
+use keccak_hasher::KeccakHasher;
+use kvdb::{KeyValueDB, DBTransaction, DBValue};
+use lru_cache::LruCache;
+use memory_cache::MemoryLruCache;
+use parking_lot::Mutex;
+use types::BlockNumber;
+
+use state::{self, Account};
+
+/// Value used to initialize bloom bitmap size.
+///
+/// Bitmap size is the size in bytes (not bits) that will be allocated in memory.
 pub const ACCOUNT_BLOOM_SPACE: usize = 1048576;
+
+/// Value used to initialize bloom items count.
+///
+/// Items count is an estimation of the maximum number of items to store.
 pub const DEFAULT_ACCOUNT_PRESET: usize = 1000000;
 
+/// Key for a value storing amount of hashes
 pub const ACCOUNT_BLOOM_HASHCOUNT_KEY: &'static [u8] = b"account_hash_count";
 
 const STATE_CACHE_BLOCKS: usize = 12;
@@ -57,7 +70,7 @@ struct CacheQueueItem {
 	/// Account address.
 	address: Address,
 	/// Acccount data or `None` if account does not exist.
-	account: Option<Account>,
+	account: SyncAccount,
 	/// Indicates that the account was modified before being
 	/// added to the cache.
 	modified: bool,
@@ -169,7 +182,8 @@ impl StateDB {
 		bloom
 	}
 
-	pub fn commit_bloom(batch: &mut DBTransaction, journal: BloomJournal) -> Result<(), UtilError> {
+	/// Commit blooms journal to the database transaction
+	pub fn commit_bloom(batch: &mut DBTransaction, journal: BloomJournal) -> io::Result<()> {
 		assert!(journal.hash_functions <= 255);
 		batch.put(COL_ACCOUNT_BLOOM, ACCOUNT_BLOOM_HASHCOUNT_KEY, &[journal.hash_functions as u8]);
 		let mut key = [0u8; 8];
@@ -184,7 +198,7 @@ impl StateDB {
 	}
 
 	/// Journal all recent operations under the given era and ID.
-	pub fn journal_under(&mut self, batch: &mut DBTransaction, now: u64, id: &H256) -> Result<u32, UtilError> {
+	pub fn journal_under(&mut self, batch: &mut DBTransaction, now: u64, id: &H256) -> io::Result<u32> {
 		{
  			let mut bloom_lock = self.account_bloom.lock();
  			Self::commit_bloom(batch, bloom_lock.drain_journal())?;
@@ -197,7 +211,7 @@ impl StateDB {
 
 	/// Mark a given candidate from an ancient era as canonical, enacting its removals from the
 	/// backing database and reverting any non-canonical historical commit's insertions.
-	pub fn mark_canonical(&mut self, batch: &mut DBTransaction, end_era: u64, canon_id: &H256) -> Result<u32, UtilError> {
+	pub fn mark_canonical(&mut self, batch: &mut DBTransaction, end_era: u64, canon_id: &H256) -> io::Result<u32> {
 		self.db.mark_canonical(batch, end_era, canon_id)
 	}
 
@@ -210,7 +224,7 @@ impl StateDB {
 	pub fn sync_cache(&mut self, enacted: &[H256], retracted: &[H256], is_best: bool) {
 		trace!("sync_cache id = (#{:?}, {:?}), parent={:?}, best={}", self.commit_number, self.commit_hash, self.parent_hash, is_best);
 		let mut cache = self.account_cache.lock();
-		let mut cache = &mut *cache;
+		let cache = &mut *cache;
 
 		// Purge changes from re-enacted and retracted blocks.
 		// Filter out commiting block if any.
@@ -267,15 +281,16 @@ impl StateDB {
 					modifications.insert(account.address.clone());
 				}
 				if is_best {
+					let acc = account.account.0;
 					if let Some(&mut Some(ref mut existing)) = cache.accounts.get_mut(&account.address) {
-						if let Some(new) = account.account {
+						if let Some(new) =  acc {
 							if account.modified {
 								existing.overwrite_with(new);
 							}
 							continue;
 						}
 					}
-					cache.accounts.insert(account.address, account.account);
+					cache.accounts.insert(account.address, acc);
 				}
 			}
 
@@ -297,11 +312,13 @@ impl StateDB {
 		}
 	}
 
-	pub fn as_hashdb(&self) -> &HashDB {
+	/// Conversion method to interpret self as `HashDB` reference
+	pub fn as_hashdb(&self) -> &HashDB<KeccakHasher, DBValue> {
 		self.db.as_hashdb()
 	}
 
-	pub fn as_hashdb_mut(&mut self) -> &mut HashDB {
+	/// Conversion method to interpret self as mutable `HashDB` reference
+	pub fn as_hashdb_mut(&mut self) -> &mut HashDB<KeccakHasher, DBValue> {
 		self.db.as_hashdb_mut()
 	}
 
@@ -396,18 +413,16 @@ impl StateDB {
 }
 
 impl state::Backend for StateDB {
-	fn as_hashdb(&self) -> &HashDB {
-		self.db.as_hashdb()
-	}
+	fn as_hashdb(&self) -> &HashDB<KeccakHasher, DBValue> { self.db.as_hashdb() }
 
-	fn as_hashdb_mut(&mut self) -> &mut HashDB {
+	fn as_hashdb_mut(&mut self) -> &mut HashDB<KeccakHasher, DBValue> {
 		self.db.as_hashdb_mut()
 	}
 
 	fn add_to_account_cache(&mut self, addr: Address, data: Option<Account>, modified: bool) {
 		self.local_cache.push(CacheQueueItem {
 			address: addr,
-			account: data,
+			account: SyncAccount(data),
 			modified: modified,
 		})
 	}
@@ -426,13 +441,6 @@ impl state::Backend for StateDB {
 		cache.accounts.get_mut(addr).map(|a| a.as_ref().map(|a| a.clone_basic()))
 	}
 
-	#[cfg_attr(feature="dev", allow(map_clone))]
-	fn get_cached_code(&self, hash: &H256) -> Option<Arc<Vec<u8>>> {
-		let mut cache = self.code_cache.lock();
-
-		cache.get_mut(hash).map(|code| code.clone())
-	}
-
 	fn get_cached<F, U>(&self, a: &Address, f: F) -> Option<U>
 		where F: FnOnce(Option<&mut Account>) -> U {
 		let mut cache = self.account_cache.lock();
@@ -440,6 +448,12 @@ impl state::Backend for StateDB {
 			return None;
 		}
 		cache.accounts.get_mut(a).map(|c| f(c.as_mut()))
+	}
+
+	fn get_cached_code(&self, hash: &H256) -> Option<Arc<Vec<u8>>> {
+		let mut cache = self.code_cache.lock();
+
+		cache.get_mut(hash).map(|code| code.clone())
 	}
 
 	fn note_non_null_account(&self, address: &Address) {
@@ -456,18 +470,23 @@ impl state::Backend for StateDB {
 	}
 }
 
+/// Sync wrapper for the account.
+struct SyncAccount(Option<Account>);
+/// That implementation is safe because account is never modified or accessed in any way.
+/// We only need `Sync` here to allow `StateDb` to be kept in a `RwLock`.
+/// `Account` is `!Sync` by default because of `RefCell`s inside it.
+unsafe impl Sync for SyncAccount {}
+
 #[cfg(test)]
 mod tests {
-	use bigint::prelude::U256;
-	use bigint::hash::H256;
-	use util::{Address, DBTransaction};
-	use tests::helpers::*;
+	use ethereum_types::{H256, U256, Address};
+	use kvdb::DBTransaction;
+	use test_helpers::get_temp_state_db;
 	use state::{Account, Backend};
-	use ethcore_logger::init_log;
 
 	#[test]
 	fn state_db_smoke() {
-		init_log();
+		let _ = ::env_logger::try_init();
 
 		let state_db = get_temp_state_db();
 		let root_parent = H256::random();

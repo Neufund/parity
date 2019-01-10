@@ -1,60 +1,61 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! PoW block chunker and rebuilder tests.
 
-use devtools::RandomTempPath;
-use error::Error;
+use std::sync::atomic::AtomicBool;
+use tempdir::TempDir;
+use error::{Error, ErrorKind};
 
-use blockchain::generator::{ChainGenerator, ChainIterator, BlockFinalizer};
-use blockchain::BlockChain;
+use blockchain::generator::{BlockGenerator, BlockBuilder};
+use blockchain::{BlockChain, ExtrasInsert};
 use snapshot::{chunk_secondary, Error as SnapshotError, Progress, SnapshotComponents};
 use snapshot::io::{PackedReader, PackedWriter, SnapshotReader, SnapshotWriter};
 
 use parking_lot::Mutex;
-use util::snappy;
-use util::kvdb::{self, KeyValueDB, DBTransaction};
-
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use snappy;
+use kvdb::DBTransaction;
+use test_helpers;
 
 const SNAPSHOT_MODE: ::snapshot::PowSnapshot = ::snapshot::PowSnapshot { blocks: 30000, max_restore_blocks: 30000 };
 
 fn chunk_and_restore(amount: u64) {
-	let mut canon_chain = ChainGenerator::default();
-	let mut finalizer = BlockFinalizer::default();
-	let genesis = canon_chain.generate(&mut finalizer).unwrap();
+	let genesis = BlockBuilder::genesis();
+	let rest = genesis.add_blocks(amount as usize);
+	let generator = BlockGenerator::new(vec![rest]);
+	let genesis = genesis.last();
 
 	let engine = ::spec::Spec::new_test().engine;
-	let new_path = RandomTempPath::create_dir();
-	let mut snapshot_path = new_path.as_path().to_owned();
-	snapshot_path.push("SNAP");
+	let tempdir = TempDir::new("").unwrap();
+	let snapshot_path = tempdir.path().join("SNAP");
 
-	let old_db = Arc::new(kvdb::in_memory(::db::NUM_COLUMNS.unwrap_or(0)));
-	let bc = BlockChain::new(Default::default(), &genesis, old_db.clone());
+	let old_db = test_helpers::new_db();
+	let bc = BlockChain::new(Default::default(), genesis.encoded().raw(), old_db.clone());
 
 	// build the blockchain.
 	let mut batch = DBTransaction::new();
-	for _ in 0..amount {
-		let block = canon_chain.generate(&mut finalizer).unwrap();
-		bc.insert_block(&mut batch, &block, vec![]);
+	for block in generator {
+		bc.insert_block(&mut batch, block.encoded(), vec![], ExtrasInsert {
+			fork_choice: ::engines::ForkChoice::New,
+			is_finalized: false,
+		});
 		bc.commit();
 	}
 
-	old_db.write(batch).unwrap();
+	old_db.key_value().write(batch).unwrap();
 
 	let best_hash = bc.best_block_hash();
 
@@ -80,8 +81,8 @@ fn chunk_and_restore(amount: u64) {
 	writer.into_inner().finish(manifest.clone()).unwrap();
 
 	// restore it.
-	let new_db = Arc::new(kvdb::in_memory(::db::NUM_COLUMNS.unwrap_or(0)));
-	let new_chain = BlockChain::new(Default::default(), &genesis, new_db.clone());
+	let new_db = test_helpers::new_db();
+	let new_chain = BlockChain::new(Default::default(), genesis.encoded().raw(), new_db.clone());
 	let mut rebuilder = SNAPSHOT_MODE.rebuilder(new_chain, new_db.clone(), &manifest).unwrap();
 
 	let reader = PackedReader::new(&snapshot_path).unwrap().unwrap();
@@ -96,20 +97,24 @@ fn chunk_and_restore(amount: u64) {
 	drop(rebuilder);
 
 	// and test it.
-	let new_chain = BlockChain::new(Default::default(), &genesis, new_db);
+	let new_chain = BlockChain::new(Default::default(), genesis.encoded().raw(), new_db);
 	assert_eq!(new_chain.best_block_hash(), best_hash);
 }
 
 #[test]
-fn chunk_and_restore_500() { chunk_and_restore(500) }
+fn chunk_and_restore_500() {
+	chunk_and_restore(500)
+}
 
 #[test]
-fn chunk_and_restore_40k() { chunk_and_restore(40000) }
+fn chunk_and_restore_4k() {
+	chunk_and_restore(4000)
+}
 
 #[test]
 fn checks_flag() {
 	use rlp::RlpStream;
-	use bigint::hash::H256;
+	use ethereum_types::H256;
 
 	let mut stream = RlpStream::new_list(5);
 
@@ -119,17 +124,12 @@ fn checks_flag() {
 
 	stream.append_empty_data().append_empty_data();
 
-	let genesis = {
-		let mut canon_chain = ChainGenerator::default();
-		let mut finalizer = BlockFinalizer::default();
-		canon_chain.generate(&mut finalizer).unwrap()
-	};
-
+	let genesis = BlockBuilder::genesis();
 	let chunk = stream.out();
 
-	let db = Arc::new(kvdb::in_memory(::db::NUM_COLUMNS.unwrap_or(0)));
+	let db = test_helpers::new_db();
 	let engine = ::spec::Spec::new_test().engine;
-	let chain = BlockChain::new(Default::default(), &genesis, db.clone());
+	let chain = BlockChain::new(Default::default(), genesis.last().encoded().raw(), db.clone());
 
 	let manifest = ::snapshot::ManifestData {
 		version: 2,
@@ -143,7 +143,7 @@ fn checks_flag() {
 	let mut rebuilder = SNAPSHOT_MODE.rebuilder(chain, db.clone(), &manifest).unwrap();
 
 	match rebuilder.feed(&chunk, engine.as_ref(), &AtomicBool::new(false)) {
-		Err(Error::Snapshot(SnapshotError::RestorationAborted)) => {}
+		Err(Error(ErrorKind::Snapshot(SnapshotError::RestorationAborted), _)) => {}
 		_ => panic!("Wrong result on abort flag set")
 	}
 }

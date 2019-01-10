@@ -1,50 +1,57 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Minimal IO service for light client.
 //! Just handles block import messages and passes them to the client.
 
 use std::fmt;
-use std::path::Path;
 use std::sync::Arc;
 
-use ethcore::db;
-use ethcore::service::ClientIoMessage;
+use ethcore_db as db;
+use ethcore_blockchain::BlockChainDB;
+use ethcore::client::ClientIoMessage;
+use ethcore::error::Error as CoreError;
 use ethcore::spec::Spec;
 use io::{IoContext, IoError, IoHandler, IoService};
-use util::kvdb::{Database, DatabaseConfig};
 
 use cache::Cache;
 use parking_lot::Mutex;
 
-use super::{ChainDataFetcher, Client, Config as ClientConfig};
+use super::{ChainDataFetcher, LightChainNotify, Client, Config as ClientConfig};
 
 /// Errors on service initialization.
 #[derive(Debug)]
 pub enum Error {
-	/// Database error.
-	Database(String),
+	/// Core error.
+	Core(CoreError),
 	/// I/O service error.
 	Io(IoError),
+}
+
+impl From<CoreError> for Error {
+	#[inline]
+	fn from(err: CoreError) -> Error {
+		Error::Core(err)
+	}
 }
 
 impl fmt::Display for Error {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
-			Error::Database(ref msg) => write!(f, "Database error: {}", msg),
+			Error::Core(ref msg) => write!(f, "Core error: {}", msg),
 			Error::Io(ref err) => write!(f, "I/O service error: {}", err),
 		}
 	}
@@ -58,41 +65,29 @@ pub struct Service<T> {
 
 impl<T: ChainDataFetcher> Service<T> {
 	/// Start the service: initialize I/O workers and client itself.
-	pub fn start(config: ClientConfig, spec: &Spec, fetcher: T, path: &Path, cache: Arc<Mutex<Cache>>) -> Result<Self, Error> {
-
-		// initialize database.
-		let mut db_config = DatabaseConfig::with_columns(db::NUM_COLUMNS);
-
-		// give all rocksdb cache to the header chain column.
-		if let Some(size) = config.db_cache_size {
-			db_config.set_cache(db::COL_LIGHT_CHAIN, size);
-		}
-
-		db_config.compaction = config.db_compaction;
-		db_config.wal = config.db_wal;
-
-		let db = Arc::new(Database::open(
-			&db_config,
-			&path.to_str().expect("DB path could not be converted to string.")
-		).map_err(Error::Database)?);
-
+	pub fn start(config: ClientConfig, spec: &Spec, fetcher: T, db: Arc<BlockChainDB>, cache: Arc<Mutex<Cache>>) -> Result<Self, Error> {
 		let io_service = IoService::<ClientIoMessage>::start().map_err(Error::Io)?;
 		let client = Arc::new(Client::new(config,
-			db,
+			db.key_value().clone(),
 			db::COL_LIGHT_CHAIN,
 			spec,
 			fetcher,
 			io_service.channel(),
 			cache,
-		).map_err(Error::Database)?);
+		)?);
 
 		io_service.register_handler(Arc::new(ImportBlocks(client.clone()))).map_err(Error::Io)?;
 		spec.engine.register_client(Arc::downgrade(&client) as _);
 
 		Ok(Service {
-			client: client,
-			io_service: io_service,
+			client,
+			io_service,
 		})
+	}
+
+	/// Set the actor to be notified on certain chain events
+	pub fn add_notify(&self, notify: Arc<LightChainNotify>) {
+		self.client.add_listener(Arc::downgrade(&notify));
 	}
 
 	/// Register an I/O handler on the service.
@@ -119,21 +114,21 @@ impl<T: ChainDataFetcher> IoHandler<ClientIoMessage> for ImportBlocks<T> {
 #[cfg(test)]
 mod tests {
 	use super::Service;
-	use devtools::RandomTempPath;
 	use ethcore::spec::Spec;
 
 	use std::sync::Arc;
 	use cache::Cache;
 	use client::fetch;
-	use time::Duration;
+	use std::time::Duration;
 	use parking_lot::Mutex;
+	use ethcore::test_helpers;
 
 	#[test]
 	fn it_works() {
+		let db = test_helpers::new_db();
 		let spec = Spec::new_test();
-		let temp_path = RandomTempPath::new();
-		let cache = Arc::new(Mutex::new(Cache::new(Default::default(), Duration::hours(6))));
+		let cache = Arc::new(Mutex::new(Cache::new(Default::default(), Duration::from_secs(6 * 3600))));
 
-		Service::start(Default::default(), &spec, fetch::unavailable(), temp_path.as_path(), cache).unwrap();
+		Service::start(Default::default(), &spec, fetch::unavailable(), db, cache).unwrap();
 	}
 }

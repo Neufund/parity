@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Generic poll manager for Pub-Sub.
 
@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 
 use jsonrpc_core::futures::future::{self, Either};
 use jsonrpc_core::futures::sync::mpsc;
-use jsonrpc_core::futures::{Sink, Future, BoxFuture};
+use jsonrpc_core::futures::{Sink, Future};
 use jsonrpc_core::{self as core, MetaIoHandler};
 use jsonrpc_pubsub::SubscriptionId;
 
@@ -87,7 +87,7 @@ impl<S: core::Middleware<Metadata>> GenericPollManager<S> {
 		}).is_some()
 	}
 
-	pub fn tick(&self) -> BoxFuture<(), ()> {
+	pub fn tick(&self) -> Box<Future<Item=(), Error=()> + Send> {
 		let mut futures = Vec::new();
 		// poll all subscriptions
 		for (id, subscription) in self.subscribers.iter() {
@@ -95,7 +95,7 @@ impl<S: core::Middleware<Metadata>> GenericPollManager<S> {
 				jsonrpc: Some(core::Version::V2),
 				id: core::Id::Str(id.as_string()),
 				method: subscription.method.clone(),
-				params: Some(subscription.params.clone()),
+				params: subscription.params.clone(),
 			};
 			trace!(target: "pubsub", "Polling method: {:?}", call);
 			let result = self.rpc.handle_call(call.into(), subscription.metadata.clone());
@@ -130,7 +130,7 @@ impl<S: core::Middleware<Metadata>> GenericPollManager<S> {
 		}
 
 		// return a future represeting all the polls
-		future::join_all(futures).map(|_| ()).boxed()
+		Box::new(future::join_all(futures).map(|_| ()))
 	}
 }
 
@@ -141,7 +141,7 @@ mod tests {
 	use jsonrpc_core::{MetaIoHandler, NoopMiddleware, Value, Params};
 	use jsonrpc_core::futures::{Future, Stream};
 	use jsonrpc_pubsub::SubscriptionId;
-	use http::tokio_core::reactor;
+	use http::tokio::runtime::Runtime;
 
 	use super::GenericPollManager;
 
@@ -162,25 +162,25 @@ mod tests {
 	#[test]
 	fn should_poll_subscribed_method() {
 		// given
-		let mut el = reactor::Core::new().unwrap();
+		let mut el = Runtime::new().unwrap();
 		let mut poll_manager = poll_manager();
 		let (id, rx) = poll_manager.subscribe(Default::default(), "hello".into(), Params::None);
 		assert_eq!(id, SubscriptionId::String("0x416d77337e24399d".into()));
 
 		// then
 		poll_manager.tick().wait().unwrap();
-		let (res, rx) = el.run(rx.into_future()).unwrap();
+		let (res, rx) = el.block_on(rx.into_future()).unwrap();
 		assert_eq!(res, Some(Ok(Value::String("hello".into()))));
 
 		// retrieve second item
 		poll_manager.tick().wait().unwrap();
-		let (res, rx) = el.run(rx.into_future()).unwrap();
+		let (res, rx) = el.block_on(rx.into_future()).unwrap();
 		assert_eq!(res, Some(Ok(Value::String("world".into()))));
 
 		// and no more notifications
 		poll_manager.tick().wait().unwrap();
 		// we need to unsubscribe otherwise the future will never finish.
 		poll_manager.unsubscribe(&id);
-		assert_eq!(el.run(rx.into_future()).unwrap().0, None);
+		assert_eq!(el.block_on(rx.into_future()).unwrap().0, None);
 	}
 }

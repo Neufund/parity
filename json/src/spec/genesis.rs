@@ -1,28 +1,30 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Spec genesis deserialization.
 
-use uint::Uint;
+use uint::{Uint, self};
 use hash::{Address, H256};
 use bytes::Bytes;
 use spec::Seal;
 
 /// Spec genesis.
 #[derive(Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct Genesis {
 	/// Seal.
 	pub seal: Seal,
@@ -33,25 +35,19 @@ pub struct Genesis {
 	/// Block timestamp, defaults to 0.
 	pub timestamp: Option<Uint>,
 	/// Parent hash, defaults to 0.
-	#[serde(rename="parentHash")]
 	pub parent_hash: Option<H256>,
 	/// Gas limit.
-	#[serde(rename="gasLimit")]
+	#[serde(deserialize_with="uint::validate_non_zero")]
 	pub gas_limit: Uint,
 	/// Transactions root.
-	#[serde(rename="transactionsRoot")]
 	pub transactions_root: Option<H256>,
 	/// Receipts root.
-	#[serde(rename="receiptsRoot")]
 	pub receipts_root: Option<H256>,
 	/// State root.
-	#[serde(rename="stateRoot")]
 	pub state_root: Option<H256>,
 	/// Gas used.
-	#[serde(rename="gasUsed")]
 	pub gas_used: Option<Uint>,
 	/// Extra data.
-	#[serde(rename="extraData")]
 	pub extra_data: Option<Bytes>,
 }
 
@@ -60,7 +56,7 @@ mod tests {
 	use serde_json;
 	use bytes::Bytes;
 	use uint::Uint;
-	use bigint::prelude::{U256, H160, H64 as Eth64, H256 as Eth256};
+	use ethereum_types::{U256, H160, H64 as Eth64, H256 as Eth256};
 	use hash::{H64, H256, Address};
 	use spec::genesis::Genesis;
 	use spec::{Ethereum, Seal};
@@ -69,7 +65,6 @@ mod tests {
 	#[test]
 	fn genesis_deserialization() {
 		let s = r#"{
-			"nonce": "0x0000000000000042",
 			"difficulty": "0x400000000",
 			"seal": {
 				"ethereum": {

@@ -1,3 +1,18 @@
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
+
+// Parity Ethereum is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+// Parity Ethereum is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+
+// You should have received a copy of the GNU General Public License
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Deserializer of empty string values into optionals.
 
@@ -68,7 +83,7 @@ impl<T> Into<Option<T>> for MaybeEmpty<T> {
 mod tests {
 	use std::str::FromStr;
 	use serde_json;
-	use bigint::hash;
+	use ethereum_types;
 	use hash::H256;
 	use maybe::MaybeEmpty;
 
@@ -78,7 +93,7 @@ mod tests {
 		let deserialized: Vec<MaybeEmpty<H256>> = serde_json::from_str(s).unwrap();
 		assert_eq!(deserialized, vec![
 				   MaybeEmpty::None,
-				   MaybeEmpty::Some(H256(hash::H256::from_str("5a39ed1020c04d4d84539975b893a4e7c53eab6c2965db8bc3468093a31bc5ae").unwrap()))
+				   MaybeEmpty::Some(H256(ethereum_types::H256::from_str("5a39ed1020c04d4d84539975b893a4e7c53eab6c2965db8bc3468093a31bc5ae").unwrap()))
 		]);
 	}
 

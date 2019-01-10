@@ -1,30 +1,32 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
-#![cfg_attr(feature = "benches", feature(test))]
-
-extern crate primal;
-extern crate parking_lot;
 extern crate either;
+extern crate ethereum_types;
 extern crate memmap;
+extern crate parking_lot;
+extern crate primal;
 
 #[macro_use]
 extern crate crunchy;
 #[macro_use]
 extern crate log;
+
+#[cfg(test)]
+extern crate tempdir;
 
 mod compute;
 mod seed_compute;
@@ -35,6 +37,7 @@ mod shared;
 pub use cache::{NodeCacheBuilder, OptimizeFor};
 pub use compute::{ProofOfWork, quick_get_difficulty, slow_hash_block_number};
 use compute::Light;
+use ethereum_types::{U256, U512};
 use keccak::H256;
 use parking_lot::Mutex;
 pub use seed_compute::SeedHashCompute;
@@ -105,16 +108,14 @@ impl EthashManager {
 			};
 			match light {
 				None => {
-					let light = match Light::from_file_with_builder(
-						&self.nodecache_builder,
+					let light = match self.nodecache_builder.light_from_file(
 						&self.cache_dir,
 						block_number,
 					) {
 						Ok(light) => Arc::new(light),
 						Err(e) => {
 							debug!("Light cache file not found for {}:{}", block_number, e);
-							let mut light = Light::new_with_builder(
-								&self.nodecache_builder,
+							let mut light = self.nodecache_builder.light(
 								&self.cache_dir,
 								block_number,
 							);
@@ -135,9 +136,35 @@ impl EthashManager {
 	}
 }
 
+/// Convert an Ethash boundary to its original difficulty. Basically just `f(x) = 2^256 / x`.
+pub fn boundary_to_difficulty(boundary: &ethereum_types::H256) -> U256 {
+	difficulty_to_boundary_aux(&**boundary)
+}
+
+/// Convert an Ethash difficulty to the target boundary. Basically just `f(x) = 2^256 / x`.
+pub fn difficulty_to_boundary(difficulty: &U256) -> ethereum_types::H256 {
+	difficulty_to_boundary_aux(difficulty).into()
+}
+
+fn difficulty_to_boundary_aux<T: Into<U512>>(difficulty: T) -> ethereum_types::U256 {
+	let difficulty = difficulty.into();
+
+	assert!(!difficulty.is_zero());
+
+	if difficulty == U512::one() {
+		U256::max_value()
+	} else {
+		// difficulty > 1, so result should never overflow 256 bits
+		U256::from((U512::one() << 256) / difficulty)
+	}
+}
+
 #[test]
 fn test_lru() {
-	let ethash = EthashManager::new(&::std::env::temp_dir(), None);
+	use tempdir::TempDir;
+
+	let tempdir = TempDir::new("").unwrap();
+	let ethash = EthashManager::new(tempdir.path(), None);
 	let hash = [0u8; 32];
 	ethash.compute_light(1, &hash, 1);
 	ethash.compute_light(50000, &hash, 1);
@@ -151,93 +178,39 @@ fn test_lru() {
 	assert_eq!(ethash.cache.lock().prev_epoch.unwrap(), 0);
 }
 
-#[cfg(feature = "benches")]
-mod benchmarks {
-	extern crate test;
+#[test]
+fn test_difficulty_to_boundary() {
+	use ethereum_types::H256;
+	use std::str::FromStr;
 
-	use self::test::Bencher;
-	use cache::{NodeCacheBuilder, OptimizeFor};
-	use compute::{Light, light_compute};
+	assert_eq!(difficulty_to_boundary(&U256::from(1)), H256::from(U256::max_value()));
+	assert_eq!(difficulty_to_boundary(&U256::from(2)), H256::from_str("8000000000000000000000000000000000000000000000000000000000000000").unwrap());
+	assert_eq!(difficulty_to_boundary(&U256::from(4)), H256::from_str("4000000000000000000000000000000000000000000000000000000000000000").unwrap());
+	assert_eq!(difficulty_to_boundary(&U256::from(32)), H256::from_str("0800000000000000000000000000000000000000000000000000000000000000").unwrap());
+}
 
-	const HASH: [u8; 32] = [0xf5, 0x7e, 0x6f, 0x3a, 0xcf, 0xc0, 0xdd, 0x4b, 0x5b, 0xf2, 0xbe,
-	                        0xe4, 0x0a, 0xb3, 0x35, 0x8a, 0xa6, 0x87, 0x73, 0xa8, 0xd0, 0x9f,
-	                        0x5e, 0x59, 0x5e, 0xab, 0x55, 0x94, 0x05, 0x52, 0x7d, 0x72];
-	const NONCE: u64 = 0xd7b3ac70a301a249;
+#[test]
+fn test_difficulty_to_boundary_regression() {
+	use ethereum_types::H256;
 
-	#[bench]
-	fn bench_light_compute_memmap(b: &mut Bencher) {
-		use std::env;
-
-		let builder = NodeCacheBuilder::new(OptimizeFor::Memory);
-		let light = Light::new_with_builder(&builder, &env::temp_dir(), 486382);
-
-		b.iter(|| light_compute(&light, &HASH, NONCE));
+	// the last bit was originally being truncated when performing the conversion
+	// https://github.com/paritytech/parity-ethereum/issues/8397
+	for difficulty in 1..9 {
+		assert_eq!(U256::from(difficulty), boundary_to_difficulty(&difficulty_to_boundary(&difficulty.into())));
+		assert_eq!(H256::from(difficulty), difficulty_to_boundary(&boundary_to_difficulty(&difficulty.into())));
+		assert_eq!(U256::from(difficulty), boundary_to_difficulty(&boundary_to_difficulty(&difficulty.into()).into()));
+		assert_eq!(H256::from(difficulty), difficulty_to_boundary(&difficulty_to_boundary(&difficulty.into()).into()));
 	}
+}
 
-	#[bench]
-	fn bench_light_compute_memory(b: &mut Bencher) {
-		use std::env;
+#[test]
+#[should_panic]
+fn test_difficulty_to_boundary_panics_on_zero() {
+	difficulty_to_boundary(&U256::from(0));
+}
 
-		let light = Light::new(&env::temp_dir(), 486382);
-
-		b.iter(|| light_compute(&light, &HASH, NONCE));
-	}
-
-	#[bench]
-	#[ignore]
-	fn bench_light_new_round_trip_memmap(b: &mut Bencher) {
-		use std::env;
-
-		b.iter(|| {
-			let builder = NodeCacheBuilder::new(OptimizeFor::Memory);
-			let light = Light::new_with_builder(&builder, &env::temp_dir(), 486382);
-			light_compute(&light, &HASH, NONCE);
-		});
-	}
-
-	#[bench]
-	#[ignore]
-	fn bench_light_new_round_trip_memory(b: &mut Bencher) {
-		use std::env;
-		b.iter(|| {
-			let light = Light::new(&env::temp_dir(), 486382);
-			light_compute(&light, &HASH, NONCE);
-		});
-	}
-
-	#[bench]
-	fn bench_light_from_file_round_trip_memory(b: &mut Bencher) {
-		use std::env;
-
-		let dir = env::temp_dir();
-		let height = 486382;
-		{
-			let mut dummy = Light::new(&dir, height);
-			dummy.to_file().unwrap();
-		}
-
-		b.iter(|| {
-			let light = Light::from_file(&dir, 486382).unwrap();
-			light_compute(&light, &HASH, NONCE);
-		});
-	}
-
-	#[bench]
-	fn bench_light_from_file_round_trip_memmap(b: &mut Bencher) {
-		use std::env;
-
-		let dir = env::temp_dir();
-		let height = 486382;
-		{
-			let builder = NodeCacheBuilder::new(OptimizeFor::Memory);
-			let mut dummy = Light::new_with_builder(&builder, &dir, height);
-			dummy.to_file().unwrap();
-		}
-
-		b.iter(|| {
-			let builder = NodeCacheBuilder::new(OptimizeFor::Memory);
-			let light = Light::from_file_with_builder(&builder, &dir, 486382).unwrap();
-			light_compute(&light, &HASH, NONCE);
-		});
-	}
+#[test]
+#[should_panic]
+fn test_boundary_to_difficulty_panics_on_zero() {
+	boundary_to_difficulty(&ethereum_types::H256::from(0));
 }

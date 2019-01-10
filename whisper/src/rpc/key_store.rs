@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Identity and keystore for Whisper sessions.
 //!
@@ -21,10 +21,10 @@
 
 use std::collections::HashMap;
 
-use bigint::hash::H256;
+use ethereum_types::H256;
 use ethkey::{KeyPair, Public, Secret};
+use memzero::Memzero;
 use rand::{Rng, OsRng};
-use ring::error::Unspecified;
 
 use rpc::crypto::{AES_KEY_LEN, EncryptionInstance, DecryptionInstance};
 
@@ -35,7 +35,7 @@ pub enum Key {
 	/// and signing.
 	Asymmetric(KeyPair),
 	/// AES-256 GCM mode. Suitable for encryption, decryption, but not signing.
-	Symmetric([u8; AES_KEY_LEN]),
+	Symmetric(Memzero<[u8; AES_KEY_LEN]>),
 }
 
 impl Key {
@@ -49,19 +49,17 @@ impl Key {
 
 	/// Generate a random symmetric key with the given cryptographic RNG.
 	pub fn new_symmetric(rng: &mut OsRng) -> Self {
-		Key::Symmetric(rng.gen())
+		Key::Symmetric(Memzero::from(rng.gen::<[u8; 32]>()))
 	}
 
 	/// From secret asymmetric key. Fails if secret is invalid.
-	pub fn from_secret(secret: Secret) -> Result<Self, Unspecified> {
-		KeyPair::from_secret(secret)
-			.map(Key::Asymmetric)
-			.map_err(|_| Unspecified)
+	pub fn from_secret(secret: Secret) -> Option<Self> {
+		KeyPair::from_secret(secret).map(Key::Asymmetric).ok()
 	}
 
 	/// From raw symmetric key.
 	pub fn from_raw_symmetric(key: [u8; AES_KEY_LEN]) -> Self {
-		Key::Symmetric(key)
+		Key::Symmetric(Memzero::from(key))
 	}
 
 	/// Get a handle to the public key if this is an asymmetric key.
@@ -177,8 +175,8 @@ mod tests {
 
 	#[test]
 	fn rejects_invalid_secret() {
-		let bad_secret = ::ethkey::Secret::from_slice(&[0xff; 32]);
-		assert!(Key::from_secret(bad_secret).is_err());
+		let bad_secret = ::ethkey::Secret::from([0xff; 32]);
+		assert!(Key::from_secret(bad_secret).is_none());
 	}
 
 	#[test]

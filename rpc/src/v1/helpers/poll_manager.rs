@@ -1,25 +1,22 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Indexes all rpc poll requests.
 
 use transient_hashmap::{TransientHashMap, Timer, StandardTimer};
-
-/// Lifetime of poll (in seconds).
-const POLL_LIFETIME: u32 = 60;
 
 pub type PollId = usize;
 
@@ -32,17 +29,17 @@ pub struct PollManager<F, T = StandardTimer> where T: Timer {
 }
 
 impl<F> PollManager<F, StandardTimer> {
-	/// Creates new instance of indexer.
-	pub fn new() -> Self {
-		PollManager::new_with_timer(Default::default())
+	/// Creates new instance of indexer
+	pub fn new(lifetime: u32) -> Self {
+		PollManager::new_with_timer(Default::default(), lifetime)
 	}
 }
 
 impl<F, T> PollManager<F, T> where T: Timer {
 
-	pub fn new_with_timer(timer: T) -> Self {
+	pub fn new_with_timer(timer: T, lifetime: u32) -> Self {
 		PollManager {
-			polls: TransientHashMap::new_with_timer(POLL_LIFETIME, timer),
+			polls: TransientHashMap::new_with_timer(lifetime, timer),
 			next_available_id: 0,
 		}
 	}
@@ -74,8 +71,8 @@ impl<F, T> PollManager<F, T> where T: Timer {
 	}
 
 	/// Removes poll info.
-	pub fn remove_poll(&mut self, id: &PollId) {
-		self.polls.remove(id);
+	pub fn remove_poll(&mut self, id: &PollId) -> bool {
+		self.polls.remove(id).is_some()
 	}
 }
 
@@ -102,7 +99,7 @@ mod tests {
 			time: &time,
 		};
 
-		let mut indexer = PollManager::new_with_timer(timer);
+		let mut indexer = PollManager::new_with_timer(timer,60);
 		assert_eq!(indexer.create_poll(20), 0);
 		assert_eq!(indexer.create_poll(20), 1);
 

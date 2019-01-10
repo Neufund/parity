@@ -1,38 +1,43 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Parity upgrade logic
 
-use semver::Version;
+use semver::{Version, SemVerError};
 use std::collections::*;
 use std::fs::{self, File, create_dir_all};
-use std::env;
 use std::io;
 use std::io::{Read, Write};
 use std::path::{PathBuf, Path};
-use dir::{DatabaseDirectories, default_data_path};
-use helpers::replace_home;
-use util::journaldb::Algorithm;
+use dir::{DatabaseDirectories, default_data_path, home_dir};
+use dir::helpers::replace_home;
+use journaldb::Algorithm;
 
-#[cfg_attr(feature="dev", allow(enum_variant_names))]
 #[derive(Debug)]
 pub enum Error {
 	CannotCreateConfigPath,
 	CannotWriteVersionFile,
 	CannotUpdateVersionFile,
+	SemVer(SemVerError),
+}
+
+impl From<SemVerError> for Error {
+	fn from(err: SemVerError) -> Self {
+		Error::SemVer(err)
+	}
 }
 
 const CURRENT_VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -75,7 +80,7 @@ fn push_upgrades(upgrades: &mut UpgradeList)
 {
 	// dummy upgrade (remove when the first one is in)
 	upgrades.insert(
-		UpgradeKey { old_version: Version::parse("0.9.0").unwrap(), new_version: Version::parse("1.0.0").unwrap() },
+		UpgradeKey { old_version: Version::new(0, 9, 0), new_version: Version::new(1, 0, 0)},
 		dummy_upgrade);
 }
 
@@ -83,7 +88,7 @@ fn upgrade_from_version(previous_version: &Version) -> Result<usize, Error> {
 	let mut upgrades = HashMap::new();
 	push_upgrades(&mut upgrades);
 
-	let current_version = Version::parse(CURRENT_VERSION).unwrap();
+	let current_version = Version::parse(CURRENT_VERSION)?;
 
 	let mut count = 0;
 	for upgrade_key in upgrades.keys() {
@@ -96,14 +101,10 @@ fn upgrade_from_version(previous_version: &Version) -> Result<usize, Error> {
 	Ok(count)
 }
 
-fn with_locked_version<F>(db_path: Option<&str>, script: F) -> Result<usize, Error>
+fn with_locked_version<F>(db_path: &str, script: F) -> Result<usize, Error>
 	where F: Fn(&Version) -> Result<usize, Error>
 {
-	let mut path = db_path.map_or({
-		let mut path = env::home_dir().expect("Applications should have a home dir");
-		path.push(".parity");
-		path
-	}, PathBuf::from);
+	let mut path = PathBuf::from(db_path);
 	create_dir_all(&path).map_err(|_| Error::CannotCreateConfigPath)?;
 	path.push("ver.lock");
 
@@ -115,17 +116,17 @@ fn with_locked_version<F>(db_path: Option<&str>, script: F) -> Result<usize, Err
 					.ok()
 					.and_then(|_| Version::parse(&version_string).ok())
 			})
-			.unwrap_or_else(|| Version::parse("0.9.0").unwrap());
+			.unwrap_or(Version::new(0, 9, 0));
 
 	let mut lock = File::create(&path).map_err(|_| Error::CannotWriteVersionFile)?;
 	let result = script(&version);
 
-	let written_version = Version::parse(CURRENT_VERSION).unwrap();
+	let written_version = Version::parse(CURRENT_VERSION)?;
 	lock.write_all(written_version.to_string().as_bytes()).map_err(|_| Error::CannotUpdateVersionFile)?;
 	result
 }
 
-pub fn upgrade(db_path: Option<&str>) -> Result<usize, Error> {
+pub fn upgrade(db_path: &str) -> Result<usize, Error> {
 	with_locked_version(db_path, |ver| {
 		upgrade_from_version(ver)
 	})
@@ -199,6 +200,10 @@ fn upgrade_user_defaults(dirs: &DatabaseDirectories) {
 }
 
 pub fn upgrade_data_paths(base_path: &str, dirs: &DatabaseDirectories, pruning: Algorithm) {
+	if home_dir().is_none() {
+		return;
+	}
+
 	let legacy_root_path = replace_home("", "$HOME/.parity");
 	let default_path = default_data_path();
 	if legacy_root_path != base_path && base_path == default_path {

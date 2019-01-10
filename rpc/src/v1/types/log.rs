@@ -1,24 +1,25 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
-use ethcore::log_entry::{LocalizedLogEntry, LogEntry};
+use types::log_entry::{LocalizedLogEntry, LogEntry};
 use v1::types::{Bytes, H160, H256, U256};
 
 /// Log
 #[derive(Debug, Serialize, PartialEq, Eq, Hash, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Log {
 	/// H160
 	pub address: H160,
@@ -27,26 +28,23 @@ pub struct Log {
 	/// Data
 	pub data: Bytes,
 	/// Block Hash
-	#[serde(rename="blockHash")]
 	pub block_hash: Option<H256>,
 	/// Block Number
-	#[serde(rename="blockNumber")]
 	pub block_number: Option<U256>,
 	/// Transaction Hash
-	#[serde(rename="transactionHash")]
 	pub transaction_hash: Option<H256>,
 	/// Transaction Index
-	#[serde(rename="transactionIndex")]
 	pub transaction_index: Option<U256>,
 	/// Log Index in Block
-	#[serde(rename="logIndex")]
 	pub log_index: Option<U256>,
 	/// Log Index in Transaction
-	#[serde(rename="transactionLogIndex")]
 	pub transaction_log_index: Option<U256>,
 	/// Log Type
-	#[serde(rename="type")]
+	#[serde(rename = "type")]
 	pub log_type: String,
+	/// Whether Log Type is Removed (Geth Compatibility Field)
+	#[serde(default)]
+	pub removed: bool,
 }
 
 impl From<LocalizedLogEntry> for Log {
@@ -62,6 +60,7 @@ impl From<LocalizedLogEntry> for Log {
 			log_index: Some(e.log_index.into()),
 			transaction_log_index: Some(e.transaction_log_index.into()),
 			log_type: "mined".to_owned(),
+			removed: false,
 		}
 	}
 }
@@ -79,6 +78,7 @@ impl From<LogEntry> for Log {
 			log_index: None,
 			transaction_log_index: None,
 			log_type: "pending".to_owned(),
+			removed: false,
 		}
 	}
 }
@@ -91,7 +91,7 @@ mod tests {
 
 	#[test]
 	fn log_serialization() {
-		let s = r#"{"address":"0x33990122638b9132ca29c723bdf037f1a891a70c","topics":["0xa6697e974e6a320f454390be03f74955e8978f1a6971ea6730542e37b66179bc","0x4861736852656700000000000000000000000000000000000000000000000000"],"data":"0x","blockHash":"0xed76641c68a1c641aee09a94b3b471f4dc0316efe5ac19cf488e2674cf8d05b5","blockNumber":"0x4510c","transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000000","transactionIndex":"0x0","logIndex":"0x1","transactionLogIndex":"0x1","type":"mined"}"#;
+		let s = r#"{"address":"0x33990122638b9132ca29c723bdf037f1a891a70c","topics":["0xa6697e974e6a320f454390be03f74955e8978f1a6971ea6730542e37b66179bc","0x4861736852656700000000000000000000000000000000000000000000000000"],"data":"0x","blockHash":"0xed76641c68a1c641aee09a94b3b471f4dc0316efe5ac19cf488e2674cf8d05b5","blockNumber":"0x4510c","transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000000","transactionIndex":"0x0","logIndex":"0x1","transactionLogIndex":"0x1","type":"mined","removed":false}"#;
 
 		let log = Log {
 			address: H160::from_str("33990122638b9132ca29c723bdf037f1a891a70c").unwrap(),
@@ -107,6 +107,7 @@ mod tests {
 			transaction_log_index: Some(1.into()),
 			log_index: Some(U256::from(1)),
 			log_type: "mined".to_owned(),
+			removed: false,
 		};
 
 		let serialized = serde_json::to_string(&log).unwrap();

@@ -1,33 +1,35 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Pub-Sub types.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::Error;
 use serde_json::{Value, from_value};
-use v1::types::{RichHeader, Filter, Log};
+use v1::types::{RichHeader, Filter, Log, H256};
 
 /// Subscription result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Result {
 	/// New block header.
 	Header(RichHeader),
-	/// Logs
-	Logs(Vec<Log>),
+	/// Log
+	Log(Log),
+	/// Transaction hash
+	TransactionHash(H256),
 }
 
 impl Serialize for Result {
@@ -36,7 +38,8 @@ impl Serialize for Result {
 	{
 		match *self {
 			Result::Header(ref header) => header.serialize(serializer),
-			Result::Logs(ref logs) => logs.serialize(serializer),
+			Result::Log(ref log) => log.serialize(serializer),
+			Result::TransactionHash(ref hash) => hash.serialize(serializer),
 		}
 	}
 }
@@ -44,18 +47,15 @@ impl Serialize for Result {
 /// Subscription kind.
 #[derive(Debug, Deserialize, PartialEq, Eq, Hash, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub enum Kind {
 	/// New block headers subscription.
-	#[serde(rename="newHeads")]
 	NewHeads,
 	/// Logs subscription.
-	#[serde(rename="logs")]
 	Logs,
 	/// New Pending Transactions subscription.
-	#[serde(rename="newPendingTransactions")]
 	NewPendingTransactions,
 	/// Node syncing status subscription.
-	#[serde(rename="syncing")]
 	Syncing,
 }
 
@@ -116,6 +116,7 @@ mod tests {
 		assert_eq!(logs1, Params::Logs(Filter {
 			from_block: None,
 			to_block: None,
+			block_hash: None,
 			address: None,
 			topics: None,
 			limit: None,
@@ -123,6 +124,7 @@ mod tests {
 		assert_eq!(logs2, Params::Logs(Filter {
 			from_block: None,
 			to_block: None,
+			block_hash: None,
 			address: None,
 			topics: None,
 			limit: Some(10),
@@ -130,6 +132,7 @@ mod tests {
 		assert_eq!(logs3, Params::Logs(Filter {
 			from_block: None,
 			to_block: None,
+			block_hash: None,
 			address: None,
 			topics: Some(vec![
 				VariadicValue::Single("000000000000000000000000a94f5374fce5edbc8e2a8697c15331677e6ebf0b".parse().unwrap()

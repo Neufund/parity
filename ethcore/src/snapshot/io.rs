@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Snapshot i/o.
 //! Ways of writing and reading snapshots. This module supports writing and reading
@@ -26,8 +26,8 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
-use bigint::hash::H256;
-use rlp::{RlpStream, UntrustedRlp};
+use ethereum_types::H256;
+use rlp::{RlpStream, Rlp};
 
 use super::ManifestData;
 
@@ -156,12 +156,9 @@ impl LooseWriter {
 
 	// writing logic is the same for both kinds of chunks.
 	fn write_chunk(&mut self, hash: H256, chunk: &[u8]) -> io::Result<()> {
-		let mut file_path = self.dir.clone();
-		file_path.push(hash.hex());
-
+		let file_path = self.dir.join(format!("{:x}", hash));
 		let mut file = File::create(file_path)?;
 		file.write_all(chunk)?;
-
 		Ok(())
 	}
 }
@@ -217,7 +214,6 @@ impl PackedReader {
 			return Ok(None);
 		}
 
-
 		file.seek(SeekFrom::End(-8))?;
 		let mut off_bytes = [0u8; 8];
 
@@ -241,7 +237,7 @@ impl PackedReader {
 		file.seek(SeekFrom::Start(manifest_off))?;
 		file.read_exact(&mut manifest_buf)?;
 
-		let rlp = UntrustedRlp::new(&manifest_buf);
+		let rlp = Rlp::new(&manifest_buf);
 
 		let (start, version) = if rlp.item_count()? == 5 {
 			(0, 1)
@@ -327,21 +323,17 @@ impl SnapshotReader for LooseReader {
 	}
 
 	fn chunk(&self, hash: H256) -> io::Result<Bytes> {
-		let mut path = self.dir.clone();
-		path.push(hash.hex());
-
+		let path = self.dir.join(format!("{:x}", hash));
 		let mut buf = Vec::new();
 		let mut file = File::open(&path)?;
-
 		file.read_to_end(&mut buf)?;
-
 		Ok(buf)
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use devtools::RandomTempPath;
+	use tempdir::TempDir;
 	use hash::keccak;
 
 	use snapshot::ManifestData;
@@ -352,8 +344,9 @@ mod tests {
 
 	#[test]
 	fn packed_write_and_read() {
-		let path = RandomTempPath::new();
-		let mut writer = PackedWriter::new(path.as_path()).unwrap();
+		let tempdir = TempDir::new("").unwrap();
+		let path = tempdir.path().join("packed");
+		let mut writer = PackedWriter::new(&path).unwrap();
 
 		let mut state_hashes = Vec::new();
 		let mut block_hashes = Vec::new();
@@ -381,7 +374,7 @@ mod tests {
 
 		writer.finish(manifest.clone()).unwrap();
 
-		let reader = PackedReader::new(path.as_path()).unwrap().unwrap();
+		let reader = PackedReader::new(&path).unwrap().unwrap();
 		assert_eq!(reader.manifest(), &manifest);
 
 		for hash in manifest.state_hashes.iter().chain(&manifest.block_hashes) {
@@ -391,8 +384,8 @@ mod tests {
 
 	#[test]
 	fn loose_write_and_read() {
-		let path = RandomTempPath::new();
-		let mut writer = LooseWriter::new(path.as_path().into()).unwrap();
+		let tempdir = TempDir::new("").unwrap();
+		let mut writer = LooseWriter::new(tempdir.path().into()).unwrap();
 
 		let mut state_hashes = Vec::new();
 		let mut block_hashes = Vec::new();
@@ -420,7 +413,7 @@ mod tests {
 
 		writer.finish(manifest.clone()).unwrap();
 
-		let reader = LooseReader::new(path.as_path().into()).unwrap();
+		let reader = LooseReader::new(tempdir.path().into()).unwrap();
 		assert_eq!(reader.manifest(), &manifest);
 
 		for hash in manifest.state_hashes.iter().chain(&manifest.block_hashes) {

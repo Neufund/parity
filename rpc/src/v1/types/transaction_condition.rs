@@ -1,54 +1,53 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
-use ethcore;
+use types::transaction;
 
 /// Represents condition on minimum block number or block timestamp.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum TransactionCondition {
 	/// Valid at this minimum block number.
-	#[serde(rename="block")]
+	#[serde(rename = "block")]
 	Number(u64),
 	/// Valid at given unix time.
-	#[serde(rename="time")]
+	#[serde(rename = "time")]
 	Timestamp(u64),
 }
 
-impl Into<ethcore::transaction::Condition> for TransactionCondition {
-	fn into(self) -> ethcore::transaction::Condition {
+impl Into<transaction::Condition> for TransactionCondition {
+	fn into(self) -> transaction::Condition {
 		match self {
-			TransactionCondition::Number(n) => ethcore::transaction::Condition::Number(n),
-			TransactionCondition::Timestamp(n) => ethcore::transaction::Condition::Timestamp(n),
+			TransactionCondition::Number(n) => transaction::Condition::Number(n),
+			TransactionCondition::Timestamp(n) => transaction::Condition::Timestamp(n),
 		}
 	}
 }
 
-impl From<ethcore::transaction::Condition> for TransactionCondition {
-	fn from(condition: ethcore::transaction::Condition) -> Self {
+impl From<transaction::Condition> for TransactionCondition {
+	fn from(condition: transaction::Condition) -> Self {
 		match condition {
-			ethcore::transaction::Condition::Number(n) => TransactionCondition::Number(n),
-			ethcore::transaction::Condition::Timestamp(n) => TransactionCondition::Timestamp(n),
+			transaction::Condition::Number(n) => TransactionCondition::Number(n),
+			transaction::Condition::Timestamp(n) => TransactionCondition::Timestamp(n),
 		}
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use ethcore;
 	use super::*;
 	use serde_json;
 
@@ -61,8 +60,7 @@ mod tests {
 
 	#[test]
 	fn condition_into() {
-		assert_eq!(ethcore::transaction::Condition::Number(100), TransactionCondition::Number(100).into());
-		assert_eq!(ethcore::transaction::Condition::Timestamp(100), TransactionCondition::Timestamp(100).into());
+		assert_eq!(transaction::Condition::Number(100), TransactionCondition::Number(100).into());
+		assert_eq!(transaction::Condition::Timestamp(100), TransactionCondition::Timestamp(100).into());
 	}
 }
-

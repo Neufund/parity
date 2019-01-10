@@ -1,24 +1,23 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Execution environment substate.
 use std::collections::HashSet;
-use bigint::prelude::U256;
-use util::Address;
-use log_entry::LogEntry;
+use ethereum_types::Address;
+use types::log_entry::LogEntry;
 use evm::{Schedule, CleanDustMode};
 use super::CleanupMode;
 
@@ -35,8 +34,8 @@ pub struct Substate {
 	/// Any logs.
 	pub logs: Vec<LogEntry>,
 
-	/// Refund counter of SSTORE nonzero -> zero.
-	pub sstore_clears_count: U256,
+	/// Refund counter of SSTORE.
+	pub sstore_clears_refund: i128,
 
 	/// Created contracts.
 	pub contracts_created: Vec<Address>,
@@ -53,12 +52,11 @@ impl Substate {
 		self.suicides.extend(s.suicides);
 		self.touched.extend(s.touched);
 		self.logs.extend(s.logs);
-		self.sstore_clears_count = self.sstore_clears_count + s.sstore_clears_count;
+		self.sstore_clears_refund += s.sstore_clears_refund;
 		self.contracts_created.extend(s.contracts_created);
 	}
 
 	/// Get the cleanup mode object from this.
-	#[cfg_attr(feature="dev", allow(wrong_self_convention))]
 	pub fn to_cleanup_mode(&mut self, schedule: &Schedule) -> CleanupMode {
 		match (schedule.kill_dust != CleanDustMode::Off, schedule.no_empty, schedule.kill_empty) {
 			(false, false, _) => CleanupMode::ForceCreate,
@@ -71,7 +69,7 @@ impl Substate {
 #[cfg(test)]
 mod tests {
 	use super::Substate;
-	use log_entry::LogEntry;
+	use types::log_entry::LogEntry;
 
 	#[test]
 	fn created() {
@@ -88,7 +86,7 @@ mod tests {
 			topics: vec![],
 			data: vec![]
 		});
-		sub_state.sstore_clears_count = 5.into();
+		sub_state.sstore_clears_refund = (15000 * 5).into();
 		sub_state.suicides.insert(10u64.into());
 
 		let mut sub_state_2 = Substate::new();
@@ -98,11 +96,11 @@ mod tests {
 			topics: vec![],
 			data: vec![]
 		});
-		sub_state_2.sstore_clears_count = 7.into();
+		sub_state_2.sstore_clears_refund = (15000 * 7).into();
 
 		sub_state.accrue(sub_state_2);
 		assert_eq!(sub_state.contracts_created.len(), 2);
-		assert_eq!(sub_state.sstore_clears_count, 12.into());
+		assert_eq!(sub_state.sstore_clears_refund, (15000 * 12).into());
 		assert_eq!(sub_state.suicides.len(), 1);
 	}
 }

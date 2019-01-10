@@ -1,40 +1,40 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! State snapshotting tests.
-
-use basic_account::BasicAccount;
-use snapshot::account;
-use snapshot::{chunk_state, Error as SnapshotError, Progress, StateRebuilder};
-use snapshot::io::{PackedReader, PackedWriter, SnapshotReader, SnapshotWriter};
-use super::helpers::{compare_dbs, StateProducer};
-
-use error::Error;
-
-use rand::{XorShiftRng, SeedableRng};
-use bigint::hash::H256;
-use util::journaldb::{self, Algorithm};
-use util::kvdb::{Database, DatabaseConfig};
-use memorydb::MemoryDB;
-use parking_lot::Mutex;
-use devtools::RandomTempPath;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use hash::{KECCAK_NULL_RLP, keccak};
+
+use types::basic_account::BasicAccount;
+use snapshot::account;
+use snapshot::{chunk_state, Error as SnapshotError, Progress, StateRebuilder, SNAPSHOT_SUBPARTS};
+use snapshot::io::{PackedReader, PackedWriter, SnapshotReader, SnapshotWriter};
+use super::helpers::{compare_dbs, StateProducer};
+
+use error::{Error, ErrorKind};
+
+use rand::{XorShiftRng, SeedableRng};
+use ethereum_types::H256;
+use journaldb::{self, Algorithm};
+use kvdb_rocksdb::{Database, DatabaseConfig};
+use memorydb::MemoryDB;
+use parking_lot::Mutex;
+use tempdir::TempDir;
 
 #[test]
 fn snap_and_restore() {
@@ -47,14 +47,17 @@ fn snap_and_restore() {
 		producer.tick(&mut rng, &mut old_db);
 	}
 
-	let snap_dir = RandomTempPath::create_dir();
-	let mut snap_file = snap_dir.as_path().to_owned();
-	snap_file.push("SNAP");
+	let tempdir = TempDir::new("").unwrap();
+	let snap_file = tempdir.path().join("SNAP");
 
 	let state_root = producer.state_root();
 	let writer = Mutex::new(PackedWriter::new(&snap_file).unwrap());
 
-	let state_hashes = chunk_state(&old_db, &state_root, &writer, &Progress::default()).unwrap();
+	let mut state_hashes = Vec::new();
+	for part in 0..SNAPSHOT_SUBPARTS {
+		let mut hashes = chunk_state(&old_db, &state_root, &writer, &Progress::default(), Some(part)).unwrap();
+		state_hashes.append(&mut hashes);
+	}
 
 	writer.into_inner().finish(::snapshot::ManifestData {
 		version: 2,
@@ -65,8 +68,7 @@ fn snap_and_restore() {
 		block_hash: H256::default(),
 	}).unwrap();
 
-	let mut db_path = snap_dir.as_path().to_owned();
-	db_path.push("db");
+	let db_path = tempdir.path().join("db");
 	let db = {
 		let new_db = Arc::new(Database::open(&db_cfg, &db_path.to_string_lossy()).unwrap());
 		let mut rebuilder = StateRebuilder::new(new_db.clone(), Algorithm::OverlayRecent);
@@ -76,7 +78,7 @@ fn snap_and_restore() {
 
 		for chunk_hash in &reader.manifest().state_hashes {
 			let raw = reader.chunk(*chunk_hash).unwrap();
-			let chunk = ::util::snappy::decompress(&raw).unwrap();
+			let chunk = ::snappy::decompress(&raw).unwrap();
 
 			rebuilder.feed(&chunk, &flag).unwrap();
 		}
@@ -97,8 +99,7 @@ fn snap_and_restore() {
 fn get_code_from_prev_chunk() {
 	use std::collections::HashSet;
 	use rlp::RlpStream;
-	use bigint::prelude::U256;
-	use bigint::hash::H256;
+	use ethereum_types::{H256, U256};
 	use hashdb::HashDB;
 
 	use account_db::{AccountDBMut, AccountDB};
@@ -117,7 +118,7 @@ fn get_code_from_prev_chunk() {
 	// first one will have code inlined,
 	// second will just have its hash.
 	let thin_rlp = acc_stream.out();
-	let acc: BasicAccount = ::rlp::decode(&thin_rlp);
+	let acc: BasicAccount = ::rlp::decode(&thin_rlp).expect("error decoding basic account");
 
 	let mut make_chunk = |acc, hash| {
 		let mut db = MemoryDB::new();
@@ -132,9 +133,9 @@ fn get_code_from_prev_chunk() {
 	let chunk1 = make_chunk(acc.clone(), h1);
 	let chunk2 = make_chunk(acc, h2);
 
-	let db_path = RandomTempPath::create_dir();
+	let tempdir = TempDir::new("").unwrap();
 	let db_cfg = DatabaseConfig::with_columns(::db::NUM_COLUMNS);
-	let new_db = Arc::new(Database::open(&db_cfg, &db_path.to_string_lossy()).unwrap());
+	let new_db = Arc::new(Database::open(&db_cfg, tempdir.path().to_str().unwrap()).unwrap());
 
 	{
 		let mut rebuilder = StateRebuilder::new(new_db.clone(), Algorithm::OverlayRecent);
@@ -161,14 +162,13 @@ fn checks_flag() {
 		producer.tick(&mut rng, &mut old_db);
 	}
 
-	let snap_dir = RandomTempPath::create_dir();
-	let mut snap_file = snap_dir.as_path().to_owned();
-	snap_file.push("SNAP");
+	let tempdir = TempDir::new("").unwrap();
+	let snap_file = tempdir.path().join("SNAP");
 
 	let state_root = producer.state_root();
 	let writer = Mutex::new(PackedWriter::new(&snap_file).unwrap());
 
-	let state_hashes = chunk_state(&old_db, &state_root, &writer, &Progress::default()).unwrap();
+	let state_hashes = chunk_state(&old_db, &state_root, &writer, &Progress::default(), None).unwrap();
 
 	writer.into_inner().finish(::snapshot::ManifestData {
 		version: 2,
@@ -179,8 +179,8 @@ fn checks_flag() {
 		block_hash: H256::default(),
 	}).unwrap();
 
-	let mut db_path = snap_dir.as_path().to_owned();
-	db_path.push("db");
+	let tempdir = TempDir::new("").unwrap();
+	let db_path = tempdir.path().join("db");
 	{
 		let new_db = Arc::new(Database::open(&db_cfg, &db_path.to_string_lossy()).unwrap());
 		let mut rebuilder = StateRebuilder::new(new_db.clone(), Algorithm::OverlayRecent);
@@ -190,10 +190,10 @@ fn checks_flag() {
 
 		for chunk_hash in &reader.manifest().state_hashes {
 			let raw = reader.chunk(*chunk_hash).unwrap();
-			let chunk = ::util::snappy::decompress(&raw).unwrap();
+			let chunk = ::snappy::decompress(&raw).unwrap();
 
 			match rebuilder.feed(&chunk, &flag) {
-				Err(Error::Snapshot(SnapshotError::RestorationAborted)) => {},
+				Err(Error(ErrorKind::Snapshot(SnapshotError::RestorationAborted), _)) => {},
 				_ => panic!("unexpected result when feeding with flag off"),
 			}
 		}

@@ -1,26 +1,26 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Service for culling the light client's transaction queue.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use ethcore::service::ClientIoMessage;
-use ethsync::LightSync;
+use ethcore::client::ClientIoMessage;
+use sync::LightSync;
 use io::{IoContext, IoHandler, TimerToken};
 
 use light::client::LightChainClient;
@@ -29,16 +29,16 @@ use light::TransactionQueue;
 
 use futures::{future, Future};
 
-use parity_reactor::Remote;
+use parity_runtime::Executor;
 
 use parking_lot::RwLock;
 
 // Attepmt to cull once every 10 minutes.
 const TOKEN: TimerToken = 1;
-const TIMEOUT_MS: u64 = 1000 * 60 * 10;
+const TIMEOUT: Duration = Duration::from_secs(60 * 10);
 
 // But make each attempt last only 9 minutes
-const PURGE_TIMEOUT_MS: u64 = 1000 * 60 * 9;
+const PURGE_TIMEOUT: Duration = Duration::from_secs(60 * 9);
 
 /// Periodically culls the transaction queue of mined transactions.
 pub struct QueueCull<T> {
@@ -50,13 +50,13 @@ pub struct QueueCull<T> {
 	pub on_demand: Arc<OnDemand>,
 	/// The transaction queue.
 	pub txq: Arc<RwLock<TransactionQueue>>,
-	/// Event loop remote.
-	pub remote: Remote,
+	/// Event loop executor.
+	pub executor: Executor,
 }
 
 impl<T: LightChainClient + 'static> IoHandler<ClientIoMessage> for QueueCull<T> {
 	fn initialize(&self, io: &IoContext<ClientIoMessage>) {
-		io.register_timer(TOKEN, TIMEOUT_MS).expect("Error registering timer");
+		io.register_timer(TOKEN, TIMEOUT).expect("Error registering timer");
 	}
 
 	fn timeout(&self, _io: &IoContext<ClientIoMessage>, timer: TimerToken) {
@@ -70,7 +70,7 @@ impl<T: LightChainClient + 'static> IoHandler<ClientIoMessage> for QueueCull<T> 
 		let start_nonce = self.client.engine().account_start_nonce(best_header.number());
 
 		info!(target: "cull", "Attempting to cull queued transactions from {} senders.", senders.len());
-		self.remote.spawn_with_timeout(move || {
+		self.executor.spawn_with_timeout(move || {
 			let maybe_fetching = sync.with_context(move |ctx| {
 				// fetch the nonce of each sender in the queue.
 				let nonce_reqs = senders.iter()
@@ -94,12 +94,12 @@ impl<T: LightChainClient + 'static> IoHandler<ClientIoMessage> for QueueCull<T> 
 			});
 
 			match maybe_fetching {
-				Some(fut) => fut.boxed(),
+				Some(fut) => future::Either::A(fut),
 				None => {
 					debug!(target: "cull", "Unable to acquire network context; qed");
-					future::ok(()).boxed()
-				}
+					future::Either::B(future::ok(()))
+				},
 			}
-		}, Duration::from_millis(PURGE_TIMEOUT_MS), || {})
+		}, PURGE_TIMEOUT, || {})
 	}
 }

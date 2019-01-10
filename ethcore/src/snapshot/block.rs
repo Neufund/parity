@@ -1,30 +1,29 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Block RLP compression.
 
-use block::Block;
-use header::Header;
-use hash::keccak;
-
-use views::BlockView;
-use rlp::{DecoderError, RlpStream, UntrustedRlp};
-use bigint::hash::H256;
 use bytes::Bytes;
+use ethereum_types::H256;
+use hash::keccak;
+use rlp::{DecoderError, RlpStream, Rlp};
 use triehash::ordered_trie_root;
+use types::block::Block;
+use types::header::Header;
+use types::views::BlockView;
 
 const HEADER_FIELDS: usize = 8;
 const BLOCK_FIELDS: usize = 2;
@@ -89,7 +88,7 @@ impl AbridgedBlock {
 	///
 	/// Will fail if contains invalid rlp.
 	pub fn to_block(&self, parent_hash: H256, number: u64, receipts_root: H256) -> Result<Block, DecoderError> {
-		let rlp = UntrustedRlp::new(&self.rlp);
+		let rlp = Rlp::new(&self.rlp);
 
 		let mut header: Header = Default::default();
 		header.set_parent_hash(parent_hash);
@@ -107,7 +106,7 @@ impl AbridgedBlock {
 		let uncles: Vec<Header> = rlp.list_at(9)?;
 
 		header.set_transactions_root(ordered_trie_root(
-			rlp.at(8)?.iter().map(|r| r.as_raw().to_owned())
+			rlp.at(8)?.iter().map(|r| r.as_raw())
 		));
 		header.set_receipts_root(receipts_root);
 
@@ -133,18 +132,17 @@ impl AbridgedBlock {
 
 #[cfg(test)]
 mod tests {
-	use views::BlockView;
-	use block::Block;
 	use super::AbridgedBlock;
-	use transaction::{Action, Transaction};
 
-	use bigint::prelude::U256;
-	use bigint::hash::H256;
-	use util::Address;
 	use bytes::Bytes;
+	use ethereum_types::{H256, U256, Address};
+	use types::transaction::{Action, Transaction};
+	use types::block::Block;
+	use types::view;
+	use types::views::BlockView;
 
 	fn encode_block(b: &Block) -> Bytes {
-		b.rlp_bytes(::basic_types::Seal::With)
+		b.rlp_bytes()
 	}
 
 	#[test]
@@ -153,7 +151,7 @@ mod tests {
 		let receipts_root = b.header.receipts_root().clone();
 		let encoded = encode_block(&b);
 
-		let abridged = AbridgedBlock::from_block_view(&BlockView::new(&encoded));
+		let abridged = AbridgedBlock::from_block_view(&view!(BlockView, &encoded));
 		assert_eq!(abridged.to_block(H256::new(), 0, receipts_root).unwrap(), b);
 	}
 
@@ -164,7 +162,7 @@ mod tests {
 		let receipts_root = b.header.receipts_root().clone();
 		let encoded = encode_block(&b);
 
-		let abridged = AbridgedBlock::from_block_view(&BlockView::new(&encoded));
+		let abridged = AbridgedBlock::from_block_view(&view!(BlockView, &encoded));
 		assert_eq!(abridged.to_block(H256::new(), 2, receipts_root).unwrap(), b);
 	}
 
@@ -195,12 +193,12 @@ mod tests {
 
 		let receipts_root = b.header.receipts_root().clone();
 		b.header.set_transactions_root(::triehash::ordered_trie_root(
-			b.transactions.iter().map(::rlp::encode).map(|out| out.into_vec())
+			b.transactions.iter().map(::rlp::encode)
 		));
 
 		let encoded = encode_block(&b);
 
-		let abridged = AbridgedBlock::from_block_view(&BlockView::new(&encoded[..]));
+		let abridged = AbridgedBlock::from_block_view(&view!(BlockView, &encoded[..]));
 		assert_eq!(abridged.to_block(H256::new(), 0, receipts_root).unwrap(), b);
 	}
 }

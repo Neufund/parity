@@ -1,18 +1,18 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! PoA block chunker and rebuilder tests.
 
@@ -21,24 +21,25 @@ use std::sync::Arc;
 use std::str::FromStr;
 
 use account_provider::AccountProvider;
-use client::{Client, BlockChainClient};
+use client::{Client, BlockChainClient, ChainInfo};
 use ethkey::Secret;
-use futures::Future;
-use native_contracts::test_contracts::ValidatorSet;
 use snapshot::tests::helpers as snapshot_helpers;
 use spec::Spec;
-use tests::helpers;
-use transaction::{Transaction, Action, SignedTransaction};
+use test_helpers::generate_dummy_client_with_spec_and_accounts;
+use types::transaction::{Transaction, Action, SignedTransaction};
+use tempdir::TempDir;
 
-use util::Address;
-use util::kvdb;
+use ethereum_types::Address;
+use test_helpers;
+
+use_contract!(test_validator_set, "res/contracts/test_validator_set.json");
 
 const PASS: &'static str = "";
 const TRANSITION_BLOCK_1: usize = 2; // block at which the contract becomes activated.
 const TRANSITION_BLOCK_2: usize = 10; // block at which the second contract activates.
 
 macro_rules! secret {
-	($e: expr) => { Secret::from_slice(&$crate::hash::keccak($e)) }
+	($e: expr) => { Secret::from($crate::hash::keccak($e).0) }
 }
 
 lazy_static! {
@@ -51,15 +52,15 @@ lazy_static! {
 	static ref RICH_SECRET: Secret = secret!("1");
 }
 
-
 /// Contract code used here: https://gist.github.com/anonymous/2a43783647e0f0dfcc359bd6fd81d6d9
 /// Account with secrets keccak("1") is initially the validator.
 /// Transitions to the contract at block 2, initially same validator set.
 /// Create a new Spec with AuthorityRound which uses a contract at address 5 to determine the current validators using `getValidators`.
-/// `native_contracts::test_contracts::ValidatorSet` provides a native wrapper for the ABi.
+/// `test_validator_set::ValidatorSet` provides a native wrapper for the ABi.
 fn spec_fixed_to_contract() -> Spec {
 	let data = include_bytes!("test_validator_contract.json");
-	Spec::load(&::std::env::temp_dir(), &data[..]).unwrap()
+	let tempdir = TempDir::new("").unwrap();
+	Spec::load(&tempdir.path(), &data[..]).unwrap()
 }
 
 // creates an account provider, filling it with accounts from all the given
@@ -70,7 +71,7 @@ fn make_accounts(secrets: &[Secret]) -> (Arc<AccountProvider>, Vec<Address>) {
 
 	let addrs = secrets.iter()
 		.cloned()
-		.map(|s| provider.insert_account(s, PASS).unwrap())
+		.map(|s| provider.insert_account(s, &PASS.into()).unwrap())
 		.collect();
 
 	(Arc::new(provider), addrs)
@@ -87,7 +88,7 @@ enum Transition {
 
 // create a chain with the given transitions and some blocks beyond that transition.
 fn make_chain(accounts: Arc<AccountProvider>, blocks_beyond: usize, transitions: Vec<Transition>) -> Arc<Client> {
-	let client = helpers::generate_dummy_client_with_spec_and_accounts(
+	let client = generate_dummy_client_with_spec_and_accounts(
 		spec_fixed_to_contract, Some(accounts.clone()));
 
 	let mut cur_signers = vec![*RICH_ADDR];
@@ -105,13 +106,11 @@ fn make_chain(accounts: Arc<AccountProvider>, blocks_beyond: usize, transitions:
 			trace!(target: "snapshot", "Pushing block #{}, {} txs, author={}",
 				n, txs.len(), signers[idx]);
 
-			client.miner().set_author(signers[idx]);
+			client.miner().set_author(signers[idx], Some(PASS.into())).unwrap();
 			client.miner().import_external_transactions(&*client,
 				txs.into_iter().map(Into::into).collect());
 
-			let engine = client.engine();
-			engine.set_signer(accounts.clone(), signers[idx], PASS.to_owned());
-			engine.step();
+			client.engine().step();
 
 			assert_eq!(client.chain_info().best_block_number, n);
 		};
@@ -132,12 +131,9 @@ fn make_chain(accounts: Arc<AccountProvider>, blocks_beyond: usize, transitions:
 				data: Vec::new(),
 			}.sign(&*RICH_SECRET, client.signing_chain_id());
 
-			*nonce = *nonce + 1.into();
+			*nonce = *nonce + 1;
 			vec![transaction]
 		};
-
-		let contract_1 = ValidatorSet::new(*CONTRACT_ADDR_1);
-		let contract_2 = ValidatorSet::new(*CONTRACT_ADDR_2);
 
 		// apply all transitions.
 		for transition in transitions {
@@ -160,34 +156,24 @@ fn make_chain(accounts: Arc<AccountProvider>, blocks_beyond: usize, transitions:
 
 			let pending = if manual {
 				trace!(target: "snapshot", "applying set transition at block #{}", num);
-				let contract = match num >= TRANSITION_BLOCK_2 {
-					true => &contract_2,
-					false => &contract_1,
+				let address = match num >= TRANSITION_BLOCK_2 {
+					true => &CONTRACT_ADDR_2 as &Address,
+					false => &CONTRACT_ADDR_1 as &Address,
 				};
 
-				let mut pending = Vec::new();
-				{
-					let mut exec = |addr, data| {
-						let mut nonce = nonce.borrow_mut();
-						let transaction = Transaction {
-							nonce: *nonce,
-							gas_price: 0.into(),
-							gas: 1_000_000.into(),
-							action: Action::Call(addr),
-							value: 0.into(),
-							data: data,
-						}.sign(&*RICH_SECRET, client.signing_chain_id());
+				let data = test_validator_set::functions::set_validators::encode_input(new_set.clone());
+				let mut nonce = nonce.borrow_mut();
+				let transaction = Transaction {
+					nonce: *nonce,
+					gas_price: 0.into(),
+					gas: 1_000_000.into(),
+					action: Action::Call(*address),
+					value: 0.into(),
+					data,
+				}.sign(&*RICH_SECRET, client.signing_chain_id());
 
-						pending.push(transaction);
-
-						*nonce = *nonce + 1.into();
-						Ok(Vec::new())
-					};
-
-					contract.set_validators(&mut exec, new_set.clone()).wait().unwrap();
-				}
-
-				pending
+				*nonce = *nonce + 1;
+				vec![transaction]
 			} else {
 				make_useless_transactions()
 			};
@@ -226,7 +212,7 @@ fn fixed_to_contract_only() {
 		secret!("dog42"),
 	]);
 
-	assert!(provider.has_account(*RICH_ADDR).unwrap());
+	assert!(provider.has_account(*RICH_ADDR));
 
 	let client = make_chain(provider, 3, vec![
 		Transition::Manual(3, vec![addrs[2], addrs[3], addrs[5], addrs[7]]),
@@ -236,14 +222,14 @@ fn fixed_to_contract_only() {
 	// 6, 7, 8 prove finality for transition at 6.
 	// 3 beyond gets us to 11.
 	assert_eq!(client.chain_info().best_block_number, 11);
-	let reader = snapshot_helpers::snap(&*client);
+	let (reader, _tempdir) = snapshot_helpers::snap(&*client);
 
-	let new_db = kvdb::in_memory(::db::NUM_COLUMNS.unwrap_or(0));
+	let new_db = test_helpers::new_db();
 	let spec = spec_fixed_to_contract();
 
 	// ensure fresh engine's step matches.
 	for _ in 0..11 { spec.engine.step() }
-	snapshot_helpers::restore(Arc::new(new_db), &*spec.engine, &**reader, &spec.genesis_block()).unwrap();
+	snapshot_helpers::restore(new_db, &*spec.engine, &*reader, &spec.genesis_block()).unwrap();
 }
 
 #[test]
@@ -259,7 +245,7 @@ fn fixed_to_contract_to_contract() {
 		secret!("dog42"),
 	]);
 
-	assert!(provider.has_account(*RICH_ADDR).unwrap());
+	assert!(provider.has_account(*RICH_ADDR));
 
 	let client = make_chain(provider, 3, vec![
 		Transition::Manual(3, vec![addrs[2], addrs[3], addrs[5], addrs[7]]),
@@ -269,10 +255,10 @@ fn fixed_to_contract_to_contract() {
 	]);
 
 	assert_eq!(client.chain_info().best_block_number, 16);
-	let reader = snapshot_helpers::snap(&*client);
-	let new_db = kvdb::in_memory(::db::NUM_COLUMNS.unwrap_or(0));
+	let (reader, _tempdir) = snapshot_helpers::snap(&*client);
+	let new_db = test_helpers::new_db();
 	let spec = spec_fixed_to_contract();
 
 	for _ in 0..16 { spec.engine.step() }
-	snapshot_helpers::restore(Arc::new(new_db), &*spec.engine, &**reader, &spec.genesis_block()).unwrap();
+	snapshot_helpers::restore(new_db, &*spec.engine, &*reader, &spec.genesis_block()).unwrap();
 }

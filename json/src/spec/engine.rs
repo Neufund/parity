@@ -1,43 +1,39 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Engine deserialization.
 
-use super::{Ethash, BasicAuthority, AuthorityRound, Tendermint, NullEngine};
+use super::{Ethash, BasicAuthority, AuthorityRound, NullEngine, InstantSeal};
 
 /// Engine deserialization.
 #[derive(Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub enum Engine {
 	/// Null engine.
-	#[serde(rename="null")]
 	Null(NullEngine),
 	/// Instantly sealing engine.
-	#[serde(rename="instantSeal")]
-	InstantSeal,
+	InstantSeal(Option<InstantSeal>),
 	/// Ethash engine.
+	#[serde(rename = "Ethash")]
 	Ethash(Ethash),
 	/// BasicAuthority engine.
-	#[serde(rename="basicAuthority")]
 	BasicAuthority(BasicAuthority),
 	/// AuthorityRound engine.
-	#[serde(rename="authorityRound")]
 	AuthorityRound(AuthorityRound),
-	/// Tendermint engine.
-	#[serde(rename="tendermint")]
-	Tendermint(Tendermint)
 }
 
 #[cfg(test)]
@@ -62,12 +58,22 @@ mod tests {
 		}
 
 		let s = r#"{
+			"instantSeal": {"params": {}}
+		}"#;
+
+		let deserialized: Engine = serde_json::from_str(s).unwrap();
+		match deserialized {
+			Engine::InstantSeal(_) => {},	// instant seal is unit tested in its own file.
+			_ => panic!(),
+		};
+
+		let s = r#"{
 			"instantSeal": null
 		}"#;
 
 		let deserialized: Engine = serde_json::from_str(s).unwrap();
 		match deserialized {
-			Engine::InstantSeal => {},	// instant seal is unit tested in its own file.
+			Engine::InstantSeal(_) => {},	// instant seal is unit tested in its own file.
 			_ => panic!(),
 		};
 
@@ -77,7 +83,6 @@ mod tests {
 					"minimumDifficulty": "0x020000",
 					"difficultyBoundDivisor": "0x0800",
 					"durationLimit": "0x0d",
-					"registrar" : "0xc6d9d2cd449a754c494264e1809c50e34d64562b",
 					"homesteadTransition" : "0x",
 					"daoHardforkTransition": "0xffffffffffffffff",
 					"daoHardforkBeneficiary": "0x0000000000000000000000000000000000000000",
@@ -125,21 +130,5 @@ mod tests {
 			Engine::AuthorityRound(_) => {}, // AuthorityRound is unit tested in its own file.
 			_ => panic!(),
 		};
-
-		let s = r#"{
-			"tendermint": {
-				"params": {
-					"validators": {
-						"list": ["0xc6d9d2cd449a754c494264e1809c50e34d64562b"]
-					}
-				}
-			}
-		}"#;
-		let deserialized: Engine = serde_json::from_str(s).unwrap();
-		match deserialized {
-			Engine::Tendermint(_) => {}, // Tendermint is unit tested in its own file.
-			_ => panic!(),
-		};
 	}
 }
-

@@ -1,24 +1,23 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Peer status and capabilities.
 
-use rlp::{DecoderError, Encodable, Decodable, RlpStream, UntrustedRlp};
-use bigint::prelude::U256;
-use bigint::hash::H256;
+use ethereum_types::{H256, U256};
+use rlp::{DecoderError, Encodable, Decodable, RlpStream, Rlp};
 
 use super::request_credits::FlowParams;
 
@@ -44,8 +43,8 @@ enum Key {
 
 impl Key {
 	// get the string value of this key.
-	fn as_str(&self) -> &'static str {
-		match *self {
+	fn as_str(self) -> &'static str {
+		match self {
 			Key::ProtocolVersion => "protocolVersion",
 			Key::NetworkId => "networkId",
 			Key::HeadTD => "headTd",
@@ -86,7 +85,7 @@ impl Key {
 // helper for decoding key-value pairs in the handshake or an announcement.
 struct Parser<'a> {
 	pos: usize,
-	rlp: UntrustedRlp<'a>,
+	rlp: &'a Rlp<'a>,
 }
 
 impl<'a> Parser<'a> {
@@ -98,7 +97,7 @@ impl<'a> Parser<'a> {
 
 	// expect a specific next key, and get the value's RLP.
 	// if the key isn't found, the position isn't advanced.
-	fn expect_raw(&mut self, key: Key) -> Result<UntrustedRlp<'a>, DecoderError> {
+	fn expect_raw(&mut self, key: Key) -> Result<Rlp<'a>, DecoderError> {
 		trace!(target: "les", "Expecting key {}", key.as_str());
 		let pre_pos = self.pos;
 		if let Some((k, val)) = self.get_next()? {
@@ -110,7 +109,7 @@ impl<'a> Parser<'a> {
 	}
 
 	// get the next key and value RLP.
-	fn get_next(&mut self) -> Result<Option<(Key, UntrustedRlp<'a>)>, DecoderError> {
+	fn get_next(&mut self) -> Result<Option<(Key, Rlp<'a>)>, DecoderError> {
 		while self.pos < self.rlp.item_count()? {
 			let pair = self.rlp.at(self.pos)?;
 			let k: String = pair.val_at(0)?;
@@ -170,7 +169,7 @@ impl Status {
 }
 
 /// Peer capabilities.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
 	/// Whether this peer can serve headers
 	pub serve_headers: bool,
@@ -209,10 +208,10 @@ impl Capabilities {
 ///   - chain status
 ///   - serving capabilities
 ///   - request credit parameters
-pub fn parse_handshake(rlp: UntrustedRlp) -> Result<(Status, Capabilities, Option<FlowParams>), DecoderError> {
+pub fn parse_handshake(rlp: &Rlp) -> Result<(Status, Capabilities, Option<FlowParams>), DecoderError> {
 	let mut parser = Parser {
 		pos: 0,
-		rlp: rlp,
+		rlp,
 	};
 
 	let status = Status {
@@ -305,7 +304,7 @@ pub struct Announcement {
 }
 
 /// Parse an announcement.
-pub fn parse_announcement(rlp: UntrustedRlp) -> Result<Announcement, DecoderError> {
+pub fn parse_announcement(rlp: &Rlp) -> Result<Announcement, DecoderError> {
 	let mut last_key = None;
 
 	let mut announcement = Announcement {
@@ -321,7 +320,7 @@ pub fn parse_announcement(rlp: UntrustedRlp) -> Result<Announcement, DecoderErro
 
 	let mut parser = Parser {
 		pos: 4,
-		rlp: rlp,
+		rlp,
 	};
 
 	while let Some((key, item)) = parser.get_next()? {
@@ -374,9 +373,8 @@ pub fn write_announcement(announcement: &Announcement) -> Vec<u8> {
 mod tests {
 	use super::*;
 	use super::super::request_credits::FlowParams;
-	use bigint::prelude::U256;
-	use bigint::hash::H256;
-	use rlp::{RlpStream, UntrustedRlp};
+	use ethereum_types::{U256, H256};
+	use rlp::{RlpStream, Rlp};
 
 	#[test]
 	fn full_handshake() {
@@ -406,7 +404,7 @@ mod tests {
 		let handshake = write_handshake(&status, &capabilities, Some(&flow_params));
 
 		let (read_status, read_capabilities, read_flow)
-			= parse_handshake(UntrustedRlp::new(&handshake)).unwrap();
+			= parse_handshake(&Rlp::new(&handshake)).unwrap();
 
 		assert_eq!(read_status, status);
 		assert_eq!(read_capabilities, capabilities);
@@ -441,7 +439,7 @@ mod tests {
 		let handshake = write_handshake(&status, &capabilities, Some(&flow_params));
 
 		let (read_status, read_capabilities, read_flow)
-			= parse_handshake(UntrustedRlp::new(&handshake)).unwrap();
+			= parse_handshake(&Rlp::new(&handshake)).unwrap();
 
 		assert_eq!(read_status, status);
 		assert_eq!(read_capabilities, capabilities);
@@ -475,7 +473,7 @@ mod tests {
 
 		let handshake = write_handshake(&status, &capabilities, Some(&flow_params));
 		let interleaved = {
-			let handshake = UntrustedRlp::new(&handshake);
+			let handshake = Rlp::new(&handshake);
 			let mut stream = RlpStream::new_list(handshake.item_count().unwrap_or(0) * 3);
 
 			for item in handshake.iter() {
@@ -491,7 +489,7 @@ mod tests {
 		};
 
 		let (read_status, read_capabilities, read_flow)
-			= parse_handshake(UntrustedRlp::new(&interleaved)).unwrap();
+			= parse_handshake(&Rlp::new(&interleaved)).unwrap();
 
 		assert_eq!(read_status, status);
 		assert_eq!(read_capabilities, capabilities);
@@ -512,7 +510,7 @@ mod tests {
 		};
 
 		let serialized = write_announcement(&announcement);
-		let read = parse_announcement(UntrustedRlp::new(&serialized)).unwrap();
+		let read = parse_announcement(&Rlp::new(&serialized)).unwrap();
 
 		assert_eq!(read, announcement);
 	}
@@ -524,26 +522,26 @@ mod tests {
 		let mut stream = RlpStream::new_list(6);
 		stream
 			.append(&H256::zero())
-			.append(&10u64)
-			.append(&100_000u64)
-			.append(&2u64)
-			.append_raw(&encode_pair(Key::ServeStateSince, &44u64), 1)
+			.append(&10_u64)
+			.append(&100_000_u64)
+			.append(&2_u64)
+			.append_raw(&encode_pair(Key::ServeStateSince, &44_u64), 1)
 			.append_raw(&encode_flag(Key::ServeHeaders), 1);
 
 		let out = stream.drain();
-		assert!(parse_announcement(UntrustedRlp::new(&out)).is_err());
+		assert!(parse_announcement(&Rlp::new(&out)).is_err());
 
 		let mut stream = RlpStream::new_list(6);
 		stream
 			.append(&H256::zero())
-			.append(&10u64)
-			.append(&100_000u64)
-			.append(&2u64)
+			.append(&10_u64)
+			.append(&100_000_u64)
+			.append(&2_u64)
 			.append_raw(&encode_flag(Key::ServeHeaders), 1)
-			.append_raw(&encode_pair(Key::ServeStateSince, &44u64), 1);
+			.append_raw(&encode_pair(Key::ServeStateSince, &44_u64), 1);
 
 		let out = stream.drain();
-		assert!(parse_announcement(UntrustedRlp::new(&out)).is_ok());
+		assert!(parse_announcement(&Rlp::new(&out)).is_ok());
 	}
 
 	#[test]
@@ -568,7 +566,7 @@ mod tests {
 		let handshake = write_handshake(&status, &capabilities, None);
 
 		let (read_status, read_capabilities, read_flow)
-			= parse_handshake(UntrustedRlp::new(&handshake)).unwrap();
+			= parse_handshake(&Rlp::new(&handshake)).unwrap();
 
 		assert_eq!(read_status, status);
 		assert_eq!(read_capabilities, capabilities);

@@ -1,25 +1,25 @@
-// Copyright 2015-2017 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
+// Copyright 2015-2019 Parity Technologies (UK) Ltd.
+// This file is part of Parity Ethereum.
 
-// Parity is free software: you can redistribute it and/or modify
+// Parity Ethereum is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Parity is distributed in the hope that it will be useful,
+// Parity Ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Types for Whisper RPC.
 
 use std::fmt;
 use std::ops::Deref;
 
-use bigint::hash::*;
+use ethereum_types::{H32, H64, H128, H256, H264, H512};
 use hex::{ToHex, FromHex};
 
 use serde::{Serialize, Serializer, Deserialize, Deserializer};
@@ -51,7 +51,7 @@ macro_rules! impl_hex_for_hash {
 }
 
 impl_hex_for_hash!(
-	H32 H64 H128 H256 H264 H512 H1024
+	H32 H64 H128 H256 H264 H512
 );
 
 /// Wrapper structure around hex-encoded data.
@@ -145,10 +145,9 @@ impl<'a, T: HexEncodable> Visitor<'a> for HexEncodeVisitor<T> {
 /// Receiver of a message. Either a public key, identity (presumably symmetric),
 /// or broadcast over the topics.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Receiver {
-	#[serde(rename="public")]
 	Public(Public),
-	#[serde(rename="identity")]
 	Identity(Identity),
 }
 
@@ -190,13 +189,13 @@ pub struct PostRequest {
 
 /// Request for filter or subscription creation.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FilterRequest {
 	/// ID of key used for decryption.
 	///
 	/// If this identity is removed, then no further messages will be returned.
 	///
 	/// If optional, this will listen for broadcast messages.
-	#[serde(rename = "decryptWith")]
 	pub decrypt_with: Option<Identity>,
 
 	/// Accept only messages signed by given public key.
@@ -237,6 +236,7 @@ pub struct FilterItem {
 
 /// Whisper node info.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NodeInfo {
 	/// min PoW to be accepted into the local pool.
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -250,7 +250,6 @@ pub struct NodeInfo {
 	pub memory: usize,
 
 	/// Target memory of the pool.
-	#[serde(rename = "targetMemory")]
 	pub target_memory: usize,
 }
 
