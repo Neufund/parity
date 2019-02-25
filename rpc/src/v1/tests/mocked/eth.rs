@@ -213,7 +213,7 @@ fn rpc_eth_logs() {
 		entry: LogEntry {
 			address: Address::default(),
 			topics: vec![],
-			data: vec![1,2,3],
+			data: vec![1, 2, 3],
 		},
 		transaction_index: 0,
 		transaction_log_index: 0,
@@ -225,7 +225,7 @@ fn rpc_eth_logs() {
 		entry: LogEntry {
 			address: Address::default(),
 			topics: vec![],
-			data: vec![1,2,3],
+			data: vec![1, 2, 3],
 		},
 		transaction_index: 0,
 		transaction_log_index: 1,
@@ -265,7 +265,7 @@ fn rpc_logs_filter() {
 		entry: LogEntry {
 			address: Address::default(),
 			topics: vec![],
-			data: vec![1,2,3],
+			data: vec![1, 2, 3],
 		},
 		transaction_index: 0,
 		transaction_log_index: 0,
@@ -277,7 +277,7 @@ fn rpc_logs_filter() {
 		entry: LogEntry {
 			address: Address::default(),
 			topics: vec![],
-			data: vec![1,2,3],
+			data: vec![1, 2, 3],
 		},
 		transaction_index: 0,
 		transaction_log_index: 1,
@@ -342,7 +342,7 @@ fn rpc_eth_submit_hashrate() {
 
 	assert_eq!(tester.io.handle_request_sync(request), Some(response.to_owned()));
 	assert_eq!(tester.hashrates.lock().get(&H256::from("0x59daa26581d0acd1fce254fb7e85952f4c09d0915afd33d3886cd914bc7d283c")).cloned().unwrap().1,
-		U256::from(0x500_000));
+			   U256::from(0x500_000));
 }
 
 #[test]
@@ -833,7 +833,7 @@ fn rpc_eth_send_transaction() {
 		gas: U256::from(0x76c0),
 		action: Action::Call(Address::from_str("d46e8dd67c5d32be8058bb8eb970870f07244567").unwrap()),
 		value: U256::from(0x9184e72au64),
-		data: vec![]
+		data: vec![],
 	};
 	let signature = tester.accounts_provider.sign(address, None, t.hash(None)).unwrap();
 	let t = t.with_signature(signature, None);
@@ -850,7 +850,7 @@ fn rpc_eth_send_transaction() {
 		gas: U256::from(0x76c0),
 		action: Action::Call(Address::from_str("d46e8dd67c5d32be8058bb8eb970870f07244567").unwrap()),
 		value: U256::from(0x9184e72au64),
-		data: vec![]
+		data: vec![],
 	};
 	let signature = tester.accounts_provider.sign(address, None, t.hash(None)).unwrap();
 	let t = t.with_signature(signature, None);
@@ -884,7 +884,7 @@ fn rpc_eth_sign_transaction() {
 		gas: U256::from(0x76c0),
 		action: Action::Call(Address::from_str("d46e8dd67c5d32be8058bb8eb970870f07244567").unwrap()),
 		value: U256::from(0x9184e72au64),
-		data: vec![]
+		data: vec![],
 	};
 	let signature = tester.accounts_provider.sign(address, None, t.hash(None)).unwrap();
 	let t = t.with_signature(signature, None);
@@ -989,7 +989,7 @@ fn rpc_eth_send_raw_transaction() {
 		gas: U256::from(0x76c0),
 		action: Action::Call(Address::from_str("d46e8dd67c5d32be8058bb8eb970870f07244567").unwrap()),
 		value: U256::from(0x9184e72au64),
-		data: vec![]
+		data: vec![],
 	};
 	let signature = tester.accounts_provider.sign(address, None, t.hash(None)).unwrap();
 	let t = t.with_signature(signature, None);
