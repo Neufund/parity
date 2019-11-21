@@ -40,14 +40,15 @@ use types::header::Header;
 use jsonrpc_core::{BoxFuture, Result};
 use jsonrpc_core::futures::future;
 
-use v1::helpers::{self, errors, limit_logs, fake_sign};
+use v1::helpers::{self, errors, limit_logs, limit_localized_logs, fake_sign};
 use v1::helpers::deprecated::{self, DeprecationNotice};
 use v1::helpers::dispatch::{FullDispatcher, default_gas_price};
 use v1::helpers::block_import::is_major_importing;
+use v1::helpers::log_details;
 use v1::traits::Eth;
 use v1::types::{
 	RichBlock, Block, BlockTransactions, BlockNumber, Bytes, SyncStatus, SyncInfo,
-	Transaction, CallRequest, Index, Filter, Log, Receipt, Work, EthAccount, StorageProof,
+	Transaction, CallRequest, Index, Filter, Log, LogDetails, Receipt, Work, EthAccount, StorageProof,
 	block_number_to_id
 };
 use v1::metadata::Metadata;
@@ -847,6 +848,30 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM, T: StateInfo + 'static> Eth for EthClient<
 
 	fn logs(&self, filter: Filter) -> BoxFuture<Vec<Log>> {
 		base_logs(&*self.client, &*self.miner, filter)
+	}
+
+	fn log_details(&self, filter: Filter) -> BoxFuture<Vec<LogDetails>> {
+		let rebuild_log = |log| {
+			let mut rebuilt_log:LogDetails = From::from(log);
+
+			rebuilt_log.value = log_details::value(&*self.client, &rebuilt_log);
+			rebuilt_log.timestamp = log_details::timestamp(&*self.client, &rebuilt_log);
+			rebuilt_log
+		};
+
+		let logs = match filter.try_into() {
+			Ok(filter) => match self.client.logs(filter.clone())
+				.map(|logs| limit_localized_logs(logs, filter.limit)) {
+				Ok(logs) => logs
+					.into_iter()
+					.map(rebuild_log)
+					.collect::<Vec<LogDetails>>(),
+				Err(id) => return Box::new(future::err(errors::filter_block_not_found(id)))
+			},
+			Err(err) => return Box::new(future::err(err)),
+		};
+
+		Box::new(future::ok(logs))
 	}
 
 	fn work(&self, no_new_work_timeout: Option<u64>) -> Result<Work> {

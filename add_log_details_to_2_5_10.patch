@@ -1,0 +1,422 @@
+Index: ethcore/res/ethereum/tests
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ethcore/res/ethereum/tests	(revision f1dc205662035dc53b38b661cd427aef61afea2f)
++++ ethcore/res/ethereum/tests	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -1,1 +1,1 @@
+-725dbc73a54649e22a00330bd0f4d6699a5060e5
+\ No newline at end of file
++2cd62aeec11da29766b30d500f2b9a96f1f28cf0
+\ No newline at end of file
+Index: add_log_details_to_2_5_10.patch
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- add_log_details_to_2_5_10.patch	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
++++ add_log_details_to_2_5_10.patch	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -0,0 +1,12 @@
++Index: ethcore/res/ethereum/tests
++IDEA additional info:
++Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
++<+>UTF-8
++===================================================================
++--- ethcore/res/ethereum/tests	(revision f1dc205662035dc53b38b661cd427aef61afea2f)
+++++ ethcore/res/ethereum/tests	(revision 7f4a3f36f1945bb1906e53d524b56d82b29dd555)
++@@ -1,1 +1,1 @@
++-725dbc73a54649e22a00330bd0f4d6699a5060e5
++\ No newline at end of file
+++2cd62aeec11da29766b30d500f2b9a96f1f28cf0
++\ No newline at end of file
+Index: rpc/src/v1/helpers/log_details.rs
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- rpc/src/v1/helpers/log_details.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
++++ rpc/src/v1/helpers/log_details.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -0,0 +1,19 @@
++use v1::types::LogDetails;
++use ethereum_types::U256;
++use ethcore::client::{BlockChainClient, BlockId, TransactionId};
++
++pub fn value(client:&BlockChainClient, log:&LogDetails) -> Option<U256> {
++	return log.transaction_hash.clone()
++		.map(|transaction_hash| TransactionId::Hash(transaction_hash.into()))
++		.and_then(|transaction_id| client.transaction(transaction_id))
++		.map(|transaction| transaction.value);
++}
++
++pub fn timestamp(client:&BlockChainClient, log:&LogDetails) -> Option<u64> {
++	return log.block_hash.clone()
++		.and_then(|block_hash| {
++			let block_id_hash = BlockId::Hash(block_hash.into());
++			client.block_header(block_id_hash)
++		})
++		.map(|header| header.timestamp());
++}
+Index: rpc/src/v1/helpers/mod.rs
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- rpc/src/v1/helpers/mod.rs	(revision f1dc205662035dc53b38b661cd427aef61afea2f)
++++ rpc/src/v1/helpers/mod.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -28,6 +28,7 @@
+ pub mod fake_sign;
+ pub mod ipfs;
+ pub mod light_fetch;
++pub mod log_details;
+ pub mod nonce;
+ #[cfg(any(test, feature = "accounts"))]
+ pub mod secretstore;
+@@ -45,7 +46,7 @@
+ pub use self::signature::verify_signature;
+ pub use self::network_settings::NetworkSettings;
+ pub use self::poll_manager::PollManager;
+-pub use self::poll_filter::{PollFilter, SyncPollFilter, limit_logs};
++pub use self::poll_filter::{PollFilter, SyncPollFilter, limit_logs, limit_localized_logs};
+ pub use self::requests::{
+ 	TransactionRequest, FilledTransactionRequest, ConfirmationRequest, ConfirmationPayload, CallRequest,
+ };
+Index: rpc/src/v1/helpers/poll_filter.rs
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- rpc/src/v1/helpers/poll_filter.rs	(revision f1dc205662035dc53b38b661cd427aef61afea2f)
++++ rpc/src/v1/helpers/poll_filter.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -23,6 +23,7 @@
+ use ethereum_types::H256;
+ use parking_lot::Mutex;
+ use v1::types::Log;
++use types::log_entry::{LocalizedLogEntry};
+ use types::filter::Filter;
+ 
+ pub type BlockNumber = u64;
+@@ -78,3 +79,12 @@
+ 		_ => logs,
+ 	}
+ }
++
++// Returns only last `n` logs
++pub fn limit_localized_logs(mut logs: Vec<LocalizedLogEntry>, limit: Option<usize>) -> Vec<LocalizedLogEntry> {
++	let len = logs.len();
++	match limit {
++		Some(limit) if len >= limit => logs.split_off(len - limit),
++		_ => logs,
++	}
++}
+Index: rpc/src/v1/impls/eth.rs
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- rpc/src/v1/impls/eth.rs	(revision f1dc205662035dc53b38b661cd427aef61afea2f)
++++ rpc/src/v1/impls/eth.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -40,14 +40,15 @@
+ use jsonrpc_core::{BoxFuture, Result};
+ use jsonrpc_core::futures::future;
+ 
+-use v1::helpers::{self, errors, limit_logs, fake_sign};
++use v1::helpers::{self, errors, limit_logs, limit_localized_logs, fake_sign};
+ use v1::helpers::deprecated::{self, DeprecationNotice};
+ use v1::helpers::dispatch::{FullDispatcher, default_gas_price};
+ use v1::helpers::block_import::is_major_importing;
++use v1::helpers::log_details;
+ use v1::traits::Eth;
+ use v1::types::{
+ 	RichBlock, Block, BlockTransactions, BlockNumber, Bytes, SyncStatus, SyncInfo,
+-	Transaction, CallRequest, Index, Filter, Log, Receipt, Work, EthAccount, StorageProof,
++	Transaction, CallRequest, Index, Filter, Log, LogDetails, Receipt, Work, EthAccount, StorageProof,
+ 	block_number_to_id
+ };
+ use v1::metadata::Metadata;
+@@ -849,6 +850,30 @@
+ 		base_logs(&*self.client, &*self.miner, filter)
+ 	}
+ 
++	fn log_details(&self, filter: Filter) -> BoxFuture<Vec<LogDetails>> {
++		let rebuild_log = |log| {
++			let mut rebuilt_log:LogDetails = From::from(log);
++
++			rebuilt_log.value = log_details::value(&*self.client, &rebuilt_log);
++			rebuilt_log.timestamp = log_details::timestamp(&*self.client, &rebuilt_log);
++			rebuilt_log
++		};
++
++		let logs = match filter.try_into() {
++			Ok(filter) => match self.client.logs(filter.clone())
++				.map(|logs| limit_localized_logs(logs, filter.limit)) {
++				Ok(logs) => logs
++					.into_iter()
++					.map(rebuild_log)
++					.collect::<Vec<LogDetails>>(),
++				Err(id) => return Box::new(future::err(errors::filter_block_not_found(id)))
++			},
++			Err(err) => return Box::new(future::err(err)),
++		};
++
++		Box::new(future::ok(logs))
++	}
++
+ 	fn work(&self, no_new_work_timeout: Option<u64>) -> Result<Work> {
+ 		let no_new_work_timeout = no_new_work_timeout.unwrap_or_default();
+ 
+Index: rpc/src/v1/impls/light/eth.rs
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- rpc/src/v1/impls/light/eth.rs	(revision f1dc205662035dc53b38b661cd427aef61afea2f)
++++ rpc/src/v1/impls/light/eth.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -44,7 +44,7 @@
+ use v1::traits::Eth;
+ use v1::types::{
+ 	RichBlock, Block, BlockTransactions, BlockNumber, LightBlockNumber, Bytes, SyncStatus as RpcSyncStatus,
+-	SyncInfo as RpcSyncInfo, Transaction, CallRequest, Index, Filter, Log, Receipt, Work, EthAccount
++	SyncInfo as RpcSyncInfo, Transaction, CallRequest, Index, Filter, Log, LogDetails, Receipt, Work, EthAccount
+ };
+ use v1::metadata::Metadata;
+ 
+@@ -525,6 +525,10 @@
+ 			}).map(move |logs| limit_logs(logs, limit)))
+ 	}
+ 
++	fn log_details(&self, _:Filter) -> BoxFuture<Vec<LogDetails>> {
++		return Box::new(future::err(errors::light_unimplemented(None)))
++	}
++
+ 	fn work(&self, _timeout: Option<u64>) -> Result<Work> {
+ 		Err(errors::light_unimplemented(None))
+ 	}
+Index: rpc/src/v1/tests/mocked/eth.rs
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- rpc/src/v1/tests/mocked/eth.rs	(revision f1dc205662035dc53b38b661cd427aef61afea2f)
++++ rpc/src/v1/tests/mocked/eth.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -260,7 +260,7 @@
+ 		entry: LogEntry {
+ 			address: Address::default(),
+ 			topics: vec![],
+-			data: vec![1,2,3],
++			data: vec![1, 2, 3],
+ 		},
+ 		transaction_index: 0,
+ 		transaction_log_index: 0,
+Index: rpc/src/v1/traits/eth.rs
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- rpc/src/v1/traits/eth.rs	(revision f1dc205662035dc53b38b661cd427aef61afea2f)
++++ rpc/src/v1/traits/eth.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -20,7 +20,7 @@
+ use ethereum_types::{H64, H160, H256, U64, U256};
+ 
+ use v1::types::{RichBlock, BlockNumber, Bytes, CallRequest, Filter, FilterChanges, Index, EthAccount};
+-use v1::types::{Log, Receipt, SyncStatus, Transaction, Work};
++use v1::types::{Log, LogDetails, Receipt, SyncStatus, Transaction, Work};
+ 
+ /// Eth rpc interface.
+ #[rpc(server)]
+@@ -174,6 +174,10 @@
+ 	#[rpc(name = "eth_getLogs")]
+ 	fn logs(&self, _: Filter) -> BoxFuture<Vec<Log>>;
+ 
++	/// Returns logs with extra details matching given filter object.
++	#[rpc(name = "eth_getLogsDetails")]
++	fn log_details(&self, _: Filter) -> BoxFuture<Vec<LogDetails>>;
++
+ 	/// Returns the hash of the current block, the seedHash, and the boundary condition to be met.
+ 	#[rpc(name = "eth_getWork")]
+ 	fn work(&self, _: Option<u64>) -> Result<Work>;
+Index: rpc/src/v1/types/log_details.rs
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- rpc/src/v1/types/log_details.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
++++ rpc/src/v1/types/log_details.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -0,0 +1,154 @@
++// Copyright 2015-2018 Parity Technologies (UK) Ltd.
++// This file is part of Parity.
++
++// Parity is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++
++// Parity is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License for more details.
++
++// You should have received a copy of the GNU General Public License
++// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
++
++use types::log_entry::{LocalizedLogEntry, LogEntry};
++use v1::types::{Log, Bytes,};
++use ethereum_types::{H160, H256, U256};
++
++/// LogDetails
++#[derive(Debug, Serialize, PartialEq, Eq, Hash, Clone)]
++pub struct LogDetails {
++	/// H160
++	pub address: H160,
++	/// Topics
++	pub topics: Vec<H256>,
++	/// Data
++	pub data: Bytes,
++	/// Block Hash
++	#[serde(rename="blockHash")]
++	pub block_hash: Option<H256>,
++	/// Block Number
++	#[serde(rename="blockNumber")]
++	pub block_number: Option<U256>,
++	/// Transaction Hash
++	#[serde(rename="transactionHash")]
++	pub transaction_hash: Option<H256>,
++	/// Transaction Index
++	#[serde(rename="transactionIndex")]
++	pub transaction_index: Option<U256>,
++	/// Log Index in Block
++	#[serde(rename="logIndex")]
++	pub log_index: Option<U256>,
++	/// Log Index in Transaction
++	#[serde(rename="transactionLogIndex")]
++	pub transaction_log_index: Option<U256>,
++	/// Log Type
++	#[serde(rename="type")]
++	pub log_type: String,
++	/// Whether Log Type is Removed (Geth Compatibility Field)
++	#[serde(default)]
++	pub removed: bool,
++	/// Timestamp of a block with log entry
++	#[serde(rename="timestamp")]
++	pub timestamp: Option<u64>,
++	/// Ether value of transaction that created log entry
++	#[serde(rename="value")]
++	pub value: Option<ethereum_types::U256>
++}
++
++impl From<LocalizedLogEntry> for LogDetails {
++	fn from(e: LocalizedLogEntry) -> LogDetails {
++		LogDetails {
++			address: e.entry.address.into(),
++			topics: e.entry.topics.into_iter().map(Into::into).collect(),
++			data: e.entry.data.into(),
++			block_hash: Some(e.block_hash.into()),
++			block_number: Some(e.block_number.into()),
++			transaction_hash: Some(e.transaction_hash.into()),
++			transaction_index: Some(e.transaction_index.into()),
++			log_index: Some(e.log_index.into()),
++			transaction_log_index: Some(e.transaction_log_index.into()),
++			log_type: "mined".to_owned(),
++			removed: false,
++			timestamp:None,
++			value:None,
++		}
++	}
++}
++
++impl From<LogEntry> for LogDetails {
++	fn from(e: LogEntry) -> LogDetails {
++		LogDetails {
++			address: e.address.into(),
++			topics: e.topics.into_iter().map(Into::into).collect(),
++			data: e.data.into(),
++			block_hash: None,
++			block_number: None,
++			transaction_hash: None,
++			transaction_index: None,
++			log_index: None,
++			transaction_log_index: None,
++			log_type: "pending".to_owned(),
++			removed: false,
++			timestamp:None,
++			value:None,
++		}
++	}
++}
++
++impl From<Log> for LogDetails {
++	fn from(e: Log) -> LogDetails {
++		LogDetails {
++			address: e.address.into(),
++			topics: e.topics.into_iter().map(Into::into).collect(),
++			data: e.data.into(),
++			block_hash: e.block_hash.clone().into(),
++			block_number: e.block_number.into(),
++			transaction_hash: e.transaction_hash.clone().into(),
++			transaction_index: e.transaction_index.into(),
++			log_index: e.log_index.into(),
++			transaction_log_index: e.transaction_log_index.into(),
++			log_type: "mined".to_owned(),
++			removed: false,
++			timestamp:None,
++			value:None,
++		}
++	}
++}
++
++#[cfg(test)]
++mod tests {
++	use serde_json;
++	use std::str::FromStr;
++	use v1::types::{LogDetails, H160, H256, U256};
++
++	#[test]
++	fn log_serialization() {
++		let s = r#"{"address":"0x33990122638b9132ca29c723bdf037f1a891a70c","topics":["0xa6697e974e6a320f454390be03f74955e8978f1a6971ea6730542e37b66179bc","0x4861736852656700000000000000000000000000000000000000000000000000"],"data":"0x","blockHash":"0xed76641c68a1c641aee09a94b3b471f4dc0316efe5ac19cf488e2674cf8d05b5","blockNumber":"0x4510c","transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000000","transactionIndex":"0x0","logIndex":"0x1","transactionLogIndex":"0x1","type":"mined","removed":false,"timestamp":null,"value":null}"#;
++
++		let log = LogDetails {
++			address: H160::from_str("33990122638b9132ca29c723bdf037f1a891a70c").unwrap(),
++			topics: vec![
++				H256::from_str("a6697e974e6a320f454390be03f74955e8978f1a6971ea6730542e37b66179bc").unwrap(),
++				H256::from_str("4861736852656700000000000000000000000000000000000000000000000000").unwrap(),
++			],
++			data: vec![].into(),
++			block_hash: Some(H256::from_str("ed76641c68a1c641aee09a94b3b471f4dc0316efe5ac19cf488e2674cf8d05b5").unwrap()),
++			block_number: Some(U256::from(0x4510c)),
++			transaction_hash: Some(H256::default()),
++			transaction_index: Some(U256::default()),
++			transaction_log_index: Some(1.into()),
++			log_index: Some(U256::from(1)),
++			log_type: "mined".to_owned(),
++			removed: false,
++			timestamp:None,
++			value:None,
++		};
++
++		let serialized = serde_json::to_string(&log).unwrap();
++		assert_eq!(serialized, s);
++	}
++}
+Index: rpc/src/v1/types/mod.rs
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- rpc/src/v1/types/mod.rs	(revision f1dc205662035dc53b38b661cd427aef61afea2f)
++++ rpc/src/v1/types/mod.rs	(revision 71673306f2e97b350fc5cb21c8dd525ef4832c73)
+@@ -31,6 +31,7 @@
+ mod histogram;
+ mod index;
+ mod log;
++mod log_details;
+ mod node_kind;
+ mod provenance;
+ mod receipt;
+@@ -64,6 +65,7 @@
+ pub use self::histogram::Histogram;
+ pub use self::index::Index;
+ pub use self::log::Log;
++pub use self::log_details::LogDetails;
+ pub use self::node_kind::{NodeKind, Availability, Capability};
+ pub use self::provenance::Origin;
+ pub use self::receipt::Receipt;
