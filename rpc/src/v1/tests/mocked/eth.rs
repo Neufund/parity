@@ -260,7 +260,7 @@ fn rpc_logs_filter() {
 		entry: LogEntry {
 			address: Address::default(),
 			topics: vec![],
-			data: vec![1,2,3],
+			data: vec![1, 2, 3],
 		},
 		transaction_index: 0,
 		transaction_log_index: 0,
