@@ -23,6 +23,7 @@ use std::{
 use ethereum_types::H256;
 use parking_lot::Mutex;
 use v1::types::Log;
+use types::log_entry::{LocalizedLogEntry};
 use types::filter::Filter;
 
 pub type BlockNumber = u64;
@@ -72,6 +73,15 @@ impl PollFilter {
 
 /// Returns only last `n` logs
 pub fn limit_logs(mut logs: Vec<Log>, limit: Option<usize>) -> Vec<Log> {
+	let len = logs.len();
+	match limit {
+		Some(limit) if len >= limit => logs.split_off(len - limit),
+		_ => logs,
+	}
+}
+
+// Returns only last `n` logs
+pub fn limit_localized_logs(mut logs: Vec<LocalizedLogEntry>, limit: Option<usize>) -> Vec<LocalizedLogEntry> {
 	let len = logs.len();
 	match limit {
 		Some(limit) if len >= limit => logs.split_off(len - limit),

@@ -44,7 +44,7 @@ use v1::helpers::light_fetch::{self, LightFetch};
 use v1::traits::Eth;
 use v1::types::{
 	RichBlock, Block, BlockTransactions, BlockNumber, LightBlockNumber, Bytes, SyncStatus as RpcSyncStatus,
-	SyncInfo as RpcSyncInfo, Transaction, CallRequest, Index, Filter, Log, Receipt, Work, EthAccount
+	SyncInfo as RpcSyncInfo, Transaction, CallRequest, Index, Filter, Log, LogDetails, Receipt, Work, EthAccount
 };
 use v1::metadata::Metadata;
 
@@ -523,6 +523,10 @@ where
 				Ok(value) => value,
 				Err(err) => return Box::new(future::err(err)),
 			}).map(move |logs| limit_logs(logs, limit)))
+	}
+
+	fn log_details(&self, _:Filter) -> BoxFuture<Vec<LogDetails>> {
+		return Box::new(future::err(errors::light_unimplemented(None)))
 	}
 
 	fn work(&self, _timeout: Option<u64>) -> Result<Work> {

@@ -1,0 +1,12 @@
+Index: ethcore/res/ethereum/tests
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ethcore/res/ethereum/tests	(revision f1dc205662035dc53b38b661cd427aef61afea2f)
++++ ethcore/res/ethereum/tests	(revision 7f4a3f36f1945bb1906e53d524b56d82b29dd555)
+@@ -1,1 +1,1 @@
+-725dbc73a54649e22a00330bd0f4d6699a5060e5
+\ No newline at end of file
++2cd62aeec11da29766b30d500f2b9a96f1f28cf0
+\ No newline at end of file
